@@ -234,6 +234,8 @@ if buySignal
         inPosition := true
         positionType := 'LONG'
         showBuySignal := true
+        buyLabelTxt = i_enableScore ? 'BUY ' + tierLabel(buyScore) + '\n' + str.format('{0,number,#}%', buyScore * 100) : 'BUY'
+        label.new(bar_index, low, buyLabelTxt, style = label.style_label_up, color = tierColor(buyScore, true), textcolor = color.white, size = size.normal, yloc = yloc.belowbar)
 
 if sellSignal
     if not inPosition or positionType != 'SHORT'
@@ -259,6 +261,8 @@ if sellSignal
         inPosition := true
         positionType := 'SHORT'
         showSellSignal := true
+        sellLabelTxt = i_enableScore ? 'SELL ' + tierLabel(sellScore) + '\n' + str.format('{0,number,#}%', sellScore * 100) : 'SELL'
+        label.new(bar_index, high, sellLabelTxt, style = label.style_label_down, color = tierColor(sellScore, false), textcolor = color.white, size = size.normal, yloc = yloc.abovebar)
 
 // ============================================
 // VISUALIZATION
@@ -266,11 +270,8 @@ if sellSignal
 plot(emaFast, title = 'Fast EMA', color = color.new(emaFastColor, 0), linewidth = 1, display = showEmaFastLabel ? display.all : display.none)
 plot(emaSlow, title = 'Slow EMA', color = color.new(emaSlowColor, 0), linewidth = 1, display = showEmaSlowLabel ? display.all : display.none)
 
-buyTxt = i_enableScore ? 'BUY ' + tierLabel(buyScore) + '\n' + str.format('{0,number,#}%', buyScore * 100) : 'BUY'
-sellTxt = i_enableScore ? 'SELL ' + tierLabel(sellScore) + '\n' + str.format('{0,number,#}%', sellScore * 100) : 'SELL'
-
-plotshape(showBuySignal, 'BUY Signal', shape.labelup, location.belowbar, tierColor(buyScore, true), text = buyTxt, textcolor = color.white, size = size.normal)
-plotshape(showSellSignal, 'SELL Signal', shape.labeldown, location.abovebar, tierColor(sellScore, false), text = sellTxt, textcolor = color.white, size = size.normal)
+plotshape(showBuySignal, 'BUY Signal', shape.triangleup, location.belowbar, color.new(color.lime, 0), size = size.small)
+plotshape(showSellSignal, 'SELL Signal', shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.small)
 
 plotshape(tpFinalHit, 'FINAL TAKE PROFIT', shape.circle, location.abovebar, color.new(#00ff00, 0), text = '🎯 TP', textcolor = #00ff00, size = size.small)
 plotshape(slHit, 'STOP LOSS', shape.xcross, location.belowbar, color.new(#ff0000, 0), text = 'SL', textcolor = color.white, size = size.small)
