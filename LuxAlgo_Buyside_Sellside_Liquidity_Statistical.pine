@@ -42,11 +42,13 @@ i_highProb = input.float(0.65, 'High Cutoff', group = grp_score, minval = 0.5, m
 i_medProb = input.float(0.45, 'Med Cutoff', group = grp_score, minval = 0.2, maxval = 0.64, step = 0.01)
 i_maxScore = input.float(0.85, 'Max Score Clamp', group = grp_score, minval = 0.70, maxval = 0.98, step = 0.01)
 
-grp_sig = 'Sweep Signal Engine'
-i_showSweepSignals = input.bool(true, 'Show Sweep Signals', group = grp_sig)
-i_sigMinScore = input.float(0.60, 'Min Score for Sweep Signal', group = grp_sig, minval = 0.40, maxval = 0.95, step = 0.01)
-i_sigReqReclaim = input.bool(true, 'Require Reclaim Candle', group = grp_sig)
-i_sigCooldown = input.int(10, 'Min Bars Between Signals', minval = 0, group = grp_sig)
+grp_sig = 'Buy / Sell Signal Engine'
+i_showSweepSignals = input.bool(true, 'Show BUY / SELL Signals', group = grp_sig)
+i_sigMinScore = input.float(0.45, 'Min Score for Signal', group = grp_sig, minval = 0.30, maxval = 0.95, step = 0.01)
+i_sigReqReclaim = input.bool(true, 'Require Reclaim After Sweep', group = grp_sig, tooltip = 'Wait for close back above/below level after liquidity grab')
+i_sigMaxWait = input.int(15, 'Max Bars to Wait for Reclaim', minval = 3, maxval = 50, group = grp_sig)
+i_sigCooldown = input.int(5, 'Min Bars Between Signals', minval = 0, group = grp_sig)
+i_sigUsePlot = input.bool(true, 'Show B/S Markers on Chart', group = grp_sig)
 
 grp_tbl = 'Dashboard'
 i_showTable = input.bool(true, 'Show Dashboard', group = grp_tbl)
@@ -184,6 +186,8 @@ type liq
     int clusterCnt
     bool sigFired
     bool isBuyside
+    bool sweepActive
+    int sweepBar
 
 //-----------------------------------------------------------------------------}
 // Variables
@@ -192,8 +196,8 @@ var ZZ aZZ = ZZ.new(array.new<int>(maxSize, 0), array.new<int>(maxSize, 0), arra
 
 bar b = bar.new()
 
-var liq[] b_liq_B = array.new<liq>(1, liq.new(box(na), box(na), box(na), false, false, line(na), line(na), 0.0, 0, false, true))
-var liq[] b_liq_S = array.new<liq>(1, liq.new(box(na), box(na), box(na), false, false, line(na), line(na), 0.0, 0, false, false))
+var liq[] b_liq_B = array.new<liq>(1, liq.new(box(na), box(na), box(na), false, false, line(na), line(na), 0.0, 0, false, true, false, na))
+var liq[] b_liq_S = array.new<liq>(1, liq.new(box(na), box(na), box(na), false, false, line(na), line(na), 0.0, 0, false, false, false, na))
 
 var b_liq_V = array.new_box()
 
@@ -203,8 +207,19 @@ var float y1 = na
 var int x2 = na
 var float y2 = na
 
-var int lastBuySweepBar = -9999
-var int lastSellSweepBar = -9999
+var int lastBuySigBar = -9999
+var int lastSellSigBar = -9999
+
+scorePasses(prob) =>
+    not i_enableScore or prob >= i_sigMinScore
+
+fireBuyLabel(prob, tier) =>
+    txt = 'BUY ' + tier + ' ' + str.format('{0,number,#}%', prob * 100)
+    label.new(bar_index, low, txt, style = label.style_label_up, color = color.new(#00e676, 10), textcolor = color.white, size = size.normal, yloc = yloc.belowbar)
+
+fireSellLabel(prob, tier) =>
+    txt = 'SELL ' + tier + ' ' + str.format('{0,number,#}%', prob * 100)
+    label.new(bar_index, high, txt, style = label.style_label_down, color = color.new(#ff1744, 10), textcolor = color.white, size = size.normal, yloc = yloc.abovebar)
 
 //-----------------------------------------------------------------------------}
 // Functions / methods
@@ -287,7 +302,9 @@ if ph
                        prob,
                        count,
                        false,
-                       true))
+                       true,
+                       false,
+                       na))
 
                 alert('buyside liquidity level detected/updated for ' + syminfo.ticker + (i_enableScore ? ' | Q=' + str.format('{0,number,#}%', prob * 100) : ''))
 
@@ -360,7 +377,9 @@ if pl
                        prob,
                        count,
                        false,
-                       false))
+                       false,
+                       false,
+                       na))
 
                 alert('sellside liquidity level detected/updated for ' + syminfo.ticker + (i_enableScore ? ' | Q=' + str.format('{0,number,#}%', prob * 100) : ''))
 
@@ -373,7 +392,7 @@ if pl
                 getLast.lne.delete()
 
 //-----------------------------------------------------------------------------}
-// Breach tracking + statistical sweep signals
+// Breach tracking (original LuxAlgo visuals)
 //-----------------------------------------------------------------------------{
 for i = 0 to b_liq_B.size() - 1
     x = b_liq_B.get(i)
@@ -389,14 +408,6 @@ for i = 0 to b_liq_B.size() - 1
             x.bxz.set_lefttop(b.i - 1, math.min(x.ln.get_y1() + marBuy * atr, b.h))
             x.bxz.set_rightbottom(b.i + 1, x.ln.get_y1())
             x.bxz.set_bgcolor(color.new(i_colorByScore and i_enableScore ? probColor(x.prob, true) : cLIQ_B, liqBuy ? 73 : 100))
-
-            reclaimOk = not i_sigReqReclaim or b.c < x.ln.get_y1()
-            cooldownOk = bar_index - lastBuySweepBar >= i_sigCooldown
-            if i_showSweepSignals and i_enableScore and not x.sigFired and x.prob >= i_sigMinScore and reclaimOk and cooldownOk
-                x.sigFired := true
-                lastBuySweepBar := bar_index
-                sigTxt = 'BSL SWEEP ' + tierLabel(x.prob) + ' ' + str.format('{0,number,#}%', x.prob * 100)
-                label.new(bar_index, high, sigTxt, style = label.style_label_down, color = color.new(#ff1744, 15), textcolor = color.white, size = size.small, yloc = yloc.abovebar)
 
     else if x.brZ
         if b.l > x.ln.get_y1() - marBuy * atr and b.h < x.ln.get_y1() + marBuy * atr
@@ -422,14 +433,6 @@ for i = 0 to b_liq_S.size() - 1
             x.bxz.set_rightbottom(b.i + 1, math.max(x.ln.get_y1() - marSel * atr, b.l))
             x.bxz.set_bgcolor(color.new(i_colorByScore and i_enableScore ? probColor(x.prob, false) : cLIQ_S, liqSel ? 73 : 100))
 
-            reclaimOk = not i_sigReqReclaim or b.c > x.ln.get_y1()
-            cooldownOk = bar_index - lastSellSweepBar >= i_sigCooldown
-            if i_showSweepSignals and i_enableScore and not x.sigFired and x.prob >= i_sigMinScore and reclaimOk and cooldownOk
-                x.sigFired := true
-                lastSellSweepBar := bar_index
-                sigTxt = 'SSL SWEEP ' + tierLabel(x.prob) + ' ' + str.format('{0,number,#}%', x.prob * 100)
-                label.new(bar_index, low, sigTxt, style = label.style_label_up, color = color.new(#00e676, 15), textcolor = color.white, size = size.small, yloc = yloc.belowbar)
-
     else if x.brZ
         if b.l > x.ln.get_y1() - marSel * atr and b.h < x.ln.get_y1() + marSel * atr
             x.bxz.set_rightbottom(b.i + 1, math.min(b.l, x.bxz.get_bottom()))
@@ -437,6 +440,72 @@ for i = 0 to b_liq_S.size() - 1
                 x.lne.set_x2(b.i + 1)
         else
             x.brZ := false
+
+//-----------------------------------------------------------------------------}
+// BUY / SELL signal engine (sweep + reclaim across multiple bars)
+//-----------------------------------------------------------------------------{
+bool fireBuy = false
+bool fireSell = false
+
+// SSL swept below → BUY on reclaim above level
+for i = 0 to b_liq_S.size() - 1
+    x = b_liq_S.get(i)
+    lvl = x.ln.get_y1()
+    if not na(lvl) and not x.sigFired and scorePasses(x.prob)
+        sweptNow = b.l < lvl
+        reclaimNow = b.c > lvl
+
+        if not x.sweepActive and sweptNow
+            x.sweepActive := true
+            x.sweepBar := bar_index
+
+        if x.sweepActive
+            expired = bar_index - x.sweepBar > i_sigMaxWait
+            if expired
+                x.sweepActive := false
+            else
+                canFire = i_sigReqReclaim ? reclaimNow : sweptNow
+                cooldownOk = bar_index - lastBuySigBar >= i_sigCooldown
+                if canFire and cooldownOk and i_showSweepSignals
+                    x.sigFired := true
+                    x.sweepActive := false
+                    lastBuySigBar := bar_index
+                    fireBuy := true
+                    fireBuyLabel(x.prob, tierLabel(x.prob))
+                    alert('BUY signal: SSL liquidity swept & reclaimed | ' + syminfo.ticker + ' Q=' + str.format('{0,number,#}%', x.prob * 100), alert.freq_once_per_bar)
+
+// BSL swept above → SELL on reclaim below level
+for i = 0 to b_liq_B.size() - 1
+    x = b_liq_B.get(i)
+    lvl = x.ln.get_y1()
+    if not na(lvl) and not x.sigFired and scorePasses(x.prob)
+        sweptNow = b.h > lvl
+        reclaimNow = b.c < lvl
+
+        if not x.sweepActive and sweptNow
+            x.sweepActive := true
+            x.sweepBar := bar_index
+
+        if x.sweepActive
+            expired = bar_index - x.sweepBar > i_sigMaxWait
+            if expired
+                x.sweepActive := false
+            else
+                canFire = i_sigReqReclaim ? reclaimNow : sweptNow
+                cooldownOk = bar_index - lastSellSigBar >= i_sigCooldown
+                if canFire and cooldownOk and i_showSweepSignals
+                    x.sigFired := true
+                    x.sweepActive := false
+                    lastSellSigBar := bar_index
+                    fireSell := true
+                    fireSellLabel(x.prob, tierLabel(x.prob))
+                    alert('SELL signal: BSL liquidity swept & reclaimed | ' + syminfo.ticker + ' Q=' + str.format('{0,number,#}%', x.prob * 100), alert.freq_once_per_bar)
+
+plotshape(i_showSweepSignals and i_sigUsePlot and fireBuy, title = 'BUY Signal', style = shape.labelup, location = location.belowbar, color = color.new(#00e676, 0), text = 'B', textcolor = color.white, size = size.normal)
+plotshape(i_showSweepSignals and i_sigUsePlot and fireSell, title = 'SELL Signal', style = shape.labeldown, location = location.abovebar, color = color.new(#ff1744, 0), text = 'S', textcolor = color.white, size = size.normal)
+
+alertcondition(fireBuy, 'BUY - SSL Sweep', 'BUY: Sellside liquidity swept and reclaimed')
+alertcondition(fireSell, 'SELL - BSL Sweep', 'SELL: Buyside liquidity swept and reclaimed')
 
 //-----------------------------------------------------------------------------}
 // Liquidity voids (unchanged)
