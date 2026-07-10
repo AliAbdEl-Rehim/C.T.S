@@ -1,0 +1,657 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo
+// Statistical scoring layer: logistic quality model for liquidity clusters
+
+//@version=5
+indicator("Buyside & Sellside Liquidity [LuxAlgo + Statistical Score]", "LuxAlgo - BSL/SSL + Stats", overlay = true, max_lines_count = 500, max_boxes_count = 500, max_bars_back = 3000)
+
+//------------------------------------------------------------------------------
+// Settings
+//-----------------------------------------------------------------------------{
+liqGrp = 'Liquidity Detection'
+liqLen = input.int(7, title = 'Detection Length', minval = 3, maxval = 13, inline = 'LIQ', group = liqGrp)
+liqMar = 10 / input.float(6.9, 'Margin', minval = 4, maxval = 9, step = 0.1, inline = 'LIQ', group = liqGrp)
+
+liqBuy = input.bool(true, 'Buyside Liquidity Zones, Margin', inline = 'Buyside', group = liqGrp)
+marBuy = input.float(2.3, '', minval = 1.5, maxval = 10, step = .1, inline = 'Buyside', group = liqGrp)
+cLIQ_B = input.color(color.new(#4caf50, 0), '', inline = 'Buyside', group = liqGrp)
+
+liqSel = input.bool(true, 'Sellside Liquidity Zones, Margin', inline = 'Sellside', group = liqGrp)
+marSel = input.float(2.3, '', minval = 1.5, maxval = 10, step = .1, inline = 'Sellside', group = liqGrp)
+cLIQ_S = input.color(color.new(#f23645, 0), '', inline = 'Sellside', group = liqGrp)
+
+lqVoid = input.bool(false, 'Liquidity Voids, Bullish', inline = 'void', group = liqGrp)
+cLQV_B = input.color(color.new(#4caf50, 0), '', inline = 'void', group = liqGrp)
+cLQV_S = input.color(color.new(#f23645, 0), 'Bearish', inline = 'void', group = liqGrp)
+lqText = input.bool(false, 'Label', inline = 'void', group = liqGrp)
+
+mode = input.string('Present', title = 'Mode', options = ['Present', 'Historical'], inline = 'MOD', group = liqGrp)
+visLiq = input.int(3, '    # Visible Levels', minval = 1, maxval = 50, inline = 'MOD', group = liqGrp)
+
+grp_score = 'Quality Score Engine'
+i_enableScore = input.bool(true, 'Enable Statistical Scoring', group = grp_score)
+i_showScoreLabels = input.bool(true, 'Show Score on Labels', group = grp_score)
+i_colorByScore = input.bool(true, 'Color Levels by Score Tier', group = grp_score)
+i_emaFast = input.int(20, 'Fast EMA', group = grp_score)
+i_emaSlow = input.int(50, 'Slow EMA', group = grp_score)
+i_emaHTF = input.int(200, 'HTF EMA', group = grp_score)
+i_swingLen = input.int(5, 'Fractal Lookback', minval = 2, maxval = 20, group = grp_score)
+i_rvolLen = input.int(20, 'RVOL Length', minval = 5, group = grp_score)
+i_volRegimeLen = input.int(50, 'Volatility Regime ATR Length', group = grp_score)
+i_highProb = input.float(0.65, 'High Cutoff', group = grp_score, minval = 0.5, maxval = 0.99, step = 0.01)
+i_medProb = input.float(0.45, 'Med Cutoff', group = grp_score, minval = 0.2, maxval = 0.64, step = 0.01)
+i_maxScore = input.float(0.85, 'Max Score Clamp', group = grp_score, minval = 0.70, maxval = 0.98, step = 0.01)
+
+grp_sig = 'Buy / Sell Signal Engine'
+i_showSweepSignals = input.bool(true, 'Show BUY / SELL Signals', group = grp_sig)
+i_sigMinScore = input.float(0.45, 'Min Score for Signal', group = grp_sig, minval = 0.30, maxval = 0.95, step = 0.01)
+i_sigReqReclaim = input.bool(true, 'Require Reclaim After Sweep', group = grp_sig, tooltip = 'Wait for close back above/below level after liquidity grab')
+i_sigMaxWait = input.int(15, 'Max Bars to Wait for Reclaim', minval = 3, maxval = 50, group = grp_sig)
+i_sigCooldown = input.int(5, 'Min Bars Between Signals', minval = 0, group = grp_sig)
+i_sigUsePlot = input.bool(true, 'Show B/S Markers on Chart', group = grp_sig)
+
+grp_tbl = 'Dashboard'
+i_showTable = input.bool(true, 'Show Dashboard', group = grp_tbl)
+i_tblPos = input.string('Bottom Right', 'Position', options = ['Top Right', 'Top Left', 'Bottom Right', 'Bottom Left'], group = grp_tbl)
+
+//-----------------------------------------------------------------------------}
+// General calculations
+//-----------------------------------------------------------------------------{
+maxSize = 50
+atr = ta.atr(10)
+atr200 = ta.atr(200)
+per = mode == 'Present' ? last_bar_index - bar_index <= 500 : true
+
+emaFast = ta.ema(close, i_emaFast)
+emaSlow = ta.ema(close, i_emaSlow)
+emaHTF = ta.ema(close, i_emaHTF)
+volMA = ta.sma(volume, i_rvolLen)
+rvol = volume / math.max(volMA, 1)
+atrLong = ta.atr(i_volRegimeLen)
+
+bullTrend = emaFast > emaSlow
+bearTrend = emaFast < emaSlow
+aboveHTF = close > emaHTF
+belowHTF = close < emaHTF
+
+volRatio = atr / math.max(atrLong, syminfo.mintick)
+volCompressed = volRatio < 0.7
+volExpanded = volRatio > 1.3
+volNormal = not volCompressed and not volExpanded
+
+swingH = ta.pivothigh(high, i_swingLen, i_swingLen)
+swingL = ta.pivotlow(low, i_swingLen, i_swingLen)
+
+var float lastSH = na
+var float lastSL = na
+var float prevSH = na
+var float prevSL = na
+
+if not na(swingH)
+    prevSH := lastSH
+    lastSH := swingH
+if not na(swingL)
+    prevSL := lastSL
+    lastSL := swingL
+
+bosBull = not na(lastSH) and not na(prevSH) and lastSH > prevSH
+bosBear = not na(lastSL) and not na(prevSL) and lastSL < prevSL
+
+haveRange = not na(lastSH) and not na(lastSL)
+rangeHi = haveRange ? math.max(lastSH, lastSL) : na
+rangeLo = haveRange ? math.min(lastSH, lastSL) : na
+rangeMid = haveRange ? (rangeHi + rangeLo) / 2 : na
+inDiscount = haveRange and close < rangeMid
+inPremium = haveRange and close > rangeMid
+
+clamp(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+logit(p) =>
+    math.log(p / (1.0 - p))
+
+tierLabel(p) =>
+    p >= i_highProb ? 'H' : p >= i_medProb ? 'M' : 'L'
+
+probColor(p, isBuyside) =>
+    tier = p >= i_highProb ? 2 : p >= i_medProb ? 1 : 0
+    isBuyside ?
+         (tier == 2 ? color.new(#00e676, 0) : tier == 1 ? color.new(#4caf50, 0) : color.new(#37474f, 0)) :
+         (tier == 2 ? color.new(#ff1744, 0) : tier == 1 ? color.new(#f23645, 0) : color.new(#4e342e, 0))
+
+// Logistic quality model adapted for equal-high / equal-low liquidity clusters
+calcLiqScore(isBuyside, clusterCount, minP, maxP, levelPrice) =>
+    clusterRange = math.max(maxP - minP, syminfo.mintick)
+    tightness = clusterRange / math.max(atr, syminfo.mintick)
+    distToPrice = math.abs(close - levelPrice) / math.max(atr, syminfo.mintick)
+
+    f1 = tightness < 0.25 ? 0.86 : tightness < 0.50 ? 0.72 : tightness < 1.00 ? 0.56 : 0.34
+    f2 = clusterCount >= 6 ? 0.84 : clusterCount >= 5 ? 0.76 : clusterCount >= 4 ? 0.68 : clusterCount >= 3 ? 0.58 : 0.40
+    f3 = isBuyside ? (bullTrend ? 0.76 : 0.32) : (bearTrend ? 0.76 : 0.32)
+    f4 = isBuyside ? (aboveHTF ? 0.74 : 0.36) : (belowHTF ? 0.74 : 0.36)
+    f5 = rvol > 1.5 ? 0.78 : rvol > 1.0 ? 0.62 : rvol > 0.7 ? 0.48 : 0.34
+    f6 = not haveRange ? 0.50 : isBuyside ? (inPremium ? 0.82 : 0.30) : (inDiscount ? 0.82 : 0.30)
+    f7 = isBuyside ? (bosBull ? 0.74 : 0.40) : (bosBear ? 0.74 : 0.40)
+    f8 = distToPrice < 2.0 ? 0.72 : distToPrice < 5.0 ? 0.58 : distToPrice < 10.0 ? 0.44 : 0.30
+    f9 = volNormal ? 0.58 : volExpanded ? 0.74 : 0.36
+
+    ll = 1.4 * logit(clamp(f1, 0.1, 0.9)) +
+         1.3 * logit(clamp(f2, 0.1, 0.9)) +
+         1.0 * logit(clamp(f3, 0.1, 0.9)) +
+         0.9 * logit(clamp(f4, 0.1, 0.9)) +
+         0.8 * logit(clamp(f5, 0.1, 0.9)) +
+         1.4 * logit(clamp(f6, 0.1, 0.9)) +
+         1.1 * logit(clamp(f7, 0.1, 0.9)) +
+         0.9 * logit(clamp(f8, 0.1, 0.9)) +
+         0.7 * logit(clamp(f9, 0.1, 0.9))
+
+    clamp(1.0 / (1.0 + math.exp(-(-0.55 + ll))), 0.04, i_maxScore)
+
+liqLabelText(isBuyside, levelPrice, prob, clusterCount) =>
+    side = isBuyside ? 'Buyside liquidity' : 'Sellside liquidity'
+    i_enableScore and i_showScoreLabels ?
+         side + '\n' + tierLabel(prob) + ' ' + str.format('{0,number,#}%', prob * 100) + ' | x' + str.tostring(clusterCount) :
+         side
+
+applyScoreStyle(liqObj, isBuyside, prob) =>
+    c = i_colorByScore and i_enableScore ? probColor(prob, isBuyside) : isBuyside ? cLIQ_B : cLIQ_S
+    liqObj.ln.set_color(color.new(c, 0))
+    liqObj.lne.set_color(color.new(c, 0))
+    liqObj.bxt.set_text_color(color.new(c, 25))
+
+//-----------------------------------------------------------------------------}
+// User defined types
+//-----------------------------------------------------------------------------{
+type ZZ
+    int[] d
+    int[] x
+    float[] y
+
+type bar
+    float o = open
+    float h = high
+    float l = low
+    float c = close
+    int i = bar_index
+
+type liq
+    box bx
+    box bxz
+    box bxt
+    bool brZ
+    bool brL
+    line ln
+    line lne
+    float prob
+    int clusterCnt
+    bool sigFired
+    bool isBuyside
+    bool sweepActive
+    int sweepBar
+
+//-----------------------------------------------------------------------------}
+// Variables
+//-----------------------------------------------------------------------------{
+var ZZ aZZ = ZZ.new(array.new<int>(maxSize, 0), array.new<int>(maxSize, 0), array.new<float>(maxSize, na))
+
+bar b = bar.new()
+
+var liq[] b_liq_B = array.new<liq>(1, liq.new(box(na), box(na), box(na), false, false, line(na), line(na), 0.0, 0, false, true, false, na))
+var liq[] b_liq_S = array.new<liq>(1, liq.new(box(na), box(na), box(na), false, false, line(na), line(na), 0.0, 0, false, false, false, na))
+
+var b_liq_V = array.new_box()
+
+var int dir = na
+var int x1 = na
+var float y1 = na
+var int x2 = na
+var float y2 = na
+
+var int lastBuySigBar = -9999
+var int lastSellSigBar = -9999
+
+scorePasses(prob) =>
+    not i_enableScore or prob >= i_sigMinScore
+
+fireBuyLabel(prob, tier) =>
+    txt = 'BUY ' + tier + ' ' + str.format('{0,number,#}%', prob * 100)
+    label.new(bar_index, low, txt, style = label.style_label_up, color = color.new(#00e676, 10), textcolor = color.white, size = size.normal, yloc = yloc.belowbar)
+
+fireSellLabel(prob, tier) =>
+    txt = 'SELL ' + tier + ' ' + str.format('{0,number,#}%', prob * 100)
+    label.new(bar_index, high, txt, style = label.style_label_down, color = color.new(#ff1744, 10), textcolor = color.white, size = size.normal, yloc = yloc.abovebar)
+
+//-----------------------------------------------------------------------------}
+// Functions / methods
+//-----------------------------------------------------------------------------{
+method in_out(ZZ aZZ, int _d, int _x, float _y) =>
+    aZZ.d.unshift(_d)
+    aZZ.x.unshift(_x)
+    aZZ.y.unshift(_y)
+    aZZ.d.pop()
+    aZZ.x.pop()
+    aZZ.y.pop()
+
+max_bars_back(time, 1000)
+
+//-----------------------------------------------------------------------------}
+// Liquidity detection
+//-----------------------------------------------------------------------------{
+x2 := b.i - 1
+ph = ta.pivothigh(liqLen, 1)
+pl = ta.pivotlow(liqLen, 1)
+
+if ph
+    dir := aZZ.d.get(0)
+    x1 := aZZ.x.get(0)
+    y1 := aZZ.y.get(0)
+    y2 := nz(b.h[1])
+
+    if dir < 1
+        aZZ.in_out(1, x2, y2)
+    else
+        if dir == 1 and ph > y1
+            aZZ.x.set(0, x2)
+            aZZ.y.set(0, y2)
+
+    if per
+        count = 0
+        st_P = 0.
+        st_B = 0
+        minP = 0.
+        maxP = 10e6
+
+        for i = 0 to maxSize - 1
+            if aZZ.d.get(i) == 1
+                if aZZ.y.get(i) > ph + (atr / liqMar)
+                    break
+                else
+                    if aZZ.y.get(i) > ph - (atr / liqMar) and aZZ.y.get(i) < ph + (atr / liqMar)
+                        count += 1
+                        st_B := aZZ.x.get(i)
+                        st_P := aZZ.y.get(i)
+                        if aZZ.y.get(i) > minP
+                            minP := aZZ.y.get(i)
+                        if aZZ.y.get(i) < maxP
+                            maxP := aZZ.y.get(i)
+
+        if count > 2
+            levelPrice = math.avg(minP, maxP)
+            prob = i_enableScore ? calcLiqScore(true, count, minP, maxP, levelPrice) : 0.5
+            lbl = liqLabelText(true, levelPrice, prob, count)
+            getB = b_liq_B.get(0)
+
+            if st_B == getB.bx.get_left()
+                getB.bx.set_top(levelPrice + (atr / liqMar))
+                getB.bx.set_rightbottom(b.i + 10, levelPrice - (atr / liqMar))
+                getB.prob := prob
+                getB.clusterCnt := count
+                getB.bxt.set_text(lbl)
+                applyScoreStyle(getB, true, prob)
+            else
+                cBuy = i_colorByScore and i_enableScore ? probColor(prob, true) : cLIQ_B
+                b_liq_B.unshift(
+                     liq.new(
+                       box.new(st_B, levelPrice + (atr / liqMar), b.i + 10, levelPrice - (atr / liqMar), bgcolor = color(na), border_color = color(na)),
+                       box.new(na, na, na, na, bgcolor = color(na), border_color = color(na)),
+                       box.new(st_B, st_P, b.i + 10, st_P, text = lbl, text_size = size.tiny, text_halign = text.align_left, text_valign = text.align_bottom, text_color = color.new(cBuy, 25), bgcolor = color(na), border_color = color(na)),
+                       false,
+                       false,
+                       line.new(st_B, st_P, b.i - 1, st_P, color = color.new(cBuy, 0)),
+                       line.new(b.i - 1, st_P, na, st_P, color = color.new(cBuy, 0), style = line.style_dotted),
+                       prob,
+                       count,
+                       false,
+                       true,
+                       false,
+                       na))
+
+                alert('buyside liquidity level detected/updated for ' + syminfo.ticker + (i_enableScore ? ' | Q=' + str.format('{0,number,#}%', prob * 100) : ''))
+
+            if b_liq_B.size() > visLiq
+                getLast = b_liq_B.pop()
+                getLast.bx.delete()
+                getLast.bxz.delete()
+                getLast.bxt.delete()
+                getLast.ln.delete()
+                getLast.lne.delete()
+
+if pl
+    dir := aZZ.d.get(0)
+    x1 := aZZ.x.get(0)
+    y1 := aZZ.y.get(0)
+    y2 := nz(b.l[1])
+
+    if dir > -1
+        aZZ.in_out(-1, x2, y2)
+    else
+        if dir == -1 and pl < y1
+            aZZ.x.set(0, x2)
+            aZZ.y.set(0, y2)
+
+    if per
+        count = 0
+        st_P = 0.
+        st_B = 0
+        minP = 0.
+        maxP = 10e6
+
+        for i = 0 to maxSize - 1
+            if aZZ.d.get(i) == -1
+                if aZZ.y.get(i) < pl - (atr / liqMar)
+                    break
+                else
+                    if aZZ.y.get(i) > pl - (atr / liqMar) and aZZ.y.get(i) < pl + (atr / liqMar)
+                        count += 1
+                        st_B := aZZ.x.get(i)
+                        st_P := aZZ.y.get(i)
+                        if aZZ.y.get(i) > minP
+                            minP := aZZ.y.get(i)
+                        if aZZ.y.get(i) < maxP
+                            maxP := aZZ.y.get(i)
+
+        if count > 2
+            levelPrice = math.avg(minP, maxP)
+            prob = i_enableScore ? calcLiqScore(false, count, minP, maxP, levelPrice) : 0.5
+            lbl = liqLabelText(false, levelPrice, prob, count)
+            getB = b_liq_S.get(0)
+
+            if st_B == getB.bx.get_left()
+                getB.bx.set_top(levelPrice + (atr / liqMar))
+                getB.bx.set_rightbottom(b.i + 10, levelPrice - (atr / liqMar))
+                getB.prob := prob
+                getB.clusterCnt := count
+                getB.bxt.set_text(lbl)
+                applyScoreStyle(getB, false, prob)
+            else
+                cSel = i_colorByScore and i_enableScore ? probColor(prob, false) : cLIQ_S
+                b_liq_S.unshift(
+                     liq.new(
+                       box.new(st_B, levelPrice + (atr / liqMar), b.i + 10, levelPrice - (atr / liqMar), bgcolor = color(na), border_color = color(na)),
+                       box.new(na, na, na, na, bgcolor = color(na), border_color = color(na)),
+                       box.new(st_B, st_P, b.i + 10, st_P, text = lbl, text_size = size.tiny, text_halign = text.align_left, text_valign = text.align_top, text_color = color.new(cSel, 25), bgcolor = color(na), border_color = color(na)),
+                       false,
+                       false,
+                       line.new(st_B, st_P, b.i - 1, st_P, color = color.new(cSel, 0)),
+                       line.new(b.i - 1, st_P, na, st_P, color = color.new(cSel, 0), style = line.style_dotted),
+                       prob,
+                       count,
+                       false,
+                       false,
+                       false,
+                       na))
+
+                alert('sellside liquidity level detected/updated for ' + syminfo.ticker + (i_enableScore ? ' | Q=' + str.format('{0,number,#}%', prob * 100) : ''))
+
+            if b_liq_S.size() > visLiq
+                getLast = b_liq_S.pop()
+                getLast.bx.delete()
+                getLast.bxz.delete()
+                getLast.bxt.delete()
+                getLast.ln.delete()
+                getLast.lne.delete()
+
+//-----------------------------------------------------------------------------}
+// Breach tracking (original LuxAlgo visuals)
+//-----------------------------------------------------------------------------{
+for i = 0 to b_liq_B.size() - 1
+    x = b_liq_B.get(i)
+
+    if not x.brL
+        x.lne.set_x2(b.i)
+
+        if b.h > x.bx.get_top()
+            x.brL := true
+            x.brZ := true
+            alert('buyside liquidity level breached for ' + syminfo.ticker + (i_enableScore ? ' | Q=' + str.format('{0,number,#}%', x.prob * 100) : ''))
+
+            x.bxz.set_lefttop(b.i - 1, math.min(x.ln.get_y1() + marBuy * atr, b.h))
+            x.bxz.set_rightbottom(b.i + 1, x.ln.get_y1())
+            x.bxz.set_bgcolor(color.new(i_colorByScore and i_enableScore ? probColor(x.prob, true) : cLIQ_B, liqBuy ? 73 : 100))
+
+    else if x.brZ
+        if b.l > x.ln.get_y1() - marBuy * atr and b.h < x.ln.get_y1() + marBuy * atr
+            x.bxz.set_right(b.i + 1)
+            x.bxz.set_top(math.max(b.h, x.bxz.get_top()))
+            if liqBuy
+                x.lne.set_x2(b.i + 1)
+        else
+            x.brZ := false
+
+for i = 0 to b_liq_S.size() - 1
+    x = b_liq_S.get(i)
+
+    if not x.brL
+        x.lne.set_x2(b.i)
+
+        if b.l < x.bx.get_bottom()
+            x.brL := true
+            x.brZ := true
+            alert('sellside liquidity level breached for ' + syminfo.ticker + (i_enableScore ? ' | Q=' + str.format('{0,number,#}%', x.prob * 100) : ''))
+
+            x.bxz.set_lefttop(b.i - 1, x.ln.get_y1())
+            x.bxz.set_rightbottom(b.i + 1, math.max(x.ln.get_y1() - marSel * atr, b.l))
+            x.bxz.set_bgcolor(color.new(i_colorByScore and i_enableScore ? probColor(x.prob, false) : cLIQ_S, liqSel ? 73 : 100))
+
+    else if x.brZ
+        if b.l > x.ln.get_y1() - marSel * atr and b.h < x.ln.get_y1() + marSel * atr
+            x.bxz.set_rightbottom(b.i + 1, math.min(b.l, x.bxz.get_bottom()))
+            if liqSel
+                x.lne.set_x2(b.i + 1)
+        else
+            x.brZ := false
+
+//-----------------------------------------------------------------------------}
+// BUY / SELL signal engine (sweep + reclaim across multiple bars)
+//-----------------------------------------------------------------------------{
+bool fireBuy = false
+bool fireSell = false
+
+// SSL swept below → BUY on reclaim above level
+for i = 0 to b_liq_S.size() - 1
+    x = b_liq_S.get(i)
+    lvl = x.ln.get_y1()
+    if not na(lvl) and not x.sigFired and scorePasses(x.prob)
+        sweptNow = b.l < lvl
+        reclaimNow = b.c > lvl
+
+        if not x.sweepActive and sweptNow
+            x.sweepActive := true
+            x.sweepBar := bar_index
+
+        if x.sweepActive
+            expired = bar_index - x.sweepBar > i_sigMaxWait
+            if expired
+                x.sweepActive := false
+            else
+                canFire = i_sigReqReclaim ? reclaimNow : sweptNow
+                cooldownOk = bar_index - lastBuySigBar >= i_sigCooldown
+                if canFire and cooldownOk and i_showSweepSignals
+                    x.sigFired := true
+                    x.sweepActive := false
+                    lastBuySigBar := bar_index
+                    fireBuy := true
+                    fireBuyLabel(x.prob, tierLabel(x.prob))
+                    alert('BUY signal: SSL liquidity swept & reclaimed | ' + syminfo.ticker + ' Q=' + str.format('{0,number,#}%', x.prob * 100), alert.freq_once_per_bar)
+
+// BSL swept above → SELL on reclaim below level
+for i = 0 to b_liq_B.size() - 1
+    x = b_liq_B.get(i)
+    lvl = x.ln.get_y1()
+    if not na(lvl) and not x.sigFired and scorePasses(x.prob)
+        sweptNow = b.h > lvl
+        reclaimNow = b.c < lvl
+
+        if not x.sweepActive and sweptNow
+            x.sweepActive := true
+            x.sweepBar := bar_index
+
+        if x.sweepActive
+            expired = bar_index - x.sweepBar > i_sigMaxWait
+            if expired
+                x.sweepActive := false
+            else
+                canFire = i_sigReqReclaim ? reclaimNow : sweptNow
+                cooldownOk = bar_index - lastSellSigBar >= i_sigCooldown
+                if canFire and cooldownOk and i_showSweepSignals
+                    x.sigFired := true
+                    x.sweepActive := false
+                    lastSellSigBar := bar_index
+                    fireSell := true
+                    fireSellLabel(x.prob, tierLabel(x.prob))
+                    alert('SELL signal: BSL liquidity swept & reclaimed | ' + syminfo.ticker + ' Q=' + str.format('{0,number,#}%', x.prob * 100), alert.freq_once_per_bar)
+
+plotshape(i_showSweepSignals and i_sigUsePlot and fireBuy, title = 'BUY Signal', style = shape.labelup, location = location.belowbar, color = color.new(#00e676, 0), text = 'B', textcolor = color.white, size = size.normal)
+plotshape(i_showSweepSignals and i_sigUsePlot and fireSell, title = 'SELL Signal', style = shape.labeldown, location = location.abovebar, color = color.new(#ff1744, 0), text = 'S', textcolor = color.white, size = size.normal)
+
+alertcondition(fireBuy, 'BUY - SSL Sweep', 'BUY: Sellside liquidity swept and reclaimed')
+alertcondition(fireSell, 'SELL - BSL Sweep', 'SELL: Buyside liquidity swept and reclaimed')
+
+//-----------------------------------------------------------------------------}
+// Liquidity voids (unchanged)
+//-----------------------------------------------------------------------------{
+if lqVoid and per
+    bull = b.l - b.h[2] > atr200 and b.l > b.h[2] and b.c[1] > b.h[2]
+    bear = b.l[2] - b.h > atr200 and b.h < b.l[2] and b.c[1] < b.l[2]
+
+    if bull
+        l = 13
+        if bull[1]
+            st = math.abs(b.l - b.l[1]) / l
+            for i = 0 to l - 1
+                array.push(b_liq_V, box.new(b.i - 2, b.l[1] + i * st, b.i, b.l[1] + (i + 1) * st, border_color = na, bgcolor = color.new(cLQV_B, 90)))
+        else
+            st = math.abs(b.l - b.h[2]) / l
+            for i = 0 to l - 1
+                if lqText and i == 0
+                    array.push(b_liq_V, box.new(b.i - 2, b.h[2] + i * st, b.i, b.h[2] + (i + 1) * st, text = 'Liquidity Void   ', text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_bottom, text_color = na, border_color = na, bgcolor = color.new(cLQV_B, 90)))
+                else
+                    array.push(b_liq_V, box.new(b.i - 2, b.h[2] + i * st, b.i, b.h[2] + (i + 1) * st, border_color = na, bgcolor = color.new(cLQV_B, 90)))
+
+    if bear
+        l = 13
+        if bear[1]
+            st = math.abs(b.h[1] - b.h) / l
+            for i = 0 to l - 1
+                array.push(b_liq_V, box.new(b.i - 2, b.h + i * st, b.i, b.h + (i + 1) * st, border_color = na, bgcolor = color.new(cLQV_S, 90)))
+        else
+            st = math.abs(b.l[2] - b.h) / l
+            for i = 0 to l - 1
+                if lqText and i == l - 1
+                    array.push(b_liq_V, box.new(b.i - 2, b.h + i * st, b.i, b.h + (i + 1) * st, text = 'Liquidity Void   ', text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_top, text_color = na, border_color = na, bgcolor = color.new(cLQV_S, 90)))
+                else
+                    array.push(b_liq_V, box.new(b.i - 2, b.h + i * st, b.i, b.h + (i + 1) * st, border_color = na, bgcolor = color.new(cLQV_S, 90)))
+
+if b_liq_V.size() > 0
+    qt = b_liq_V.size()
+    for bn = qt - 1 to 0
+        if bn < b_liq_V.size()
+            cb = b_liq_V.get(bn)
+            ba = math.avg(cb.get_bottom(), cb.get_top())
+
+            if math.sign(b.c[1] - ba) != math.sign(b.c - ba) or math.sign(b.c[1] - ba) != math.sign(b.l - ba) or math.sign(b.c[1] - ba) != math.sign(b.h - ba)
+                b_liq_V.remove(bn)
+            else
+                cb.set_right(b.i + 1)
+
+                if b.i - cb.get_left() > 21
+                    cb.set_text_color(color.new(color.gray, 25))
+
+//-----------------------------------------------------------------------------}
+// Dashboard helpers
+//-----------------------------------------------------------------------------{
+avgLiqProb(wantBuyside) =>
+    float s = 0.0
+    float w = 0.0
+    arr = wantBuyside ? b_liq_B : b_liq_S
+    if arr.size() > 0
+        for i = 0 to arr.size() - 1
+            item = arr.get(i)
+            if not item.brL
+                lvl = item.ln.get_y1()
+                dist = math.abs(close - lvl) / math.max(atr, syminfo.mintick)
+                wt = 1.0 / (1.0 + dist)
+                s += item.prob * wt
+                w += wt
+    w > 0 ? s / w : na
+
+openBuyside = 0
+openSellside = 0
+breachedBuyside = 0
+breachedSellside = 0
+
+if b_liq_B.size() > 0
+    for i = 0 to b_liq_B.size() - 1
+        item = b_liq_B.get(i)
+        if item.brL
+            breachedBuyside += 1
+        else
+            openBuyside += 1
+
+if b_liq_S.size() > 0
+    for i = 0 to b_liq_S.size() - 1
+        item = b_liq_S.get(i)
+        if item.brL
+            breachedSellside += 1
+        else
+            openSellside += 1
+
+tblPos = i_tblPos == 'Top Right' ? position.top_right : i_tblPos == 'Top Left' ? position.top_left : i_tblPos == 'Bottom Right' ? position.bottom_right : position.bottom_left
+var table dash = table.new(tblPos, 3, 10, bgcolor = color.new(#0d1117, 10), border_color = color.new(#30363d, 60), border_width = 1, frame_color = color.new(#58a6ff, 40), frame_width = 1)
+
+hdrBg = color.new(#161b22, 20)
+hdrTxt = color.new(#8b949e, 0)
+bullClr = color.new(#00e676, 0)
+bearClr = color.new(#ff1744, 0)
+dimTxt = color.new(#58a6ff, 0)
+rowBg1 = color.new(#0d1117, 30)
+rowBg2 = color.new(#161b22, 20)
+
+if i_showTable and i_enableScore and barstate.islast
+    table.cell(dash, 0, 0, 'Liquidity Stats', text_color = dimTxt, bgcolor = hdrBg, text_size = size.tiny)
+    table.cell(dash, 1, 0, 'BSL', text_color = bullClr, bgcolor = hdrBg, text_size = size.tiny)
+    table.cell(dash, 2, 0, 'SSL', text_color = bearClr, bgcolor = hdrBg, text_size = size.tiny)
+
+    table.cell(dash, 0, 1, 'Open', text_color = hdrTxt, bgcolor = rowBg1, text_size = size.tiny)
+    table.cell(dash, 1, 1, str.tostring(openBuyside), text_color = bullClr, bgcolor = rowBg1, text_size = size.tiny)
+    table.cell(dash, 2, 1, str.tostring(openSellside), text_color = bearClr, bgcolor = rowBg1, text_size = size.tiny)
+
+    abp = avgLiqProb(true)
+    asp = avgLiqProb(false)
+    table.cell(dash, 0, 2, 'Avg Q', text_color = hdrTxt, bgcolor = rowBg2, text_size = size.tiny)
+    table.cell(dash, 1, 2, na(abp) ? '-' : str.format('{0}%', math.round(abp * 100)), text_color = bullClr, bgcolor = rowBg2, text_size = size.tiny)
+    table.cell(dash, 2, 2, na(asp) ? '-' : str.format('{0}%', math.round(asp * 100)), text_color = bearClr, bgcolor = rowBg2, text_size = size.tiny)
+
+    table.cell(dash, 0, 3, 'Swept', text_color = hdrTxt, bgcolor = rowBg1, text_size = size.tiny)
+    table.cell(dash, 1, 3, str.tostring(breachedBuyside), text_color = hdrTxt, bgcolor = rowBg1, text_size = size.tiny)
+    table.cell(dash, 2, 3, str.tostring(breachedSellside), text_color = hdrTxt, bgcolor = rowBg1, text_size = size.tiny)
+
+    trendTxt = bullTrend and aboveHTF ? 'BULL' : bearTrend and belowHTF ? 'BEAR' : 'CHOP'
+    trendClr = bullTrend and aboveHTF ? bullClr : bearTrend and belowHTF ? bearClr : hdrTxt
+    table.cell(dash, 0, 4, 'Bias', text_color = hdrTxt, bgcolor = rowBg2, text_size = size.tiny)
+    table.cell(dash, 1, 4, trendTxt, text_color = trendClr, bgcolor = rowBg2, text_size = size.tiny)
+    table.cell(dash, 2, 4, bosBull ? 'BOS+' : bosBear ? 'BOS-' : '-', text_color = hdrTxt, bgcolor = rowBg2, text_size = size.tiny)
+
+    pdTxt = not haveRange ? '-' : inPremium ? 'PREM' : 'DISC'
+    table.cell(dash, 0, 5, 'Zone', text_color = hdrTxt, bgcolor = rowBg1, text_size = size.tiny)
+    table.cell(dash, 1, 5, pdTxt, text_color = hdrTxt, bgcolor = rowBg1, text_size = size.tiny)
+    table.cell(dash, 2, 5, '', bgcolor = rowBg1)
+
+    volTxt = volCompressed ? 'COMP' : volExpanded ? 'EXP' : 'NORM'
+    table.cell(dash, 0, 6, 'Vol', text_color = hdrTxt, bgcolor = rowBg2, text_size = size.tiny)
+    table.cell(dash, 1, 6, volTxt, text_color = hdrTxt, bgcolor = rowBg2, text_size = size.tiny)
+    table.cell(dash, 2, 6, str.format('{0,number,#.#}', rvol), text_color = hdrTxt, bgcolor = rowBg2, text_size = size.tiny)
+
+    table.cell(dash, 0, 7, 'Min Sig', text_color = hdrTxt, bgcolor = rowBg1, text_size = size.tiny)
+    table.cell(dash, 1, 7, str.format('{0}%', math.round(i_sigMinScore * 100)), text_color = dimTxt, bgcolor = rowBg1, text_size = size.tiny)
+    table.cell(dash, 2, 7, i_sigReqReclaim ? 'Reclaim' : 'Any', text_color = dimTxt, bgcolor = rowBg1, text_size = size.tiny)
+
+    table.cell(dash, 0, 8, 'Tiers', text_color = hdrTxt, bgcolor = rowBg2, text_size = size.tiny)
+    table.cell(dash, 1, 8, 'H>=' + str.format('{0}%', math.round(i_highProb * 100)), text_color = dimTxt, bgcolor = rowBg2, text_size = size.tiny)
+    table.cell(dash, 2, 8, 'M>=' + str.format('{0}%', math.round(i_medProb * 100)), text_color = dimTxt, bgcolor = rowBg2, text_size = size.tiny)
+
+    table.cell(dash, 0, 9, 'Not financial advice', text_color = color.new(#4a4a4a, 0), bgcolor = hdrBg, text_size = size.tiny)
+    table.cell(dash, 1, 9, '', bgcolor = hdrBg)
+    table.cell(dash, 2, 9, '', bgcolor = hdrBg)
+
+//-----------------------------------------------------------------------------}

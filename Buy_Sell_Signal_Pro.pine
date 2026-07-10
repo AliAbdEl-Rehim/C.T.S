@@ -1,0 +1,501 @@
+//@version=6
+indicator('Buy Sell Signal PRO [Statistical + MTF + Confluence]', 'BSS PRO', overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CORE SETTINGS
+// ══════════════════════════════════════════════════════════════════════════════
+grp_core = 'Core Strategy'
+emaFastLen = input.int(5, 'Fast EMA', minval = 1, group = grp_core)
+emaSlowLen = input.int(13, 'Slow EMA', minval = 1, group = grp_core)
+atrLen = input.int(14, 'ATR Period', minval = 1, group = grp_core)
+confirmCandle = input.bool(true, 'Require Candle Confirmation', group = grp_core)
+minConfluence = input.int(2, 'Min Confluence Signals', minval = 1, maxval = 6, group = grp_core)
+
+grp_rm = 'Risk Management'
+slMode = input.string('Smart Structure', 'Stop Loss Mode', options = ['ATR Only', 'Smart Structure', 'Swing Point'], group = grp_rm)
+atrMultSL = input.float(0.5, 'ATR SL Buffer', minval = 0.1, step = 0.1, group = grp_rm)
+riskReward = input.float(3.0, 'Risk : Reward', minval = 1.0, step = 0.5, group = grp_rm)
+useTrailing = input.bool(true, 'Trail Stop After TP1', group = grp_rm)
+trailAtrMult = input.float(1.0, 'Trail ATR Mult', minval = 0.3, step = 0.1, group = grp_rm)
+moveBE = input.bool(true, 'Move SL to Breakeven at TP1', group = grp_rm)
+
+grp_mtf = 'Multi-Timeframe'
+useMTF = input.bool(true, 'Require HTF Trend Alignment', group = grp_mtf)
+htfTf = input.timeframe('60', 'Higher Timeframe', group = grp_mtf)
+htfEmaLen = input.int(50, 'HTF EMA Length', minval = 10, group = grp_mtf)
+
+grp_filt = 'Filters'
+useADX = input.bool(true, 'ADX Trend Filter', group = grp_filt)
+adxMin = input.float(18.0, 'Min ADX', minval = 10, step = 1, group = grp_filt)
+useChop = input.bool(true, 'Block Compressed Volatility', group = grp_filt)
+useSession = input.bool(false, 'Killzone Filter', group = grp_filt)
+sessTz = input.string('America/New_York', 'Session TZ', group = grp_filt)
+sessNY = input.session('0700-1100', 'NY AM Session', group = grp_filt)
+
+grp_score = 'Statistical Engine'
+i_enableScore = input.bool(true, 'Enable Score Filter', group = grp_score)
+i_sigMinScore = input.float(0.52, 'Min Score', group = grp_score, minval = 0.30, maxval = 0.95, step = 0.01)
+i_aplusOnly = input.bool(false, 'A+ Signals Only', group = grp_score)
+i_highProb = input.float(0.68, 'High Tier Cutoff', group = grp_score, minval = 0.5, maxval = 0.99, step = 0.01)
+i_medProb = input.float(0.48, 'Med Tier Cutoff', group = grp_score, minval = 0.2, maxval = 0.64, step = 0.01)
+i_maxScore = input.float(0.90, 'Max Score Clamp', group = grp_score, minval = 0.70, maxval = 0.98, step = 0.01)
+i_sigCooldown = input.int(5, 'Signal Cooldown (bars)', minval = 0, group = grp_score)
+i_swingLen = input.int(5, 'Fractal Lookback', minval = 2, maxval = 20, group = grp_score)
+i_rvolLen = input.int(20, 'RVOL Length', minval = 5, group = grp_score)
+i_volRegimeLen = input.int(50, 'Vol Regime ATR Len', group = grp_score)
+i_emaHTF = input.int(200, 'Chart HTF EMA', group = grp_score)
+
+grp_vis = 'Display'
+showEMAs = input.bool(true, 'Show EMAs', group = grp_vis)
+showPD = input.bool(true, 'Show Premium/Discount Box', group = grp_vis)
+showTable = input.bool(true, 'Show Dashboard', group = grp_vis)
+tblPos = input.string('Top Right', 'Dashboard Position', options = ['Top Right', 'Top Left', 'Bottom Right', 'Bottom Left'], group = grp_vis)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CALCULATIONS
+// ══════════════════════════════════════════════════════════════════════════════
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+emaHTF = ta.ema(close, i_emaHTF)
+atr = ta.atr(atrLen)
+atrLong = ta.atr(i_volRegimeLen)
+volMA = ta.sma(volume, i_rvolLen)
+rvol = volume / math.max(volMA, 1)
+
+[diPlus, diMinus, adxVal] = ta.dmi(14, 14)
+[macdL, macdS, macdH] = ta.macd(close, 12, 26, 9)
+rsiVal = ta.rsi(close, 14)
+
+bullTrend = emaFast > emaSlow
+bearTrend = emaFast < emaSlow
+trendChange = bullTrend != bullTrend[1]
+aboveHTF = close > emaHTF
+belowHTF = close < emaHTF
+
+htfEma = request.security(syminfo.tickerid, htfTf, ta.ema(close, htfEmaLen), barmerge.gaps_off, barmerge.lookahead_off)
+htfClose = request.security(syminfo.tickerid, htfTf, close, barmerge.gaps_off, barmerge.lookahead_off)
+htfBull = htfClose > htfEma
+htfBear = htfClose < htfEma
+mtfOkLong = not useMTF or htfBull
+mtfOkShort = not useMTF or htfBear
+
+volRatio = atr / math.max(atrLong, syminfo.mintick)
+volCompressed = volRatio < 0.7
+volExpanded = volRatio > 1.3
+volNormal = not volCompressed and not volExpanded
+
+inSession = not useSession or not na(time(timeframe.period, sessNY, sessTz))
+adxOk = not useADX or adxVal >= adxMin
+chopOk = not useChop or not volCompressed
+
+swingH = ta.pivothigh(high, i_swingLen, i_swingLen)
+swingL = ta.pivotlow(low, i_swingLen, i_swingLen)
+
+var float lastSH = na
+var float lastSL = na
+var float prevSH = na
+var float prevSL = na
+
+if not na(swingH)
+    prevSH := lastSH
+    lastSH := swingH
+if not na(swingL)
+    prevSL := lastSL
+    lastSL := swingL
+
+bosBull = not na(lastSH) and not na(prevSH) and lastSH > prevSH
+bosBear = not na(lastSL) and not na(prevSL) and lastSL < prevSL
+
+haveRange = not na(lastSH) and not na(lastSL)
+rangeHi = haveRange ? math.max(lastSH, lastSL) : na
+rangeLo = haveRange ? math.min(lastSH, lastSL) : na
+rangeMid = haveRange ? (rangeHi + rangeLo) / 2 : na
+inDiscount = haveRange and close < rangeMid
+inPremium = haveRange and close > rangeMid
+
+bodyAbs = math.abs(close - open)
+rng = math.max(high - low, syminfo.mintick)
+bodyRatio = bodyAbs / rng
+bullCandle = close > open
+bearCandle = close < open
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CONFLUENCE SIGNAL SOURCES (6 engines)
+// ══════════════════════════════════════════════════════════════════════════════
+sig_emaCrossLong = bullTrend and trendChange and (not confirmCandle or bullCandle)
+sig_emaCrossShort = bearTrend and trendChange and (not confirmCandle or bearCandle)
+
+sig_pullbackLong = bullTrend and low <= emaFast and close > emaFast and emaFast > emaSlow
+sig_pullbackShort = bearTrend and high >= emaFast and close < emaFast and emaFast < emaSlow
+
+sig_macdLong = ta.crossover(macdL, macdS) and bullTrend
+sig_macdShort = ta.crossunder(macdL, macdS) and bearTrend
+
+sig_rsiLong = ta.crossover(rsiVal, 30) or (rsiVal < 35 and rsiVal > rsiVal[1] and bullTrend)
+sig_rsiShort = ta.crossunder(rsiVal, 70) or (rsiVal > 65 and rsiVal < rsiVal[1] and bearTrend)
+
+liqLow = ta.lowest(low, 10)[1]
+liqHigh = ta.highest(high, 10)[1]
+sig_sweepLong = low < liqLow and close > liqLow and bullTrend
+sig_sweepShort = high > liqHigh and close < liqHigh and bearTrend
+
+sig_bosLong = bosBull and inDiscount and bullCandle
+sig_bosShort = bosBear and inPremium and bearCandle
+
+countLong() =>
+    int c = 0
+    c += sig_emaCrossLong ? 1 : 0
+    c += sig_pullbackLong ? 1 : 0
+    c += sig_macdLong ? 1 : 0
+    c += sig_rsiLong ? 1 : 0
+    c += sig_sweepLong ? 1 : 0
+    c += sig_bosLong ? 1 : 0
+    c
+
+countShort() =>
+    int c = 0
+    c += sig_emaCrossShort ? 1 : 0
+    c += sig_pullbackShort ? 1 : 0
+    c += sig_macdShort ? 1 : 0
+    c += sig_rsiShort ? 1 : 0
+    c += sig_sweepShort ? 1 : 0
+    c += sig_bosShort ? 1 : 0
+    c
+
+longConf = countLong()
+shortConf = countShort()
+
+rawBuy = longConf >= minConfluence
+rawSell = shortConf >= minConfluence
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STATISTICAL SCORE (12-factor logistic model)
+// ══════════════════════════════════════════════════════════════════════════════
+clamp(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+logit(p) =>
+    math.log(p / (1.0 - p))
+
+tierLabel(p) =>
+    p >= i_highProb ? 'H' : p >= i_medProb ? 'M' : 'L'
+
+gradeLabel(p, conf) =>
+    p >= i_highProb and conf >= 4 ? 'A+' : p >= i_highProb or conf >= 3 ? 'A' : 'B'
+
+tierColor(p, isLong) =>
+    tier = p >= i_highProb ? 2 : p >= i_medProb ? 1 : 0
+    isLong ?
+         (tier == 2 ? color.new(#00e676, 0) : tier == 1 ? color.new(#66bb6a, 0) : color.new(#455a64, 0)) :
+         (tier == 2 ? color.new(#ff1744, 0) : tier == 1 ? color.new(#ef5350, 0) : color.new(#4e342e, 0))
+
+trendStrength = math.abs(emaFast - emaSlow) / math.max(atr, syminfo.mintick)
+
+calcSignalScore(isLong, conf) =>
+    confNorm = conf / 6.0
+    f1 = trendStrength > 1.5 ? 0.86 : trendStrength > 0.8 ? 0.72 : trendStrength > 0.4 ? 0.56 : 0.34
+    f2 = isLong ? (bullTrend ? 0.82 : 0.28) : (bearTrend ? 0.82 : 0.28)
+    f3 = isLong ? (aboveHTF and mtfOkLong ? 0.80 : 0.32) : (belowHTF and mtfOkShort ? 0.80 : 0.32)
+    f4 = rvol > 1.5 ? 0.78 : rvol > 1.0 ? 0.64 : rvol > 0.7 ? 0.48 : 0.34
+    f5 = not haveRange ? 0.50 : isLong ? (inDiscount ? 0.84 : 0.28) : (inPremium ? 0.84 : 0.28)
+    f6 = isLong ? (bosBull ? 0.76 : 0.38) : (bosBear ? 0.76 : 0.38)
+    f7 = volNormal ? 0.58 : volExpanded ? 0.76 : 0.34
+    f8 = isLong ? (bullCandle and bodyRatio > 0.4 ? 0.74 : 0.40) : (bearCandle and bodyRatio > 0.4 ? 0.74 : 0.40)
+    f9 = adxVal > 25 ? 0.78 : adxVal > adxMin ? 0.62 : 0.36
+    f10 = isLong ? (macdL > macdS ? 0.72 : 0.38) : (macdL < macdS ? 0.72 : 0.38)
+    f11 = isLong ? (rsiVal > 40 and rsiVal < 65 ? 0.68 : 0.42) : (rsiVal < 60 and rsiVal > 35 ? 0.68 : 0.42)
+    f12 = confNorm > 0.66 ? 0.86 : confNorm > 0.50 ? 0.70 : confNorm > 0.33 ? 0.54 : 0.36
+
+    ll = 1.2 * logit(clamp(f1, 0.1, 0.9)) +
+         1.3 * logit(clamp(f2, 0.1, 0.9)) +
+         1.1 * logit(clamp(f3, 0.1, 0.9)) +
+         0.8 * logit(clamp(f4, 0.1, 0.9)) +
+         1.5 * logit(clamp(f5, 0.1, 0.9)) +
+         1.1 * logit(clamp(f6, 0.1, 0.9)) +
+         0.7 * logit(clamp(f7, 0.1, 0.9)) +
+         0.9 * logit(clamp(f8, 0.1, 0.9)) +
+         0.9 * logit(clamp(f9, 0.1, 0.9)) +
+         0.8 * logit(clamp(f10, 0.1, 0.9)) +
+         0.7 * logit(clamp(f11, 0.1, 0.9)) +
+         1.4 * logit(clamp(f12, 0.1, 0.9))
+
+    clamp(1.0 / (1.0 + math.exp(-(-0.60 + ll))), 0.04, i_maxScore)
+
+scorePasses(prob, grade) =>
+    not i_enableScore or (prob >= i_sigMinScore and (not i_aplusOnly or grade == 'A+'))
+
+var int lastBuyBar = -9999
+var int lastSellBar = -9999
+
+buyScore = calcSignalScore(true, longConf)
+sellScore = calcSignalScore(false, shortConf)
+buyGrade = gradeLabel(buyScore, longConf)
+sellGrade = gradeLabel(sellScore, shortConf)
+
+buySignal = rawBuy and adxOk and chopOk and inSession and mtfOkLong and bar_index - lastBuyBar >= i_sigCooldown and scorePasses(buyScore, buyGrade)
+sellSignal = rawSell and adxOk and chopOk and inSession and mtfOkShort and bar_index - lastSellBar >= i_sigCooldown and scorePasses(sellScore, sellGrade)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SMART STOP LOSS
+// ══════════════════════════════════════════════════════════════════════════════
+calcSL(isLong) =>
+    atrSL = isLong ? close - atr * atrMultSL * 2 : close + atr * atrMultSL * 2
+    structSL = isLong ? (na(lastSL) ? atrSL : lastSL - atr * 0.2) : (na(lastSH) ? atrSL : lastSH + atr * 0.2)
+    swingSL = isLong ? ta.lowest(low, 10) - atr * atrMultSL : ta.highest(high, 10) + atr * atrMultSL
+    if slMode == 'ATR Only'
+        atrSL
+    else if slMode == 'Swing Point'
+        swingSL
+    else
+        isLong ? math.min(atrSL, structSL) : math.max(atrSL, structSL)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// POSITION MANAGEMENT
+// ══════════════════════════════════════════════════════════════════════════════
+var float entryPrice = na
+var float stopLoss = na
+var float takeProfitFinal = na
+var bool inPosition = false
+var string positionType = ''
+var float entryScore = na
+var string entryGrade = ''
+var int entryConf = 0
+var bool tp1Hit = false
+var bool beActive = false
+
+var float[] tpLevels = array.new_float(0)
+var bool[] tpHitFlags = array.new_bool(0)
+
+tpFinalHit = false
+slHit = false
+invalidated = false
+
+if inPosition and positionType == 'LONG'
+    if array.size(tpLevels) > 0 and not tp1Hit and high >= array.get(tpLevels, 0)
+        tp1Hit := true
+        if moveBE
+            stopLoss := entryPrice
+            beActive := true
+    if useTrailing and tp1Hit
+        trailLvl = close - atr * trailAtrMult
+        stopLoss := math.max(stopLoss, trailLvl)
+    if high >= takeProfitFinal
+        tpFinalHit := true
+        inPosition := false
+        positionType := ''
+        tp1Hit := false
+        beActive := false
+    else if low <= stopLoss
+        slHit := true
+        inPosition := false
+        positionType := ''
+        tp1Hit := false
+        beActive := false
+
+if inPosition and positionType == 'SHORT'
+    if array.size(tpLevels) > 0 and not tp1Hit and low <= array.get(tpLevels, 0)
+        tp1Hit := true
+        if moveBE
+            stopLoss := entryPrice
+            beActive := true
+    if useTrailing and tp1Hit
+        trailLvl = close + atr * trailAtrMult
+        stopLoss := math.min(stopLoss, trailLvl)
+    if low <= takeProfitFinal
+        tpFinalHit := true
+        inPosition := false
+        positionType := ''
+        tp1Hit := false
+        beActive := false
+    else if high >= stopLoss
+        slHit := true
+        inPosition := false
+        positionType := ''
+        tp1Hit := false
+        beActive := false
+
+if inPosition and array.size(tpLevels) > 0
+    for i = 0 to array.size(tpLevels) - 1
+        if not array.get(tpHitFlags, i)
+            if positionType == 'LONG' and high >= array.get(tpLevels, i)
+                array.set(tpHitFlags, i, true)
+            else if positionType == 'SHORT' and low <= array.get(tpLevels, i)
+                array.set(tpHitFlags, i, true)
+
+var int statWins = 0
+var int statLosses = 0
+if tpFinalHit
+    statWins += 1
+if slHit
+    statLosses += 1
+winRate = statWins + statLosses > 0 ? statWins / (statWins + statLosses) * 100 : na
+
+showBuySignal = false
+showSellSignal = false
+var string invalidatedType = ''
+
+if buySignal
+    if not inPosition or positionType != 'LONG'
+        if inPosition and positionType == 'SHORT'
+            invalidated := true
+            invalidatedType := 'SELL'
+            inPosition := false
+        sl = calcSL(true)
+        entryPrice := close
+        stopLoss := sl
+        risk = entryPrice - stopLoss
+        takeProfitFinal := entryPrice + risk * riskReward
+        entryScore := buyScore
+        entryGrade := buyGrade
+        entryConf := longConf
+        tp1Hit := false
+        beActive := false
+        array.clear(tpLevels)
+        array.clear(tpHitFlags)
+        numTPs = math.floor(riskReward)
+        for i = 1 to numTPs - 1
+            array.push(tpLevels, entryPrice + risk * i)
+            array.push(tpHitFlags, false)
+        inPosition := true
+        positionType := 'LONG'
+        showBuySignal := true
+        lastBuyBar := bar_index
+        lbl = 'BUY ' + buyGrade + ' ' + tierLabel(buyScore) + '\n' + str.format('{0,number,#}%', buyScore * 100) + ' | x' + str.tostring(longConf)
+        label.new(bar_index, low, lbl, style = label.style_label_up, color = tierColor(buyScore, true), textcolor = color.white, size = size.normal, yloc = yloc.belowbar)
+
+if sellSignal
+    if not inPosition or positionType != 'SHORT'
+        if inPosition and positionType == 'LONG'
+            invalidated := true
+            invalidatedType := 'BUY'
+            inPosition := false
+        sl = calcSL(false)
+        entryPrice := close
+        stopLoss := sl
+        risk = stopLoss - entryPrice
+        takeProfitFinal := entryPrice - risk * riskReward
+        entryScore := sellScore
+        entryGrade := sellGrade
+        entryConf := shortConf
+        tp1Hit := false
+        beActive := false
+        array.clear(tpLevels)
+        array.clear(tpHitFlags)
+        numTPs = math.floor(riskReward)
+        for i = 1 to numTPs - 1
+            array.push(tpLevels, entryPrice - risk * i)
+            array.push(tpHitFlags, false)
+        inPosition := true
+        positionType := 'SHORT'
+        showSellSignal := true
+        lastSellBar := bar_index
+        lbl = 'SELL ' + sellGrade + ' ' + tierLabel(sellScore) + '\n' + str.format('{0,number,#}%', sellScore * 100) + ' | x' + str.tostring(shortConf)
+        label.new(bar_index, high, lbl, style = label.style_label_down, color = tierColor(sellScore, false), textcolor = color.white, size = size.normal, yloc = yloc.abovebar)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VISUALIZATION
+// ══════════════════════════════════════════════════════════════════════════════
+plot(showEMAs ? emaFast : na, 'Fast EMA', color.new(color.green, 0), 2)
+plot(showEMAs ? emaSlow : na, 'Slow EMA', color.new(color.orange, 0), 2)
+plot(showEMAs ? emaHTF : na, 'HTF EMA 200', color.new(color.yellow, 30), 1)
+
+var box pdBox = na
+if showPD and haveRange and barstate.islast
+    box.delete(pdBox)
+    pdBox := box.new(bar_index - 80, rangeHi, bar_index + 15, rangeLo, bgcolor = color.new(inPremium ? color.red : color.green, 92), border_color = color.new(color.gray, 70))
+    line.new(bar_index - 80, rangeMid, bar_index + 15, rangeMid, color = color.new(color.yellow, 50), style = line.style_dashed)
+
+plotshape(showBuySignal, 'BUY', shape.triangleup, location.belowbar, color.new(color.lime, 0), size = size.small)
+plotshape(showSellSignal, 'SELL', shape.triangledown, location.abovebar, color.new(color.red, 0), size = size.small)
+plotshape(tpFinalHit, 'TP Final', shape.circle, location.abovebar, color.new(#00ff00, 0), text = 'TP', size = size.tiny)
+plotshape(slHit, 'SL', shape.xcross, location.belowbar, color.new(#ff0000, 0), text = 'SL', size = size.tiny)
+
+var line entryLine = na
+var line slLine = na
+var line tpLine = na
+
+if inPosition
+    if na(entryLine)
+        entryLine := line.new(bar_index, entryPrice, bar_index + 1, entryPrice, color = color.white, style = line.style_dashed)
+        slLine := line.new(bar_index, stopLoss, bar_index + 1, stopLoss, color = color.red, width = 2)
+        tpLine := line.new(bar_index, takeProfitFinal, bar_index + 1, takeProfitFinal, color = color.lime, width = 2)
+    else
+        line.set_xy1(entryLine, bar_index, entryPrice)
+        line.set_xy2(entryLine, bar_index + 20, entryPrice)
+        line.set_xy1(slLine, bar_index, stopLoss)
+        line.set_xy2(slLine, bar_index + 20, stopLoss)
+        line.set_xy1(tpLine, bar_index, takeProfitFinal)
+        line.set_xy2(tpLine, bar_index + 20, takeProfitFinal)
+        line.set_color(slLine, beActive ? color.orange : color.red)
+else
+    if not na(entryLine)
+        line.delete(entryLine)
+        line.delete(slLine)
+        line.delete(tpLine)
+        entryLine := na
+        slLine := na
+        tpLine := na
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════════════════════════════════════════════
+pos = tblPos == 'Top Right' ? position.top_right : tblPos == 'Top Left' ? position.top_left : tblPos == 'Bottom Right' ? position.bottom_right : position.bottom_left
+var table dash = table.new(pos, 2, 14, bgcolor = color.new(#0d1117, 10), border_width = 1, frame_color = color.new(#58a6ff, 40), frame_width = 1)
+
+if showTable and barstate.islast
+    table.cell(dash, 0, 0, 'BSS PRO', text_color = color.aqua, text_size = size.small)
+    table.cell(dash, 1, 0, inPosition ? positionType : 'FLAT', text_color = inPosition ? color.yellow : color.gray, text_size = size.small)
+
+    table.cell(dash, 0, 1, 'Buy Score', bgcolor = color.new(#161b22, 20), text_size = size.tiny)
+    table.cell(dash, 1, 1, tierLabel(buyScore) + ' ' + str.format('{0}%', math.round(buyScore * 100)) + ' ' + buyGrade, text_color = tierColor(buyScore, true), text_size = size.tiny)
+
+    table.cell(dash, 0, 2, 'Sell Score', bgcolor = color.new(#0d1117, 30), text_size = size.tiny)
+    table.cell(dash, 1, 2, tierLabel(sellScore) + ' ' + str.format('{0}%', math.round(sellScore * 100)) + ' ' + sellGrade, text_color = tierColor(sellScore, false), text_size = size.tiny)
+
+    table.cell(dash, 0, 3, 'Confluence', text_size = size.tiny)
+    table.cell(dash, 1, 3, 'L:' + str.tostring(longConf) + ' S:' + str.tostring(shortConf), text_size = size.tiny)
+
+    table.cell(dash, 0, 4, 'MTF ' + htfTf, text_size = size.tiny)
+    table.cell(dash, 1, 4, htfBull ? 'BULL' : htfBear ? 'BEAR' : 'FLAT', text_color = htfBull ? color.lime : htfBear ? color.red : color.gray, text_size = size.tiny)
+
+    table.cell(dash, 0, 5, 'ADX / RSI', text_size = size.tiny)
+    table.cell(dash, 1, 5, str.tostring(adxVal, '#.#') + ' / ' + str.tostring(rsiVal, '#.#'), text_size = size.tiny)
+
+    table.cell(dash, 0, 6, 'Zone', text_size = size.tiny)
+    table.cell(dash, 1, 6, not haveRange ? '-' : inPremium ? 'PREM' : 'DISC', text_size = size.tiny)
+
+    table.cell(dash, 0, 7, 'RVOL / Vol', text_size = size.tiny)
+    table.cell(dash, 1, 7, str.format('{0,number,#.#}', rvol) + ' ' + (volCompressed ? 'COMP' : volExpanded ? 'EXP' : 'NORM'), text_size = size.tiny)
+
+    if inPosition
+        table.cell(dash, 0, 8, 'Entry', text_size = size.tiny)
+        table.cell(dash, 1, 8, str.tostring(entryPrice, '#.##'), text_size = size.tiny)
+        table.cell(dash, 0, 9, 'SL', text_size = size.tiny)
+        table.cell(dash, 1, 9, str.tostring(stopLoss, '#.##') + (beActive ? ' BE' : ''), text_color = color.red, text_size = size.tiny)
+        table.cell(dash, 0, 10, 'TP', text_size = size.tiny)
+        table.cell(dash, 1, 10, str.tostring(takeProfitFinal, '#.##'), text_color = color.lime, text_size = size.tiny)
+        table.cell(dash, 0, 11, 'Entry Q', text_size = size.tiny)
+        table.cell(dash, 1, 11, entryGrade + ' ' + str.format('{0}%', math.round(entryScore * 100)) + ' x' + str.tostring(entryConf), text_size = size.tiny)
+    else
+        table.cell(dash, 0, 8, 'Min Score', text_size = size.tiny)
+        table.cell(dash, 1, 8, str.format('{0}%', math.round(i_sigMinScore * 100)), text_size = size.tiny)
+        table.cell(dash, 0, 9, 'Min Conf', text_size = size.tiny)
+        table.cell(dash, 1, 9, str.tostring(minConfluence) + '/6', text_size = size.tiny)
+        table.cell(dash, 0, 10, 'Filters', text_size = size.tiny)
+        table.cell(dash, 1, 10, (adxOk ? 'ADX ' : '') + (chopOk ? 'VOL ' : '') + (inSession ? 'SES' : ''), text_size = size.tiny)
+        table.cell(dash, 0, 11, '-', text_size = size.tiny)
+        table.cell(dash, 1, 11, '', text_size = size.tiny)
+
+    table.cell(dash, 0, 12, 'Win Rate', text_size = size.tiny)
+    table.cell(dash, 1, 12, na(winRate) ? '-' : str.format('{0,number,#.#}%', winRate) + ' (' + str.tostring(statWins) + 'W/' + str.tostring(statLosses) + 'L)', text_size = size.tiny)
+
+    table.cell(dash, 0, 13, 'Not financial advice', text_color = color.gray, text_size = size.tiny)
+    table.cell(dash, 1, 13, '', text_size = size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+alertcondition(showBuySignal, 'PRO BUY', 'PRO BUY {{ticker}} @ {{close}}')
+alertcondition(showSellSignal, 'PRO SELL', 'PRO SELL {{ticker}} @ {{close}}')
+alertcondition(tpFinalHit, 'PRO TP Hit', 'TP hit {{ticker}}')
+alertcondition(slHit, 'PRO SL Hit', 'SL hit {{ticker}}')
