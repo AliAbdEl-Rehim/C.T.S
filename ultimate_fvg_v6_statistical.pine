@@ -1,0 +1,644 @@
+//@version=6
+indicator("🚀 Ultimate FVG + Wyckoff + Advanced Trading + Pivot Predictor + Stochastic MTF + OBV Reversal Confirmation | Statistical Engine v6.1", overlay=true, max_bars_back=5000, max_lines_count=500, max_labels_count=500, max_boxes_count=500)
+
+//====================================================================================
+// SECTION 0: VISIBILITY CONTROLS
+//====================================================================================
+visibilityGroup = "👁️ Section 0: Visibility"
+
+show_fvg_zones       = input.bool(true,  "Show FVG Zones",              group=visibilityGroup)
+show_fvg_labels        = input.bool(true,  "Show FVG Labels",             group=visibilityGroup)
+show_obv_signals       = input.bool(true,  "Show OBV Reversal Signals",   group=visibilityGroup)
+show_wyckoff_events    = input.bool(true,  "Show Wyckoff Events",         group=visibilityGroup)
+show_pivot_levels      = input.bool(true,  "Show Pivot Predictor",        group=visibilityGroup)
+show_supply_demand     = input.bool(true,  "Show Supply/Demand Zones",    group=visibilityGroup)
+show_pattern_marks     = input.bool(true,  "Show C1-C4 / Wolfe Marks",    group=visibilityGroup)
+show_adv_signals       = input.bool(true,  "Show Advanced Signals",       group=visibilityGroup)
+show_stoch_panel       = input.bool(false, "Show Stochastic MTF Panel",   group=visibilityGroup)
+show_main_dashboard    = input.bool(true,  "Show Main Dashboard",         group=visibilityGroup)
+show_analysis_tables   = input.bool(true,  "Show Analysis Tables",        group=visibilityGroup)
+
+//====================================================================================
+// SECTION 1: FVG + OBV + SIGNAL ENGINE + DASHBOARD
+//====================================================================================
+fvgGroup = "📊 Section 1: FVG Settings"
+fvg_lookback       = input.int(200,  "FVG Lookback Bars",    minval=10,  maxval=1000, group=fvgGroup)
+fvg_min_gap_pct    = input.float(0.05, "Min Gap %",          minval=0.01, step=0.01, group=fvgGroup)
+fvg_show_mitigated = input.bool(false, "Show Mitigated FVGs", group=fvgGroup)
+fvg_bull_color     = input.color(color.new(#00ff88, 75), "Bullish FVG Color", group=fvgGroup)
+fvg_bear_color     = input.color(color.new(#ff4488, 75), "Bearish FVG Color", group=fvgGroup)
+
+obvGroup = "📈 Section 1: OBV Reversal"
+obv_len            = input.int(14,   "OBV Smoothing",        minval=1, group=obvGroup)
+obv_div_lookback   = input.int(20,   "Divergence Lookback",  minval=5, group=obvGroup)
+obv_confirm_bars   = input.int(2,    "Confirmation Bars",    minval=1, group=obvGroup)
+
+signalGroup = "⚡ Section 1: Signal Engine"
+min_fvg_signals    = input.int(1,    "Min FVG Signals",      minval=1, maxval=5, group=signalGroup)
+require_obv_confirm = input.bool(true, "Require OBV Confirm",  group=signalGroup)
+fvg_signal_cooldown = input.int(3,    "Signal Cooldown",      minval=0, group=signalGroup)
+
+dashGroup = "📋 Section 1: Dashboard"
+dash_position = input.string("Top Right", "Dashboard Position", options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=dashGroup)
+
+// --- FVG Detection ---
+float gap_bull = low - high[2]
+float gap_bear = low[2] - high
+float gap_bull_pct = high[2] > 0 ? gap_bull / high[2] * 100 : 0.0
+float gap_bear_pct = low[2] > 0 ? gap_bear / low[2] * 100 : 0.0
+
+bool fvg_bull_raw = gap_bull > 0 and gap_bull_pct >= fvg_min_gap_pct and close > open
+bool fvg_bear_raw = gap_bear > 0 and gap_bear_pct >= fvg_min_gap_pct and close < open
+
+var array<box> fvg_boxes = array.new<box>()
+var array<int> fvg_dirs  = array.new<int>()
+
+if fvg_bull_raw and barstate.isconfirmed and show_fvg_zones
+    bx = box.new(bar_index - 2, high[2], bar_index + 20, low, border_color=fvg_bull_color, bgcolor=fvg_bull_color, border_width=1)
+    array.push(fvg_boxes, bx)
+    array.push(fvg_dirs, 1)
+    if show_fvg_labels
+        label.new(bar_index, low, "FVG▲", style=label.style_label_up, color=color.new(#00ff88, 30), textcolor=color.white, size=size.tiny)
+
+if fvg_bear_raw and barstate.isconfirmed and show_fvg_zones
+    bx = box.new(bar_index - 2, low[2], bar_index + 20, high, border_color=fvg_bear_color, bgcolor=fvg_bear_color, border_width=1)
+    array.push(fvg_boxes, bx)
+    array.push(fvg_dirs, -1)
+    if show_fvg_labels
+        label.new(bar_index, high, "FVG▼", style=label.style_label_down, color=color.new(#ff4488, 30), textcolor=color.white, size=size.tiny)
+
+// Trim FVG boxes
+while array.size(fvg_boxes) > fvg_lookback
+    old_bx = array.shift(fvg_boxes)
+    box.delete(old_bx)
+    array.shift(fvg_dirs)
+
+// Mitigation check
+if array.size(fvg_boxes) > 0 and barstate.isconfirmed
+    for i = array.size(fvg_boxes) - 1 to 0
+        bx = array.get(fvg_boxes, i)
+        dir = array.get(fvg_dirs, i)
+        top = box.get_top(bx)
+        bot = box.get_bottom(bx)
+        mitigated = dir == 1 ? low <= top : high >= bot
+        if mitigated and not fvg_show_mitigated
+            box.delete(bx)
+            array.remove(fvg_boxes, i)
+            array.remove(fvg_dirs, i)
+
+// --- OBV Reversal ---
+obv_raw = ta.cum(math.sign(ta.change(close)) * volume)
+obv_smooth = ta.ema(obv_raw, obv_len)
+obv_rising = obv_smooth > obv_smooth[1]
+obv_falling = obv_smooth < obv_smooth[1]
+
+price_ll = low == ta.lowest(low, obv_div_lookback)
+price_hh = high == ta.highest(high, obv_div_lookback)
+obv_hl = obv_smooth > ta.lowest(obv_smooth, obv_div_lookback)[1]
+obv_lh = obv_smooth < ta.highest(obv_smooth, obv_div_lookback)[1]
+
+bool obv_bull_div = price_ll and obv_hl and obv_rising
+bool obv_bear_div = price_hh and obv_lh and obv_falling
+
+var int obv_bull_cnt = 0
+var int obv_bear_cnt = 0
+obv_bull_cnt := obv_bull_div ? obv_bull_cnt + 1 : 0
+obv_bear_cnt := obv_bear_div ? obv_bear_cnt + 1 : 0
+
+bool obv_bull_confirm = obv_bull_cnt >= obv_confirm_bars
+bool obv_bear_confirm = obv_bear_cnt >= obv_confirm_bars
+
+if show_obv_signals and obv_bull_confirm and barstate.isconfirmed
+    label.new(bar_index, low, "OBV▲", style=label.style_label_up, color=color.new(#00ccff, 40), textcolor=color.white, size=size.tiny)
+if show_obv_signals and obv_bear_confirm and barstate.isconfirmed
+    label.new(bar_index, high, "OBV▼", style=label.style_label_down, color=color.new(#ff6600, 40), textcolor=color.white, size=size.tiny)
+
+// --- FVG Signal Engine ---
+var int last_fvg_long_bar  = -9999
+var int last_fvg_short_bar = -9999
+
+bool fvg_long_signal  = fvg_bull_raw and (not require_obv_confirm or obv_bull_confirm) and bar_index - last_fvg_long_bar > fvg_signal_cooldown
+bool fvg_short_signal = fvg_bear_raw and (not require_obv_confirm or obv_bear_confirm) and bar_index - last_fvg_short_bar > fvg_signal_cooldown
+
+if fvg_long_signal and barstate.isconfirmed
+    last_fvg_long_bar := bar_index
+if fvg_short_signal and barstate.isconfirmed
+    last_fvg_short_bar := bar_index
+
+// --- Main Dashboard ---
+dash_pos = dash_position == "Top Right" ? position.top_right : dash_position == "Top Left" ? position.top_left : dash_position == "Bottom Right" ? position.bottom_right : position.bottom_left
+
+if show_main_dashboard and barstate.islast
+    var table main_dash = table.new(dash_pos, 2, 6, bgcolor=color.new(#0d1117, 20), border_width=1)
+    table.cell(main_dash, 0, 0, "🚀 FVG Engine", bgcolor=#1a2332, text_color=#00ffcc, text_size=size.normal)
+    table.cell(main_dash, 1, 0, "Status", bgcolor=#1a2332, text_color=#00ffcc, text_size=size.normal)
+    table.cell(main_dash, 0, 1, "FVG Long", text_color=color.gray)
+    table.cell(main_dash, 1, 1, fvg_long_signal ? "✅" : "—", text_color=fvg_long_signal ? #00ff88 : color.gray)
+    table.cell(main_dash, 0, 2, "FVG Short", text_color=color.gray)
+    table.cell(main_dash, 1, 2, fvg_short_signal ? "✅" : "—", text_color=fvg_short_signal ? #ff4488 : color.gray)
+    table.cell(main_dash, 0, 3, "OBV Bull", text_color=color.gray)
+    table.cell(main_dash, 1, 3, obv_bull_confirm ? "✅" : "—", text_color=obv_bull_confirm ? #00ccff : color.gray)
+    table.cell(main_dash, 0, 4, "OBV Bear", text_color=color.gray)
+    table.cell(main_dash, 1, 4, obv_bear_confirm ? "✅" : "—", text_color=obv_bear_confirm ? #ff6600 : color.gray)
+    table.cell(main_dash, 0, 5, "Active FVGs", text_color=color.gray)
+    table.cell(main_dash, 1, 5, str.tostring(array.size(fvg_boxes)), text_color=#ffff00)
+
+//====================================================================================
+// SECTION 2: WYCKOFF + ADVANCED + PIVOT + ZONES + C1-C4 + WOLFE + STATISTICAL ENGINE
+//====================================================================================
+wyckoffGroup = "🔄 Section 2: Wyckoff"
+wyck_sr_lookback  = input.int(50,  "S/R Lookback",           minval=10, group=wyckoffGroup)
+wyck_vol_mult     = input.float(2.0, "Ultra Volume Mult",     minval=1.0, step=0.1, group=wyckoffGroup)
+wyck_vol_ma_len   = input.int(20,  "Volume MA Length",       minval=5, group=wyckoffGroup)
+
+advGroup = "🎯 Section 2: Advanced Trading"
+min_signals_required   = input.int(3,    "Minimum Signals",        minval=2, maxval=6, group=advGroup)
+min_confidence         = input.float(75.0, "Minimum Confidence %", minval=60, maxval=90, group=advGroup)
+require_strong_trend   = input.bool(true,  "Require Strong Trend",  group=advGroup)
+min_trend_strength     = input.float(1.5,  "Min Trend Strength %", minval=0.5, step=0.1, group=advGroup)
+require_rsi_extreme    = input.bool(false, "Require RSI Extreme",    group=advGroup)
+require_volume_confirm = input.bool(false, "Require Volume Confirm", group=advGroup)
+require_macd_confirm   = input.bool(true,  "Require MACD Confirm",    group=advGroup)
+
+pivotGroup = "📐 Section 2: Pivot Predictor"
+pivot_len     = input.int(5,   "Pivot Length",      minval=2, maxval=20, group=pivotGroup)
+pivot_extend  = input.int(50,  "Pivot Line Extend", minval=10, group=pivotGroup)
+
+zoneGroup = "🏗️ Section 2: Supply/Demand Zones"
+zone_lookback = input.int(100, "Zone Lookback", minval=20, group=zoneGroup)
+zone_atr_mult = input.float(1.5, "Zone ATR Mult", minval=0.5, step=0.1, group=zoneGroup)
+
+targetGroup = "🎯 Targets & Stop Loss"
+tp1_percent      = input.float(1.0, "TP1 %", minval=0.5, maxval=5.0, step=0.1, group=targetGroup)
+tp2_percent      = input.float(2.0, "TP2 %", minval=1.0, maxval=8.0, step=0.1, group=targetGroup)
+tp3_percent      = input.float(3.5, "TP3 %", minval=2.0, maxval=12.0, step=0.1, group=targetGroup)
+stop_loss_percent = input.float(1.5, "Stop Loss %", minval=0.5, maxval=5.0, step=0.1, group=targetGroup)
+
+displayGroup = "🎨 Display & Lines Control"
+show_prediction_lines = input.bool(true, "Show Prediction Lines", group=displayGroup)
+lines_display_mode    = input.string("ALL", "Display Lines", options=["ALL","TP_ONLY","SL_ONLY","TP_GREEN_ONLY","TP_YELLOW_ONLY"], group=displayGroup)
+show_tp1 = input.bool(true, "Show TP1", group=displayGroup)
+show_tp2 = input.bool(true, "Show TP2", group=displayGroup)
+show_tp3 = input.bool(true, "Show TP3", group=displayGroup)
+show_sl  = input.bool(true, "Show SL",  group=displayGroup)
+
+analysisGroup = "📊 Pattern Historical Analysis (Statistical Engine)"
+historical_lookback    = input.int(500,  "Historical Lookback",       minval=100, maxval=1000, step=50, group=analysisGroup)
+filter_by_trend        = input.bool(true,  "Match Same Trend",         group=analysisGroup)
+filter_by_rsi          = input.bool(true,  "Match Same RSI Range",     group=analysisGroup)
+filter_by_volume       = input.bool(true,  "Match Same Volume",        group=analysisGroup)
+filter_by_pattern_name = input.bool(true,  "Match Same Pattern Name",  group=analysisGroup)
+rsi_tolerance          = input.int(10,     "RSI Tolerance",            minval=5, maxval=20, group=analysisGroup)
+volume_tolerance       = input.float(0.8, "Volume Tolerance",         minval=0.5, maxval=1.5, step=0.1, group=analysisGroup)
+min_pattern_matches    = input.int(2,      "Minimum Pattern Matches",  minval=1, maxval=10, group=analysisGroup)
+outcome_bars           = input.int(5,      "Outcome Resolution Bars",  minval=1, maxval=50, group=analysisGroup)
+match_quality_min      = input.float(0.55, "Min Match Quality",        minval=0.3, maxval=0.95, step=0.05, group=analysisGroup)
+stat_confidence_boost  = input.float(8.0, "Stat Confidence Boost",     minval=0.0, maxval=20.0, step=1.0, group=analysisGroup)
+require_stat_confirm   = input.bool(false, "Require Stat Confirm",    group=analysisGroup)
+require_master_signal  = input.bool(false, "Require Master Signal",   group=analysisGroup)
+show_stat_table        = input.bool(true,  "Show Stat Table",          group=analysisGroup)
+show_stat_labels       = input.bool(true,  "Show Stat Labels",         group=analysisGroup)
+label_step_size        = input.float(0.5,   "Label Step (ATR mult)",    minval=0.2, step=0.1, group=analysisGroup)
+max_label_stack        = input.int(5,       "Max Label Stack",          minval=2, maxval=10, group=analysisGroup)
+
+// --- Core Indicators ---
+rsi_adv = ta.rsi(close, 14)
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+ema9  = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+ema50 = ta.ema(close, 50)
+volume_ma = ta.sma(volume, wyck_vol_ma_len)
+atrMeasure = ta.atr(14)
+wyck_vol_ma = ta.sma(volume, wyck_vol_ma_len)
+
+trend_strength = ema21 > 0 ? math.abs(ema9 - ema21) / ema21 * 100 : 0.0
+is_uptrend   = ema9 > ema21 and ema21 > ema50
+is_downtrend = ema9 < ema21 and ema21 < ema50
+is_oversold  = rsi_adv < 30
+is_overbought = rsi_adv > 70
+is_rsi_increasing = rsi_adv > rsi_adv[1]
+is_rsi_decreasing = rsi_adv < rsi_adv[1]
+macd_bullish = macdLine > signalLine and histLine > histLine[1]
+macd_bearish = macdLine < signalLine and histLine < histLine[1]
+volume_strong = volume > volume_ma * 1.2
+strong_trend = trend_strength > min_trend_strength
+
+momentum_pct = close[1] != 0 ? (close - close[1]) / close[1] * 100 : 0.0
+
+// --- Wyckoff Spring / Upthrust ---
+sr_low  = ta.lowest(low, wyck_sr_lookback)
+sr_high = ta.highest(high, wyck_sr_lookback)
+ultra_vol = volume > wyck_vol_ma * wyck_vol_mult
+
+bool wyck_spring   = low < sr_low[1] and close > open and ultra_vol
+bool wyck_upthrust = high > sr_high[1] and close < open and ultra_vol
+
+if show_wyckoff_events and wyck_spring and barstate.isconfirmed
+    label.new(bar_index, low, "Spring", style=label.style_label_up, color=color.new(#ff69b4, 30), textcolor=color.white, size=size.small)
+if show_wyckoff_events and wyck_upthrust and barstate.isconfirmed
+    label.new(bar_index, high, "UT", style=label.style_label_down, color=color.new(#ff69b4, 30), textcolor=color.white, size=size.small)
+
+// --- Pivot Predictor ---
+ph = ta.pivothigh(high, pivot_len, pivot_len)
+pl = ta.pivotlow(low, pivot_len, pivot_len)
+
+var float last_pivot_high = na
+var float last_pivot_low  = na
+var int   last_ph_bar = na
+var int   last_pl_bar = na
+
+if not na(ph)
+    last_pivot_high := ph
+    last_ph_bar := bar_index - pivot_len
+if not na(pl)
+    last_pivot_low := pl
+    last_pl_bar := bar_index - pivot_len
+
+predicted_resistance = not na(last_pivot_high) and not na(last_pivot_low) ? last_pivot_high + (last_pivot_high - last_pivot_low) * 0.618 : na
+predicted_support    = not na(last_pivot_high) and not na(last_pivot_low) ? last_pivot_low - (last_pivot_high - last_pivot_low) * 0.618 : na
+
+if show_pivot_levels and barstate.islast
+    if not na(predicted_resistance)
+        line.new(bar_index - pivot_extend, predicted_resistance, bar_index + 10, predicted_resistance, color=color.new(#ffaa00, 50), style=line.style_dashed, width=1)
+    if not na(predicted_support)
+        line.new(bar_index - pivot_extend, predicted_support, bar_index + 10, predicted_support, color=color.new(#00aaff, 50), style=line.style_dashed, width=1)
+
+// --- Supply/Demand Zones ---
+swing_hi = ta.pivothigh(high, 5, 5)
+swing_lo = ta.pivotlow(low, 5, 5)
+
+if show_supply_demand and not na(swing_hi) and barstate.isconfirmed
+    box.new(bar_index - 5, swing_hi + atrMeasure * zone_atr_mult, bar_index + zone_lookback, swing_hi, bgcolor=color.new(#ff0000, 85), border_color=color.new(#ff0000, 60))
+if show_supply_demand and not na(swing_lo) and barstate.isconfirmed
+    box.new(bar_index - 5, swing_lo, bar_index + zone_lookback, swing_lo - atrMeasure * zone_atr_mult, bgcolor=color.new(#00ff00, 85), border_color=color.new(#00ff00, 60))
+
+// --- C1-C4 & Wolfe Pattern Detection ---
+candle_body  = math.abs(close - open)
+candle_range = high - low
+upper_wick   = high - math.max(close, open)
+lower_wick   = math.min(close, open) - low
+
+body_percent = candle_range > 0 ? (candle_body / candle_range) * 100 : 0.0
+vol_ratio_cur = volume_ma > 0 ? volume / volume_ma : 1.0
+
+upper_wick_strong = candle_body > 0 and upper_wick > (candle_body * 1.5)
+lower_wick_strong = candle_body > 0 and lower_wick > (candle_body * 1.5)
+bullish_wick_signal = lower_wick_strong and close > open
+bearish_wick_signal = upper_wick_strong and close < open
+
+C1_signal = bullish_wick_signal and body_percent >= 15 and ema9 > ema21 and close > ema9 and volume >= volume_ma
+C2_signal = high < high[1] and low > low[1] and close > open and body_percent >= 15 and ema9 > ema21 and close > ema9
+C3_signal = bearish_wick_signal and body_percent >= 15 and ema9 < ema21 and close < ema9 and volume >= volume_ma
+C4_signal = high < high[1] and low > low[1] and close < open and body_percent >= 15 and ema9 < ema21 and close < ema9
+
+wolfe_body_max = 20.0
+wolfe_wick_ratio = 1.8
+wolfe_bullish = candle_body > 0 and body_percent <= wolfe_body_max and lower_wick > 0 and upper_wick > 0 and (lower_wick / candle_body) >= wolfe_wick_ratio and close > open and close[1] > open[1]
+wolfe_bearish = candle_body > 0 and body_percent <= wolfe_body_max and upper_wick > 0 and lower_wick > 0 and (upper_wick / candle_body) >= wolfe_wick_ratio and close < open and close[1] < open[1]
+
+string current_pat_name = C1_signal ? "C1" : C2_signal ? "C2" : C3_signal ? "C3" : C4_signal ? "C4" : wolfe_bullish ? "WOLFE_BULL" : wolfe_bearish ? "WOLFE_BEAR" : ""
+bool current_bullish_pattern = C1_signal or C2_signal or wolfe_bullish
+bool current_bearish_pattern = C3_signal or C4_signal or wolfe_bearish
+bool pattern_detected = current_bullish_pattern or current_bearish_pattern
+
+if show_pattern_marks and pattern_detected and barstate.isconfirmed
+    lbl_style = current_bullish_pattern ? label.style_label_up : label.style_label_down
+    lbl_y = current_bullish_pattern ? low : high
+    label.new(bar_index, lbl_y, current_pat_name, style=lbl_style, color=color.new(#cc88ff, 40), textcolor=color.white, size=size.tiny)
+
+// --- Extended PatternData UDT ---
+type PatternData
+    int    bar_num
+    string pattern_name
+    float  entry_price
+    float  rsi_value
+    float  volume_value
+    bool   is_uptrend
+    bool   is_downtrend
+    float  momentum_pct
+    float  body_pct
+    float  vol_ratio
+    int    signal_dir
+    float  outcome_pct
+    bool   outcome_resolved
+
+var array<PatternData> pattern_history = array.new<PatternData>()
+
+// Store pattern on detection
+if pattern_detected and barstate.isconfirmed
+    int sig_dir = current_bullish_pattern ? 1 : -1
+    pat = PatternData.new(bar_index, current_pat_name, close, rsi_adv, volume, is_uptrend, is_downtrend, momentum_pct, body_percent, vol_ratio_cur, sig_dir, na, false)
+    array.push(pattern_history, pat)
+    while array.size(pattern_history) > historical_lookback
+        array.remove(pattern_history, 0)
+
+// Outcome resolution
+if barstate.isconfirmed and array.size(pattern_history) > 0
+    for i = 0 to array.size(pattern_history) - 1
+        p = array.get(pattern_history, i)
+        if not p.outcome_resolved and bar_index - p.bar_num >= outcome_bars
+            out_pct = p.entry_price != 0 ? (close - p.entry_price) / p.entry_price * 100 : 0.0
+            p.outcome_pct := out_pct
+            p.outcome_resolved := true
+            array.set(pattern_history, i, p)
+
+// --- Match Quality Function ---
+calc_match_quality(PatternData hist, float cur_rsi, float cur_momentum, float cur_body, float cur_vol, bool cur_up, bool cur_down, int cur_dir) =>
+    float total = 0.0
+    int cnt = 0
+    if filter_by_rsi
+        float rsi_score = math.max(0.0, 1.0 - math.abs(hist.rsi_value - cur_rsi) / math.max(rsi_tolerance * 2.0, 1.0))
+        total += rsi_score
+        cnt += 1
+    if filter_by_trend
+        bool trend_ok = (cur_up and hist.is_uptrend) or (cur_down and hist.is_downtrend)
+        total += trend_ok ? 1.0 : 0.0
+        cnt += 1
+    if filter_by_volume
+        float vol_lo = cur_vol * volume_tolerance
+        float vol_hi = cur_vol / math.max(volume_tolerance, 0.01)
+        bool vol_ok = hist.vol_ratio >= vol_lo and hist.vol_ratio <= vol_hi
+        total += vol_ok ? 1.0 : 0.0
+        cnt += 1
+    float mom_score = math.max(0.0, 1.0 - math.abs(hist.momentum_pct - cur_momentum) / 2.0)
+    total += mom_score
+    cnt += 1
+    float body_score = math.max(0.0, 1.0 - math.abs(hist.body_pct - cur_body) / 50.0)
+    total += body_score
+    cnt += 1
+    float volr_score = math.max(0.0, 1.0 - math.abs(hist.vol_ratio - cur_vol) / 2.0)
+    total += volr_score
+    cnt += 1
+    bool dir_ok = hist.signal_dir == cur_dir
+    total += dir_ok ? 1.0 : 0.0
+    cnt += 1
+    cnt > 0 ? total / cnt : 0.0
+
+is_bullish_pattern_name(string name) =>
+    name == "C1" or name == "C2" or name == "WOLFE_BULL"
+
+is_bearish_pattern_name(string name) =>
+    name == "C3" or name == "C4" or name == "WOLFE_BEAR"
+
+// --- Historical Matching Loop ---
+int stat_match_count = 0
+int stat_bull_wins   = 0
+int stat_bear_wins   = 0
+float stat_win_rate  = 0.0
+string stat_prediction = "محايد"
+float stat_confidence = 0.0
+
+int cur_dir = current_bullish_pattern ? 1 : current_bearish_pattern ? -1 : 0
+
+if pattern_detected and barstate.isconfirmed and array.size(pattern_history) > 1 and cur_dir != 0
+    for i = 0 to array.size(pattern_history) - 2
+        each = array.get(pattern_history, i)
+        if each.bar_num != bar_index
+            bool name_ok = not filter_by_pattern_name or each.pattern_name == current_pat_name
+            if name_ok
+                float mq = calc_match_quality(each, rsi_adv, momentum_pct, body_percent, vol_ratio_cur, is_uptrend, is_downtrend, cur_dir)
+                if mq >= match_quality_min and each.outcome_resolved
+                    stat_match_count += 1
+                    if each.outcome_pct > 0
+                        stat_bull_wins += 1
+                    else if each.outcome_pct < 0
+                        stat_bear_wins += 1
+
+    if stat_match_count >= min_pattern_matches
+        int resolved_wins = stat_bull_wins + stat_bear_wins
+        stat_win_rate := resolved_wins > 0 ? (math.max(stat_bull_wins, stat_bear_wins) / resolved_wins) * 100 : 0.0
+        if stat_bull_wins > stat_bear_wins
+            stat_prediction := "صاعد"
+            stat_confidence := stat_win_rate
+        else if stat_bear_wins > stat_bull_wins
+            stat_prediction := "هابط"
+            stat_confidence := stat_win_rate
+        else
+            stat_prediction := "محايد"
+            stat_confidence := 50.0
+
+// --- Advanced Signal Engine ---
+int bullish_signals = 0
+int bearish_signals = 0
+
+if is_oversold and is_rsi_increasing
+    bullish_signals += 2
+if is_overbought and is_rsi_decreasing
+    bearish_signals += 2
+if macd_bullish
+    bullish_signals += 2
+if macd_bearish
+    bearish_signals += 2
+if volume_strong and macd_bullish
+    bullish_signals += 1
+if volume_strong and macd_bearish
+    bearish_signals += 1
+if close > ema9 and ema9 > ema21
+    bullish_signals += 1
+if close < ema9 and ema9 < ema21
+    bearish_signals += 1
+if C1_signal or C2_signal
+    bullish_signals += 2
+if C3_signal or C4_signal
+    bearish_signals += 2
+if wolfe_bullish
+    bullish_signals += 2
+if wolfe_bearish
+    bearish_signals += 2
+if wyck_spring
+    bullish_signals += 2
+if wyck_upthrust
+    bearish_signals += 2
+
+bool stat_bull_ok = stat_prediction == "صاعد" and stat_match_count >= min_pattern_matches
+bool stat_bear_ok = stat_prediction == "هابط" and stat_match_count >= min_pattern_matches
+
+string signal_type_adv = "Neutral"
+float final_confidence = 50.0
+
+bool buy_filters_ok = (not require_strong_trend or strong_trend) and (not require_rsi_extreme or is_oversold) and (not require_volume_confirm or volume_strong) and (not require_macd_confirm or macd_bullish)
+bool sell_filters_ok = (not require_strong_trend or strong_trend) and (not require_rsi_extreme or is_overbought) and (not require_volume_confirm or volume_strong) and (not require_macd_confirm or macd_bearish)
+
+bool adv_buy_raw  = bullish_signals > bearish_signals and bullish_signals >= min_signals_required and buy_filters_ok
+bool adv_sell_raw = bearish_signals > bullish_signals and bearish_signals >= min_signals_required and sell_filters_ok
+
+if require_stat_confirm
+    adv_buy_raw  := adv_buy_raw and stat_bull_ok
+    adv_sell_raw := adv_sell_raw and stat_bear_ok
+
+if adv_buy_raw and not adv_sell_raw
+    signal_type_adv := "Buy 🟢"
+    final_confidence := 70.0 + bullish_signals * 5.0
+    if is_oversold
+        final_confidence += 5
+    if volume_strong
+        final_confidence += 5
+    if strong_trend
+        final_confidence += 5
+    if stat_bull_ok
+        final_confidence += stat_confidence_boost
+else if adv_sell_raw and not adv_buy_raw
+    signal_type_adv := "Sell 🔴"
+    final_confidence := 70.0 + bearish_signals * 5.0
+    if is_overbought
+        final_confidence += 5
+    if volume_strong
+        final_confidence += 5
+    if strong_trend
+        final_confidence += 5
+    if stat_bear_ok
+        final_confidence += stat_confidence_boost
+
+final_confidence := math.min(final_confidence, 95.0)
+
+// --- Master Signal ---
+bool master_long  = false
+bool master_short = false
+
+if require_master_signal
+    master_long  := fvg_long_signal and (signal_type_adv == "Buy 🟢" or stat_prediction == "صاعد")
+    master_short := fvg_short_signal and (signal_type_adv == "Sell 🔴" or stat_prediction == "هابط")
+else
+    master_long  := fvg_long_signal or (signal_type_adv == "Buy 🟢" and stat_prediction == "صاعد")
+    master_short := fvg_short_signal or (signal_type_adv == "Sell 🔴" and stat_prediction == "هابط")
+
+// --- TP/SL Levels ---
+bool is_buy = signal_type_adv == "Buy 🟢"
+tp1_adv = is_buy ? close * (1 + tp1_percent / 100) : close * (1 - tp1_percent / 100)
+tp2_adv = is_buy ? close * (1 + tp2_percent / 100) : close * (1 - tp2_percent / 100)
+tp3_adv = is_buy ? close * (1 + tp3_percent / 100) : close * (1 - tp3_percent / 100)
+sl_adv  = is_buy ? close * (1 - stop_loss_percent / 100) : close * (1 + stop_loss_percent / 100)
+
+bool show_levels = show_prediction_lines and show_adv_signals and final_confidence >= min_confidence and signal_type_adv != "Neutral" and barstate.isconfirmed
+bool show_tp_lines = lines_display_mode == "ALL" or lines_display_mode == "TP_ONLY" or lines_display_mode == "TP_GREEN_ONLY" or lines_display_mode == "TP_YELLOW_ONLY"
+bool show_sl_lines = lines_display_mode == "ALL" or lines_display_mode == "SL_ONLY"
+bool show_tp_yellow = lines_display_mode == "ALL" or lines_display_mode == "TP_ONLY" or lines_display_mode == "TP_YELLOW_ONLY"
+bool show_tp_green  = lines_display_mode == "ALL" or lines_display_mode == "TP_ONLY" or lines_display_mode == "TP_GREEN_ONLY"
+
+if show_levels
+    if show_tp1 and show_tp_yellow
+        line.new(bar_index, tp1_adv, bar_index + 100, tp1_adv, extend=extend.right, color=color.new(#ffff00, 60), width=2)
+    if show_tp2 and show_tp_green
+        line.new(bar_index, tp2_adv, bar_index + 100, tp2_adv, extend=extend.right, color=color.new(#00ff88, 60), width=2)
+    if show_tp3 and show_tp_green
+        line.new(bar_index, tp3_adv, bar_index + 100, tp3_adv, extend=extend.right, color=color.new(#00ff00, 60), width=2)
+    if show_sl and show_sl_lines
+        line.new(bar_index, sl_adv, bar_index + 100, sl_adv, extend=extend.right, color=color.new(#ff0000, 60), width=2)
+
+// --- Advanced Labels ---
+if show_adv_signals and signal_type_adv != "Neutral" and final_confidence >= min_confidence and barstate.isconfirmed
+    color label_color = is_buy ? color.new(#00ff00, 20) : color.new(#ff0000, 20)
+    string lbl_txt = signal_type_adv + "\n" + str.tostring(final_confidence, "#.#") + "%\nTP1: " + str.tostring(tp1_adv, "#.##")
+    float offset_y = atrMeasure * 2.0
+    float lbl_y = is_buy ? low - offset_y : high + offset_y
+    label.new(bar_index, lbl_y, lbl_txt, style=is_buy ? label.style_label_up : label.style_label_down, color=label_color, textcolor=color.white, size=size.small)
+
+// --- Stat Labels with Stacking ---
+var int stat_label_stack = 0
+if show_stat_labels and pattern_detected and stat_match_count >= min_pattern_matches and barstate.isconfirmed
+    stat_label_stack := stat_label_stack >= max_label_stack ? 0 : stat_label_stack + 1
+    float stack_offset = atrMeasure * label_step_size * stat_label_stack
+    string stat_lbl = stat_prediction + "\n" + str.tostring(stat_confidence, "#.#") + "%\nمطابقات: " + str.tostring(stat_match_count)
+    float stat_y = cur_dir == 1 ? low - stack_offset - atrMeasure : high + stack_offset + atrMeasure
+    label.new(bar_index, stat_y, stat_lbl, style=cur_dir == 1 ? label.style_label_up : label.style_label_down, color=color.new(#9966ff, 30), textcolor=color.white, size=size.tiny)
+
+// --- Advanced Analysis Table ---
+if show_analysis_tables and barstate.islast
+    var table adv_tbl = table.new(position.top_left, 2, 7, bgcolor=color.new(#000000, 50), border_width=1)
+    table.cell(adv_tbl, 0, 0, "🎯 Advanced Engine", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.normal)
+    table.cell(adv_tbl, 1, 0, "Value", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.normal)
+    table.cell(adv_tbl, 0, 1, "Signal", text_color=color.gray)
+    table.cell(adv_tbl, 1, 1, signal_type_adv, text_color=#ffffff, text_size=size.normal)
+    table.cell(adv_tbl, 0, 2, "Confidence", text_color=color.gray)
+    color conf_col = final_confidence >= 80 ? #00ff00 : final_confidence >= 70 ? #88ff00 : #ffaa00
+    table.cell(adv_tbl, 1, 2, str.tostring(final_confidence, "#.#") + "%", text_color=conf_col)
+    table.cell(adv_tbl, 0, 3, "Bull Signals", text_color=color.gray)
+    table.cell(adv_tbl, 1, 3, str.tostring(bullish_signals), text_color=#00ff00)
+    table.cell(adv_tbl, 0, 4, "Bear Signals", text_color=color.gray)
+    table.cell(adv_tbl, 1, 4, str.tostring(bearish_signals), text_color=#ff0000)
+    table.cell(adv_tbl, 0, 5, "Master Long", text_color=color.gray)
+    table.cell(adv_tbl, 1, 5, master_long ? "✅" : "—", text_color=master_long ? #00ff88 : color.gray)
+    table.cell(adv_tbl, 0, 6, "Master Short", text_color=color.gray)
+    table.cell(adv_tbl, 1, 6, master_short ? "✅" : "—", text_color=master_short ? #ff4488 : color.gray)
+
+// --- Stat Table (Arabic) ---
+if show_analysis_tables and show_stat_table and barstate.islast
+    var table stat_tbl = table.new(position.bottom_left, 2, 8, bgcolor=color.new(#000000, 50), border_width=1)
+    table.cell(stat_tbl, 0, 0, "📊 المحرك الإحصائي", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.normal)
+    table.cell(stat_tbl, 1, 0, "القيمة", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.normal)
+    table.cell(stat_tbl, 0, 1, "التنبؤ", text_color=color.gray)
+    color pred_col = stat_prediction == "صاعد" ? #00ff00 : stat_prediction == "هابط" ? #ff0000 : #ffaa00
+    table.cell(stat_tbl, 1, 1, stat_prediction, text_color=pred_col, text_size=size.normal)
+    table.cell(stat_tbl, 0, 2, "الثقة %", text_color=color.gray)
+    table.cell(stat_tbl, 1, 2, str.tostring(stat_confidence, "#.#") + "%", text_color=pred_col)
+    table.cell(stat_tbl, 0, 3, "عدد المطابقات", text_color=color.gray)
+    table.cell(stat_tbl, 1, 3, str.tostring(stat_match_count), text_color=#ffff00)
+    table.cell(stat_tbl, 0, 4, "انتصارات صاعد", text_color=color.gray)
+    table.cell(stat_tbl, 1, 4, str.tostring(stat_bull_wins), text_color=#00ff00)
+    table.cell(stat_tbl, 0, 5, "انتصارات هابط", text_color=color.gray)
+    table.cell(stat_tbl, 1, 5, str.tostring(stat_bear_wins), text_color=#ff0000)
+    table.cell(stat_tbl, 0, 6, "نسبة الفوز", text_color=color.gray)
+    table.cell(stat_tbl, 1, 6, str.tostring(stat_win_rate, "#.#") + "%", text_color=#88ff00)
+    table.cell(stat_tbl, 0, 7, "الأنماط المحفوظة", text_color=color.gray)
+    table.cell(stat_tbl, 1, 7, str.tostring(array.size(pattern_history)), text_color=#00ccff)
+
+//====================================================================================
+// SECTION 3: STOCHASTIC MTF
+//====================================================================================
+stochGroup = "📉 Section 3: Stochastic MTF"
+stoch_k_len    = input.int(14,  "Stoch %K Length",  minval=1, group=stochGroup)
+stoch_k_smooth = input.int(3,   "Stoch %K Smooth",  minval=1, group=stochGroup)
+stoch_d_smooth = input.int(3,   "Stoch %D Smooth",  minval=1, group=stochGroup)
+stoch_ob       = input.int(80,  "Overbought",       minval=50, maxval=100, group=stochGroup)
+stoch_os       = input.int(20,  "Oversold",         minval=0, maxval=50, group=stochGroup)
+stoch_htf      = input.timeframe("60", "Higher TF", group=stochGroup)
+stoch_use_htf  = input.bool(true, "Use HTF Stochastic", group=stochGroup)
+
+calc_stoch() =>
+    k = ta.sma(ta.stoch(close, high, low, stoch_k_len), stoch_k_smooth)
+    d = ta.sma(k, stoch_d_smooth)
+    [k, d]
+
+[stoch_k, stoch_d] = calc_stoch()
+[htf_k, htf_d] = request.security(syminfo.tickerid, stoch_htf, calc_stoch(), barmerge.gaps_off, barmerge.lookahead_off)
+
+bool stoch_bull = stoch_k < stoch_os and ta.crossover(stoch_k, stoch_d)
+bool stoch_bear = stoch_k > stoch_ob and ta.crossunder(stoch_k, stoch_d)
+bool htf_bull   = htf_k < stoch_os and htf_k > htf_d
+bool htf_bear   = htf_k > stoch_ob and htf_k < htf_d
+
+bool stoch_mtf_long  = stoch_bull and (not stoch_use_htf or htf_bull)
+bool stoch_mtf_short = stoch_bear and (not stoch_use_htf or htf_bear)
+
+plotshape(show_stoch_panel and stoch_mtf_long,  title="Stoch MTF Long",  style=shape.triangleup,   location=location.belowbar, color=color.new(#00ff88, 0), size=size.tiny)
+plotshape(show_stoch_panel and stoch_mtf_short, title="Stoch MTF Short", style=shape.triangledown, location=location.abovebar, color=color.new(#ff4488, 0), size=size.tiny)
+
+if show_stoch_panel and barstate.islast
+    var table stoch_tbl = table.new(position.middle_right, 2, 4, bgcolor=color.new(#111111, 30))
+    table.cell(stoch_tbl, 0, 0, "Stoch MTF", text_color=#00ccff)
+    table.cell(stoch_tbl, 1, 0, stoch_htf, text_color=#00ccff)
+    table.cell(stoch_tbl, 0, 1, "%K", text_color=color.gray)
+    table.cell(stoch_tbl, 1, 1, str.tostring(stoch_k, "#.#"), text_color=#ffffff)
+    table.cell(stoch_tbl, 0, 2, "HTF %K", text_color=color.gray)
+    table.cell(stoch_tbl, 1, 2, str.tostring(htf_k, "#.#"), text_color=#ffffff)
+    table.cell(stoch_tbl, 0, 3, "Signal", text_color=color.gray)
+    table.cell(stoch_tbl, 1, 3, stoch_mtf_long ? "LONG" : stoch_mtf_short ? "SHORT" : "—", text_color=stoch_mtf_long ? #00ff88 : stoch_mtf_short ? #ff4488 : color.gray)
+
+//====================================================================================
+// ALERTS
+//====================================================================================
+alertcondition(master_long,  title="🟢 Master Long Signal",  message="Master Long Signal triggered")
+alertcondition(master_short, title="🔴 Master Short Signal", message="Master Short Signal triggered")
+alertcondition(stat_prediction == "صاعد" and stat_match_count >= min_pattern_matches, title="📊 Stat Bullish Prediction", message="Statistical prediction: Bullish")
+alertcondition(stat_prediction == "هابط" and stat_match_count >= min_pattern_matches, title="📊 Stat Bearish Prediction", message="Statistical prediction: Bearish")
+alertcondition(signal_type_adv == "Buy 🟢" and final_confidence >= min_confidence, title="🟢 Advanced Buy", message="Advanced Buy Signal")
+alertcondition(signal_type_adv == "Sell 🔴" and final_confidence >= min_confidence, title="🔴 Advanced Sell", message="Advanced Sell Signal")
+
+if master_long and barstate.isconfirmed
+    alert("Master Long: FVG+Stat aligned", alert.freq_once_per_bar)
+if master_short and barstate.isconfirmed
+    alert("Master Short: FVG+Stat aligned", alert.freq_once_per_bar)
+if stat_prediction == "صاعد" and stat_match_count >= min_pattern_matches and pattern_detected and barstate.isconfirmed
+    alert("Stat: صاعد | Confidence " + str.tostring(stat_confidence, "#.#") + "%", alert.freq_once_per_bar)
+if stat_prediction == "هابط" and stat_match_count >= min_pattern_matches and pattern_detected and barstate.isconfirmed
+    alert("Stat: هابط | Confidence " + str.tostring(stat_confidence, "#.#") + "%", alert.freq_once_per_bar)
