@@ -88,6 +88,19 @@ blockExhaustTrap = input.bool(true, "منع الدخول عند استنزاف/�
 useEmaPullback = input.bool(true, "السماح بالدخول عند دعم EMA20", group=groupSmartEntry)
 showSmartEntryLabels = input.bool(true, "إظهار ليبل الدخول الذكي", group=groupSmartEntry)
 
+groupAPlusGuard = "🛡️ حماية بعد A++ (منع الهبوط)"
+useAPlusGuard = input.bool(true, "تفعيل درع الحماية", group=groupAPlusGuard)
+failOnBreakLow = input.bool(true, "إبطال الإعداد عند كسر قاع A++", group=groupAPlusGuard)
+failDropPct = input.float(2.5, "إبطال عند هبوط % من قمة A++", minval=1.0, maxval=8.0, step=0.5, group=groupAPlusGuard)
+requireEnsemblePullback = input.bool(true, "اشتراط Ensemble 2/3 للدخول", group=groupAPlusGuard)
+requireHoldStructure = input.bool(true, "التصحيح لا يكسر قاع A++", group=groupAPlusGuard)
+requireContPullback = input.bool(true, "شمعة الدخول = استمرار (CONT)", group=groupAPlusGuard)
+blockBadAPlusSetup = input.bool(true, "منع الدخول إذا A++ كانت EXH/TRAP", group=groupAPlusGuard)
+showGuardLabels = input.bool(true, "إظهار تحذيرات الفشل والخروج", group=groupAPlusGuard)
+exitOnBreakLow = input.bool(true, "🛑 خروج عند كسر قاع A++", group=groupAPlusGuard)
+exitOnBearDiv = input.bool(true, "🛑 خروج عند انحراف هابط", group=groupAPlusGuard)
+exitWatchBars = input.int(8, "مدة مراقبة الخروج (شموع)", minval=3, maxval=20, group=groupAPlusGuard)
+
 groupEGXWeight = "⚖️ أوزان EGX في Score"
 egxBurstWeight = input.float(1.5, "وزن Burst Filter", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
 egxLimitWeight = input.float(1.3, "وزن Limit Filter", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
@@ -851,26 +864,51 @@ bool aPlusPlusAlert = showBullish and bullishTier == "A++"
 var int lastAPlusBar = -9999
 var float lastAPlusHigh = na
 var float lastAPlusLow = na
+var bool aPlusGuardActive = false
+var bool aPlusGuardFailed = false
+var bool lastAPlusWasTrap = false
+var bool lastAPlusWasExh = false
+var int lastSmartEntryBar = -9999
 
 if aPlusPlusAlert
     lastAPlusBar := bar_index
     lastAPlusHigh := high
     lastAPlusLow := low
+    aPlusGuardActive := true
+    aPlusGuardFailed := false
+    lastAPlusWasTrap := isTrap
+    lastAPlusWasExh := isExhaustion
+
+bool inAPlusGuardWindow = aPlusGuardActive and bar_index >= lastAPlusBar and (bar_index - lastAPlusBar) <= pullbackMaxBars + 2
+bool brokeAPlusLow = useAPlusGuard and failOnBreakLow and inAPlusGuardWindow and bar_index > lastAPlusBar and barstate.isconfirmed and close < lastAPlusLow
+float dropFromAPlusHigh = not na(lastAPlusHigh) and lastAPlusHigh > 0 ? (lastAPlusHigh - close) / lastAPlusHigh * 100.0 : 0.0
+bool droppedFromHigh = useAPlusGuard and inAPlusGuardWindow and bar_index > lastAPlusBar and dropFromAPlusHigh >= failDropPct
+
+if brokeAPlusLow or droppedFromHigh
+    aPlusGuardFailed := true
+    aPlusGuardActive := false
+
+bool aPlusQualityOK = not blockBadAPlusSetup or (not lastAPlusWasTrap and not lastAPlusWasExh)
+bool guardAllowsEntry = not useAPlusGuard or (not aPlusGuardFailed and aPlusQualityOK)
 
 float atrEntry = ta.atr(14)
 float swingLowEntry = ta.lowest(low, 10)
 bool overExtended = (close - swingLowEntry) > maxExtensionATR * atrEntry
 bool chaseRisk = (blockChaseBurst and isStrongBullish) or (blockChaseLimit and nearLimitUp) or (blockExhaustTrap and (isExhaustion or isTrap)) or overExtended
-bool safeImmediate = aPlusPlusAlert and not chaseRisk and (not useCandleDetect or isContinuation) and ensembleBuy
+bool safeImmediate = aPlusPlusAlert and not chaseRisk and guardAllowsEntry and (not useCandleDetect or isContinuation) and ensembleBuy
 
-bool inPullbackWindow = bar_index > lastAPlusBar and (bar_index - lastAPlusBar) <= pullbackMaxBars and not na(lastAPlusHigh) and not na(lastAPlusLow)
+bool inPullbackWindow = bar_index > lastAPlusBar and (bar_index - lastAPlusBar) <= pullbackMaxBars and not na(lastAPlusHigh) and not na(lastAPlusLow) and guardAllowsEntry
 float pbFibLevel = lastAPlusHigh - (lastAPlusHigh - lastAPlusLow) * pullbackPct / 100.0
 bool touchedFib = inPullbackWindow and low <= pbFibLevel
 bool touchedEma = useEmaPullback and inPullbackWindow and low <= ema20
 bool bounceOK = close > open and close > math.min(nz(pbFibLevel, close), nz(ema20, close))
-bool pullbackEntryRaw = useSmartEntry and smartEntryMode == "Pullback" and inPullbackWindow and (touchedFib or touchedEma) and bounceOK and allowBuySignals and barstate.isconfirmed
+bool structureOK = not requireHoldStructure or low >= lastAPlusLow
+bool qualityPullback = (not requireEnsemblePullback or ensembleBuy) and (not requireContPullback or isContinuation) and (not blockExhaustTrap or (not isExhaustion and not isTrap))
+bool pullbackEntryRaw = useSmartEntry and smartEntryMode == "Pullback" and inPullbackWindow and (touchedFib or touchedEma) and bounceOK and structureOK and qualityPullback and allowBuySignals and barstate.isconfirmed
 bool pullbackEntry = pullbackEntryRaw and not pullbackEntryRaw[1]
-bool aPlusWaitPullback = aPlusPlusAlert and useSmartEntry and smartEntryMode == "Pullback" and chaseRisk
+bool aPlusWaitPullback = aPlusPlusAlert and useSmartEntry and smartEntryMode == "Pullback" and (chaseRisk or not guardAllowsEntry)
+bool aPlusFailedAlert = showGuardLabels and brokeAPlusLow and not brokeAPlusLow[1]
+bool aPlusDangerAlert = showGuardLabels and droppedFromHigh and not droppedFromHigh[1] and not aPlusGuardFailed[1]
 
 // ⭐ إحصائية تحقق: بعد إشارة BUY A++ هل أغلق السعر أعلى بعد evalBars شمعة؟
 var int appBuySignals = 0
@@ -907,6 +945,9 @@ if earlyBuyCandidate
 bool earlyBuy = earlyConfirmMode ? (earlyBuyCandidate[1] and barstate.isconfirmed and close > close[1]) : earlyBuyCandidate
 
 bool smartBuyEntry = useSmartEntry ? (smartEntryMode == "Pullback" ? pullbackEntry : smartEntryMode == "Safe Immediate" ? safeImmediate : earlyBuy) : aPlusPlusAlert
+
+if smartBuyEntry
+    lastSmartEntryBar := bar_index
 
 var int smartEntrySignals = 0
 var int smartEntryWins = 0
@@ -951,6 +992,14 @@ if barstate.isconfirmed and earlySell[evalBars]
     earlySellSignals := earlySellSignals + 1
     if close < close[evalBars]
         earlySellWins := earlySellWins + 1
+
+// 🛡️ مراقبة الخروج بعد الدخول الذكي — حماية من الهبوط بعد A++
+bool inPostEntryWatch = lastSmartEntryBar > 0 and bar_index > lastSmartEntryBar and (bar_index - lastSmartEntryBar) <= exitWatchBars
+bool postEntryBreakLow = exitOnBreakLow and inPostEntryWatch and barstate.isconfirmed and not na(lastAPlusLow) and close < lastAPlusLow
+bool postEntryBearDiv = exitOnBearDiv and inPostEntryWatch and earlySell
+bool postEntryTrendBreak = inPostEntryWatch and barstate.isconfirmed and close < ema20 and close < open and isStrongBearish
+bool postEntryExit = showGuardLabels and (postEntryBreakLow or postEntryBearDiv or postEntryTrendBreak)
+bool postEntryExitSignal = postEntryExit and not postEntryExit[1]
 
 //====================================================================================
 // 📋 5. حساب مؤشر المتنبئ المتقدم (Buy/Sell Trend Master)
@@ -1107,13 +1156,24 @@ if earlyBuy
     label.new(x=bar_index, y=low - divOffset * 3.0, text="🌱 EARLY BUY", style=label.style_label_up, color=color.new(#00c853, 10), textcolor=color.white, size=size.normal)
 
 if showSmartEntryLabels and aPlusWaitPullback
-    label.new(x=bar_index, y=high + divOffset * 4.0, text="⏳ A++ WAIT\nPullback", style=label.style_label_down, color=color.new(#ff6f00, 15), textcolor=color.white, size=size.small)
+    string waitText = not guardAllowsEntry ? "⛔ A++ BLOCKED\nEXH/TRAP" : "⏳ A++ WAIT\nPullback"
+    label.new(x=bar_index, y=high + divOffset * 4.0, text=waitText, style=label.style_label_down, color=color.new(#ff6f00, 15), textcolor=color.white, size=size.small)
+
+if showGuardLabels and aPlusFailedAlert
+    label.new(x=bar_index, y=high + divOffset * 5.0, text="❌ A++ FAILED\nكسر القاع", style=label.style_label_down, color=color.new(#d50000, 10), textcolor=color.white, size=size.normal)
+
+if showGuardLabels and aPlusDangerAlert
+    label.new(x=bar_index, y=high + divOffset * 5.5, text="⚠️ A++ DANGER\nهبوط " + str.tostring(dropFromAPlusHigh, "#.#") + "%", style=label.style_label_down, color=color.new(#ff6f00, 10), textcolor=color.white, size=size.small)
 
 if showSmartEntryLabels and smartBuyEntry and smartEntryMode == "Pullback"
     label.new(x=bar_index, y=low - divOffset * 4.5, text="✅ SMART ENTRY", style=label.style_label_up, color=color.new(#00e676, 5), textcolor=color.black, size=size.normal)
 
 if showSmartEntryLabels and smartBuyEntry and smartEntryMode == "Safe Immediate"
     label.new(x=bar_index, y=low - divOffset * 4.5, text="✅ SAFE ENTRY", style=label.style_label_up, color=color.new(#00c853, 5), textcolor=color.black, size=size.normal)
+
+if showGuardLabels and postEntryExitSignal
+    string exitText = postEntryBreakLow ? "🛑 EXIT NOW\nكسر قاع A++" : postEntryBearDiv ? "🛑 EXIT NOW\nانحراف هابط" : "🛑 EXIT NOW\nكسر EMA20"
+    label.new(x=bar_index, y=high + divOffset * 3.5, text=exitText, style=label.style_label_down, color=color.new(#d50000, 5), textcolor=color.white, size=size.normal)
 
 // 🔻 رسم إشارة الخروج المبكرة: تظهر على شمعة القمة قبل الهبوط (بدون Lookahead)
 if earlySell
@@ -1245,7 +1305,7 @@ if barstate.islast
 
 // ---------- 6.3 جداول المعلومات ----------
 // جدول الانحرافات (في أسفل اليمين)
-var table tDiv = table.new(position.bottom_right, 5, 18, bgcolor=color.new(#0d1117, 95), border_color=color.new(#58a6ff, 40))
+var table tDiv = table.new(position.bottom_right, 5, 19, bgcolor=color.new(#0d1117, 95), border_color=color.new(#58a6ff, 40))
 
 if showTableDiv and showTables and barstate.islast
     table.cell(tDiv, 0, 0, "Série", text_color=color.white, bgcolor=color.new(#161b22, 0))
@@ -1326,6 +1386,11 @@ if showTableDiv and showTables and barstate.islast
     table.cell(tDiv, 1, 17, smartStatTxt, text_color=smartEntrySignals > 0 and smartEntryWins * 2 >= smartEntrySignals ? color.new(#00e676, 0) : color.new(#ffa000, 0))
     table.cell(tDiv, 2, 17, "Mode:" + smartEntryMode, text_color=color.gray)
     table.cell(tDiv, 3, 17, chaseRisk ? "⏳ WAIT" : "✅ OK", text_color=chaseRisk ? color.new(#ff6f00, 0) : color.new(#00e676, 0))
+    table.cell(tDiv, 0, 18, "🛡️ A++ Guard", text_color=color.new(#ff5252, 0), bgcolor=color.new(#330000, 80))
+    string guardTxt = aPlusGuardFailed ? "❌ FAILED" : aPlusGuardActive ? "⏳ ACTIVE" : guardAllowsEntry ? "✅ OK" : "⛔ BLOCK"
+    table.cell(tDiv, 1, 18, guardTxt, text_color=aPlusGuardFailed ? color.new(#ff1744, 0) : aPlusGuardActive ? color.new(#ffa000, 0) : color.new(#00e676, 0))
+    table.cell(tDiv, 2, 18, "Drop:" + str.tostring(dropFromAPlusHigh, "#.#") + "%", text_color=dropFromAPlusHigh >= failDropPct ? color.new(#ff1744, 0) : color.gray)
+    table.cell(tDiv, 3, 18, inPostEntryWatch ? "🛑 WATCH" : "⚪", text_color=inPostEntryWatch ? color.new(#ff6f00, 0) : color.gray)
 
 // جدول المتنبئ (في أعلى اليمين)
 var table predTable = table.new(position.top_right, 2, 8, bgcolor=color.rgb(0, 0, 0, 80), 
@@ -1398,6 +1463,9 @@ alertcondition(showBullish and bullishTier == "A+", "🟢 COMPRA A+ (Divergênci
 alertcondition(showBearish and bearishTier == "A++", "🔻🔻 VENDA A++ (EGX Super Signal)", "Venda A++ detectada - EGX Limit Down potential!")
 alertcondition(showBullish and bullishTier == "A++", "🟢🟢 COMPRA A++ (EGX Super Signal)", "Compra A++ detectada - EGX Limit Up potential!")
 alertcondition(aPlusPlusAlert, "👀 A++ Alert (راقب - لا تدخل فوراً)", "A++ ظهرت - انتظر تصحيح أو Safe Entry")
+alertcondition(aPlusFailedAlert, "❌ A++ FAILED (كسر القاع)", "إعداد A++ فشل - لا تدخل")
+alertcondition(aPlusDangerAlert, "⚠️ A++ DANGER (هبوط حاد)", "هبوط حاد بعد A++ - تجنب الدخول")
+alertcondition(postEntryExitSignal, "🛑 EXIT NOW (بعد الدخول)", "خروج فوري - الإعداد انكسر بعد الدخول")
 alertcondition(smartBuyEntry and smartEntryMode == "Pullback", "✅ Smart Entry (Pullback)", "دخول ذكي بعد تصحيح فيبوناتشي/EMA20")
 alertcondition(safeImmediate, "✅ Safe Immediate Entry", "دخول فوري آمن - شمعة استمرار بدون مطاردة")
 // 🌱 تنبيه الإشارة المبكرة
