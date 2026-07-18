@@ -1,0 +1,1523 @@
+//@version=6
+indicator("Buy/Sell Divergencias Pro EGX Boost", shorttitle="BSDivEGX", overlay=true, max_labels_count=500, max_lines_count=200)
+
+//====================================================================================
+// 📋 1. مدخلات مؤشر الانحرافات (Divergências)
+//====================================================================================
+
+groupMode    = "🎛️ Modo de Detecção"
+modeTop      = input.bool(true,  "Analisar TOPO (bearish)", group=groupMode)
+modeBottom   = input.bool(true,  "Analisar FUNDO (bullish)", group=groupMode)
+
+groupTrend   = "🔄 فلتر الاتجاه الرئيسي (TREND FILTER)"
+useTrendFilter = input.bool(true, "تفعيل فلتر الاتجاه (يمنع الإشارات المعاكسة)", group=groupTrend)
+trendLength    = input.int(50, "فترة الاتجاه الرئيسي", minval=20, maxval=200, group=groupTrend)
+trendThreshold = input.float(0.6, "قوة الاتجاه المطلوبة (0-1)", minval=0.3, maxval=0.9, step=0.05, group=groupTrend)
+
+groupPivot   = "📍 Detecção Rápida (Sem Atraso)"
+L            = input.int(3,  "Left bars (lookback)", minval=1, group=groupPivot)
+
+groupRSI     = "📊 RSI"
+rsiLen       = input.int(14, "Período RSI", minval=2, group=groupRSI)
+
+groupStoch   = "📊 Stochastic (Filtro Adicional)"
+useStoch     = input.bool(true, "Usar Stochastic para confirmar", group=groupStoch)
+stochLen     = input.int(14, "Stochastic Length", minval=5, group=groupStoch)
+stochOverbought = input.int(80, "Stoch Overbought", minval=70, maxval=90, group=groupStoch)
+stochOversold   = input.int(20, "Stoch Oversold", minval=10, maxval=30, group=groupStoch)
+
+groupConfirm = "⏱️ Confirmação Temporal"
+confirmBars  = input.int(5, "Janela máx. entre pivots (barras)", minval=1, group=groupConfirm)
+needBoth     = input.bool(true, "Exigir RSI E OBV dentro da janela", group=groupConfirm)
+
+groupVol     = "📈 Volume Financeiro"
+useFinVol    = input.bool(true, "Usar Volume Financeiro para validação", group=groupVol)
+minVolumeRatio = input.float(1.2, "Volume mínimo (média móvel x)", minval=0.8, maxval=2.0, step=0.1, group=groupVol)
+
+groupScore   = "🎯 Sistema de Score Estatístico"
+highProbCutoff = input.float(0.70, "Corte Alta Probabilidade", minval=0.60, maxval=0.85, step=0.01, group=groupScore)
+medProbCutoff  = input.float(0.50, "Corte Média Probabilidade", minval=0.35, maxval=0.65, step=0.01, group=groupScore)
+useVolatilityFilter = input.bool(true, "Filtrar por Volatilidade (ATR)", group=groupScore)
+
+groupStyle   = "🎨 Exibição Divergências"
+showTableDiv = input.bool(true, "Mostrar painel de estados (divergências)", group=groupStyle)
+showLines    = input.bool(true, "Desenhar retas do PREÇO", group=groupStyle)
+showLabels   = input.bool(true, "Marcar divergências", group=groupStyle)
+// ⭐ NEW: فلتر درجة الإشارة (3 خيارات)
+showTierFilter = input.string("Todos", "فلتر درجة الإشارة", options=["Todos", "A+ e A++ apenas", "A++ apenas"], group=groupStyle)
+showAplusOnly = showTierFilter == "A+ e A++ apenas"  // للتوافق مع الكود القديم
+
+//====================================================================================
+// ⭐ NEW: EGX-Specific Filters (for Egyptian Stock Exchange 10% daily limit)
+//====================================================================================
+
+groupBurst = "🚀 فلتر الزخم المفاجئ (EGX Burst)"
+useBurstFilter = input.bool(true, "تفعيل فلتر الزخم المفاجئ", group=groupBurst)
+burstLookback = input.int(5, "فترة مقارنة الزخم", minval=3, maxval=20, group=groupBurst)
+burstThreshold = input.float(2.5, "عتبة الزخم (x المتوسط)", minval=1.5, maxval=5.0, step=0.1, group=groupBurst)
+volumeBurstMult = input.float(2.0, "ضعف متوسط الحجم", minval=1.0, maxval=5.0, step=0.1, group=groupBurst)
+
+groupLimit = "📈 فلتر الحد الأقصى (EGX Limit Up)"
+useLimitFilter = input.bool(true, "تفعيل فلتر الحد الأقصى", group=groupLimit)
+limitProximity = input.float(0.7, "نسبة القرب من الحد (0-1)", minval=0.5, maxval=0.95, step=0.05, group=groupLimit)
+
+groupAccum = "🧠 تراكم ذكي (Smart Accumulation)"
+useAccum = input.bool(true, "تفعيل مؤشر التراكم", group=groupAccum)
+accumPeriod = input.int(10, "فترة التراكم", minval=5, maxval=30, group=groupAccum)
+accumThreshold = input.float(1.5, "عتبة نسبة التراكم", minval=1.0, maxval=3.0, step=0.1, group=groupAccum)
+
+groupEarly = "🌱 إشارة الشراء المبكرة (Early Buy)"
+useEarlySignal = input.bool(true, "تفعيل الإشارة المبكرة", group=groupEarly)
+earlyMinConf = input.int(2, "عدد الشروط المساندة المطلوبة (من 3)", minval=1, maxval=3, group=groupEarly)
+earlyStochMax = input.int(45, "حد Stochastic الأقصى (منطقة تشبع بيعي)", minval=20, maxval=60, group=groupEarly)
+earlyAccumMin = input.float(1.0, "حد أدنى لنسبة التراكم", minval=0.5, maxval=3.0, step=0.1, group=groupEarly)
+earlyIgnoreTrend = input.bool(true, "تجاهل فلتر الاتجاه (القيعان تحدث وسط الهبوط)", group=groupEarly)
+earlyCooldown = input.int(5, "فاصل أدنى بين الإشارات (شموع)", minval=1, maxval=20, group=groupEarly)
+earlyConfirmMode = input.bool(false, "🎯 انتظار شمعة تأكيد (أدق لكن أبطأ بشمعة)", group=groupEarly)
+evalBars = input.int(1, "📏 أفق قياس النجاح في الجدول (شموع)", minval=1, maxval=10, group=groupEarly)
+
+groupSmartEntry = "🎯 دخول ذكي (حل التأخر بعد A++)"
+useSmartEntry = input.bool(true, "تفعيل الدخول الذكي", group=groupSmartEntry)
+smartEntryMode = input.string("Pullback", "نمط الدخول", options=["Pullback", "Safe Immediate", "Early Only"], group=groupSmartEntry)
+pullbackPct = input.float(38.2, "نسبة تصحيح فيبوناتشي %", minval=10.0, maxval=61.8, step=0.1, group=groupSmartEntry)
+pullbackMaxBars = input.int(5, "أقصى شموع انتظار التصحيح", minval=1, maxval=20, group=groupSmartEntry)
+maxExtensionATR = input.float(1.2, "حد الامتداد الأقصى (ATR x)", minval=0.5, maxval=3.0, step=0.1, group=groupSmartEntry)
+blockChaseBurst = input.bool(true, "منع المطاردة بعد شمعة انفجار", group=groupSmartEntry)
+blockChaseLimit = input.bool(true, "منع المطاردة قرب الحد الأقصى", group=groupSmartEntry)
+blockExhaustTrap = input.bool(true, "منع الدخول عند استنزاف/كمين", group=groupSmartEntry)
+useEmaPullback = input.bool(true, "السماح بالدخول عند دعم EMA20", group=groupSmartEntry)
+showSmartEntryLabels = input.bool(true, "إظهار ليبل الدخول الذكي", group=groupSmartEntry)
+
+groupAPlusGuard = "🛡️ حماية بعد A++ (منع الهبوط)"
+useAPlusGuard = input.bool(true, "تفعيل درع الحماية", group=groupAPlusGuard)
+failOnBreakLow = input.bool(true, "إبطال الإعداد عند كسر قاع A++", group=groupAPlusGuard)
+failDropPct = input.float(2.5, "إبطال عند هبوط % من قمة A++", minval=1.0, maxval=8.0, step=0.5, group=groupAPlusGuard)
+requireEnsemblePullback = input.bool(true, "اشتراط Ensemble 2/3 للدخول", group=groupAPlusGuard)
+requireHoldStructure = input.bool(true, "التصحيح لا يكسر قاع A++", group=groupAPlusGuard)
+requireContPullback = input.bool(true, "شمعة الدخول = استمرار (CONT)", group=groupAPlusGuard)
+blockBadAPlusSetup = input.bool(true, "منع الدخول إذا A++ كانت EXH/TRAP", group=groupAPlusGuard)
+showGuardLabels = input.bool(true, "إظهار تحذيرات الفشل والخروج", group=groupAPlusGuard)
+exitOnBreakLow = input.bool(true, "🛑 خروج عند كسر قاع A++", group=groupAPlusGuard)
+exitOnBearDiv = input.bool(true, "🛑 خروج عند انحراف هابط", group=groupAPlusGuard)
+exitWatchBars = input.int(8, "مدة مراقبة الخروج (شموع)", minval=3, maxval=20, group=groupAPlusGuard)
+
+groupEGXWeight = "⚖️ أوزان EGX في Score"
+egxBurstWeight = input.float(1.5, "وزن Burst Filter", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
+egxLimitWeight = input.float(1.3, "وزن Limit Filter", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
+egxAccumWeight = input.float(1.2, "وزن Accumulation", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
+
+// ⭐ NEW: فلتر كشف نوع الشمعة (Continuation vs Exhaustion vs Trap)
+groupCandleDetect = "🔬 كشف نوع الشمعة (A++ Smart Filter)"
+useCandleDetect = input.bool(true, "تفعيل كشف نوع الشمعة", group=groupCandleDetect)
+candleMinBodyRatio = input.float(0.5, "نسبة الجسم/النطاق (الحد الأدنى)", minval=0.2, maxval=1.0, step=0.05, group=groupCandleDetect)
+candleMaxUpperShadow = input.float(0.15, "الحد الأقصى للظل العلوي", minval=0.0, maxval=0.5, step=0.05, group=groupCandleDetect)
+candleMaxLowerShadow = input.float(0.1, "الحد الأقصى للظل السفلي", minval=0.0, maxval=0.5, step=0.05, group=groupCandleDetect)
+candleMinCloseStrength = input.float(0.75, "قوة الإغلاق (الحد الأدنى)", minval=0.5, maxval=1.0, step=0.05, group=groupCandleDetect)
+candleVolMinMult = input.float(1.5, "الحد الأدنى لمضاعف الحجم", minval=1.0, maxval=5.0, step=0.1, group=groupCandleDetect)
+candleVolMaxMult = input.float(4.0, "الحد الأقصى لمضاعف الحجم", minval=2.0, maxval=10.0, step=0.5, group=groupCandleDetect)
+candlePrevConfirm = input.bool(true, "تأكيد الشمعة السابقة", group=groupCandleDetect)
+
+//====================================================================================
+// 📋 2. مدخلات مؤشر المتنبئ المتقدم (Buy/Sell Trend Master)
+//====================================================================================
+
+
+// ⭐ NEW: نظام التعلم التكيفي (Adaptive AI System)
+groupAdaptive = "🧠 نظام التعلم التكيفي (Adaptive AI)"
+useAdaptiveFilter = input.bool(true, "تفعيل النظام التكيفي", group=groupAdaptive)
+adaptiveLookback = input.int(50, "فترة التعلم (شموع)", minval=20, maxval=200, group=groupAdaptive)
+adaptiveMinSamples = input.int(10, "الحد الأدنى للعينات", minval=5, maxval=50, group=groupAdaptive)
+adaptiveConfidenceThreshold = input.float(0.6, "عتبة الثقة التكيفية (0-1)", minval=0.3, maxval=0.9, step=0.05, group=groupAdaptive)
+useDynamicRange = input.bool(true, "تفعيل النطاق الديناميكي", group=groupAdaptive)
+useMTFConfirm = input.bool(true, "تفعيل التحقق متعدد الزمني", group=groupAdaptive)
+mtfTimeframe = input.string("240", "الإطار الزمني الأعلى", options=["60", "120", "240", "D"], group=groupAdaptive)
+useEnsembleVote = input.bool(true, "تفعيل نظام التصويت (2 من 3)", group=groupAdaptive)
+
+grp_st = '🏷️ Hybrid Supertrend Settings'
+atrP1 = input.int(1, "Fast ATR", group=grp_st)
+fac1  = input.float(1.0, "Fast Factor", step=0.1, group=grp_st)
+atrP2 = input.int(2, "Med ATR", group=grp_st)
+fac2  = input.float(2.0, "Med Factor", step=0.1, group=grp_st)
+atrP3 = input.int(3, "Slow ATR", group=grp_st)
+fac3  = input.float(3.0, "Slow Factor", step=0.1, group=grp_st)
+
+grp_td = "📈 Trend & Scalp Settings"
+h_len   = input.int(50, "HMA Length", group=grp_td)
+ema_len = input.int(20, "Scalp EMA Length", group=grp_td)
+
+grp_pred = "🧠 Advanced Predictor Settings"
+min_signals_required = input.int(2, "Min Signals Required", minval=1, maxval=5, step=1, group=grp_pred)
+min_confidence       = input.float(70.0, "Min Confidence %", minval=50, maxval=90, step=1, group=grp_pred)
+tp1_percent          = input.float(1.0, "TP1 %", minval=0.5, maxval=5.0, step=0.1, group=grp_pred)
+tp2_percent          = input.float(2.0, "TP2 %", minval=1.0, maxval=8.0, step=0.1, group=grp_pred)
+tp3_percent          = input.float(3.5, "TP3 %", minval=2.0, maxval=12.0, step=0.1, group=grp_pred)
+stop_loss_percent    = input.float(1.5, "Stop Loss %", minval=0.5, maxval=5.0, step=0.1, group=grp_pred)
+show_pred_table      = input.bool(true, "Show Prediction Table", group=grp_pred)
+
+// ⭐ جديـد: مفتاح رئيسي لإخفاء جميع الجداول دفعة واحدة
+showTables = input.bool(true, "📊 إظهار جميع الجداول", group="عرض الجداول")
+
+//====================================================================================
+// 📋 3. دوال مساعدة (من كلا المؤشرين)
+//====================================================================================
+
+logit(p) =>
+    float denom = 1.0 - p + 0.0001
+    math.log(p / denom)
+
+clamp(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+absI(x) =>
+    x >= 0 ? x : -x
+
+f_state(float cur, float prev) =>
+    na(cur) or na(prev) ? 0 : cur > prev ? 1 : cur < prev ? -1 : 0
+
+f_seg(float y1, int x1, float y2, int x2) =>
+    int a = x1
+    int b = x2
+    float ya = y1
+    float yb = y2
+    float slope = a != b ? (ya - yb) / (a - b) : na
+    bool inRange = bar_index >= b and bar_index <= a
+    inRange and not na(slope) ? (yb + slope * (bar_index - b)) : na
+
+f_stateTxt(int s) =>
+    s == 1 ? "HH/HL" : s == -1 ? "LH/LL" : "EQ"
+
+//====================================================================================
+// ⭐ NEW: EGX Helper Functions
+//====================================================================================
+
+// حساب الزخم الحقيقي (Real Body Momentum)
+f_burstFilter() =>
+    realBody = math.abs(close - open)
+    avgBody = ta.sma(realBody, burstLookback)
+    bodyRatio = realBody / (avgBody > 0 ? avgBody : syminfo.mintick)
+    volumeRatio = volume / ta.sma(volume, 20)
+
+    isStrongBullish = close > open and bodyRatio >= burstThreshold and volumeRatio >= volumeBurstMult
+    isStrongBearish = close < open and bodyRatio >= burstThreshold and volumeRatio >= volumeBurstMult
+    [isStrongBullish, isStrongBearish, bodyRatio, volumeRatio]
+
+// حساب القرب من الحد الأقصى (EGX Limit Up/Down)
+f_limitFilter() =>
+    prevClose = close[1]
+    limitUpPrice = prevClose * 1.10
+    limitDownPrice = prevClose * 0.90
+
+    upProgress = (close - prevClose) / (limitUpPrice - prevClose + 0.0001)
+    downProgress = (prevClose - close) / (prevClose - limitDownPrice + 0.0001)
+
+    nearLimitUp = upProgress >= limitProximity
+    nearLimitDown = downProgress >= limitProximity
+    [nearLimitUp, nearLimitDown, upProgress, downProgress]
+
+// مؤشر التراكم/توزيع الذكي
+f_smartAccumulation() =>
+    buyingPressure = (close - low) / (high - low + 0.0001)
+    sellingPressure = (high - close) / (high - low + 0.0001)
+
+    accumulationIndex = ta.ema(buyingPressure * volume, accumPeriod)
+    distributionIndex = ta.ema(sellingPressure * volume, accumPeriod)
+
+    accumRatio = accumulationIndex / (distributionIndex + 0.0001)
+    isAccumulating = accumRatio >= accumThreshold
+    [isAccumulating, accumRatio]
+
+//====================================================================================
+// ⭐ NEW: Smart Candle Detection Functions (كشف نوع الشمعة)
+//====================================================================================
+
+// تحليل الشمعة الحالية
+f_analyzeCandle() =>
+    candleRange = high - low
+    bodySize = math.abs(close - open)
+    bodyRatio = candleRange > 0 ? bodySize / candleRange : 0
+    upperShadow = high - math.max(open, close)
+    lowerShadow = math.min(open, close) - low
+    upperRatio = candleRange > 0 ? upperShadow / candleRange : 0
+    lowerRatio = candleRange > 0 ? lowerShadow / candleRange : 0
+    closeStrength = candleRange > 0 ? (close - low) / candleRange : 0
+    [bodyRatio, upperRatio, lowerRatio, closeStrength]
+
+// كشف نوع الشمعة
+f_detectCandleType() =>
+    [bodyRatio, upperRatio, lowerRatio, closeStrength] = f_analyzeCandle()
+    avgVolume = ta.sma(volume, 20)
+    volRatio = volume / avgVolume
+
+    // تحليل الشمعة السابقة
+    prevRange = high[1] - low[1]
+    prevBodyRatio = prevRange > 0 ? math.abs(close[1] - open[1]) / prevRange : 0
+    prevCloseStrength = prevRange > 0 ? (close[1] - low[1]) / prevRange : 0
+    isPrevStrong = (close[1] > open[1]) and (prevBodyRatio >= 0.5) and (prevCloseStrength >= 0.6)
+
+    // 1. شمعة استمرار (Continuation) - ✅ آمنة للدخول
+    isContinuation = (close > open) and
+                     (bodyRatio >= candleMinBodyRatio) and
+                     (upperRatio <= candleMaxUpperShadow) and
+                     (lowerRatio <= candleMaxLowerShadow) and
+                     (closeStrength >= candleMinCloseStrength) and
+                     (volRatio >= candleVolMinMult) and
+                     (volRatio <= candleVolMaxMult) and
+                     (not candlePrevConfirm or isPrevStrong)
+
+    // 2. شمعة استنزاف (Exhaustion) - ❌ خطرة
+    isExhaustion = (close > open) and
+                   (volRatio > candleVolMaxMult) and
+                   (closeStrength < 0.6) and
+                   (upperRatio > 0.2)
+
+    // 3. كمين صاعد (Bull Trap) - ❌ خطرة جداً
+    recentHigh = ta.highest(high, 20)
+    isBreakout = high > recentHigh[1]
+    isTrap = isBreakout and
+             (close < high) and
+             (upperRatio > 0.25) and
+             (volRatio > candleVolMaxMult * 1.5)
+
+    [isContinuation, isExhaustion, isTrap, bodyRatio, upperRatio, closeStrength, volRatio]
+
+//====================================================================================
+// 📋 4. حساب مؤشرات الانحرافات (Divergências)
+//====================================================================================
+
+const int BIG = 10000000
+
+atr_div = ta.atr(14)
+atrSmooth = ta.ema(atr_div, 20)
+volatilityRegime = atr_div / atrSmooth
+isVolatile = volatilityRegime > 1.2
+isCalm = volatilityRegime < 0.8
+
+rsi_div = ta.rsi(close, rsiLen)
+
+var float obv = 0.0
+float delta = close > close[1] ? volume : close < close[1] ? -volume : 0
+obv := nz(obv[1], 0) + delta
+obv_smooth = ta.ema(obv, 5)
+
+stochK = ta.sma(ta.stoch(close, high, low, stochLen), 3)
+stochD = ta.sma(stochK, 3)
+
+float finVol = close * volume
+finVolMA = ta.sma(finVol, 20)
+volumeSma20 = ta.sma(volume, 20)
+volumeStrong = finVol > finVolMA * minVolumeRatio
+
+// ⭐ حساب فلاتر EGX
+[isStrongBullish, isStrongBearish, bodyRatio, volumeRatio] = f_burstFilter()
+[nearLimitUp, nearLimitDown, upProgress, downProgress] = f_limitFilter()
+[isAccumulating, accumRatio] = f_smartAccumulation()
+
+// ⭐ حساب كشف نوع الشمعة
+[isContinuation, isExhaustion, isTrap, candleBodyRatio, candleUpperRatio, candleCloseStrength, candleVolRatio] = f_detectCandleType()
+
+
+//====================================================================================
+// ⭐ NEW: نظام التعلم التكيفي (Adaptive AI System)
+//====================================================================================
+
+// --- تحليل الشمعة الحالية للتعلم التكيفي ---
+f_candleBodyRatio() =>
+    float cr = high - low
+    float bs = math.abs(close - open)
+    cr > 0 ? bs / cr : 0
+
+f_candleUpperRatio() =>
+    float cr = high - low
+    float us = high - math.max(open, close)
+    cr > 0 ? us / cr : 0
+
+f_candleLowerRatio() =>
+    float cr = high - low
+    float ls = math.min(open, close) - low
+    cr > 0 ? ls / cr : 0
+
+f_candleCloseStrength() =>
+    float cr = high - low
+    cr > 0 ? (close - low) / cr : 0
+
+f_candleVolRatio() =>
+    float avgVol = ta.sma(volume, 20)
+    volume / (avgVol > 0 ? avgVol : 1)
+
+// --- النطاق الديناميكي (يتكيف مع تقلب السهم) ---
+f_volFactor() =>
+    float atr14 = ta.atr(14)
+    float avgRange = ta.sma(high - low, 20)
+    float vf = avgRange > 0 ? atr14 / avgRange : 1.0
+    math.max(0.5, math.min(2.0, vf))
+
+f_dynMinBody() => 0.3 + (0.2 * f_volFactor())
+f_dynMaxUpper() => 0.2 - (0.05 * (f_volFactor() - 1.0))
+f_dynMinClose() => 0.7 - (0.1 * (f_volFactor() - 1.0))
+f_dynVolMin() => 1.5 - (0.3 * (f_volFactor() - 1.0))
+f_dynVolMax() => 4.0 + (1.0 * (f_volFactor() - 1.0))
+
+// --- التحقق متعدد الزمني (MTF) ---
+f_mtfUp() =>
+    float htClose = request.security(syminfo.tickerid, mtfTimeframe, close[1], lookahead=barmerge.lookahead_off)
+    float htEMA20_raw = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+    float htEMA50_raw = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, 50), lookahead=barmerge.lookahead_off)
+    float htEMA20 = nz(htEMA20_raw[1], htEMA20_raw)
+    float htEMA50 = nz(htEMA50_raw[1], htEMA50_raw)
+    htClose > htEMA20 and htEMA20 > htEMA50
+
+f_mtfDown() =>
+    float htClose = request.security(syminfo.tickerid, mtfTimeframe, close[1], lookahead=barmerge.lookahead_off)
+    float htEMA20_raw = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, 20), lookahead=barmerge.lookahead_off)
+    float htEMA50_raw = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, 50), lookahead=barmerge.lookahead_off)
+    float htEMA20 = nz(htEMA20_raw[1], htEMA20_raw)
+    float htEMA50 = nz(htEMA50_raw[1], htEMA50_raw)
+    htClose < htEMA20 and htEMA20 < htEMA50
+
+// --- متغيرات التعلم التكيفي (تتعلم من سلوك السهم) ---
+var float winBodyRatio = 0.0
+var float winCloseStrength = 0.0
+var float winVolRatio = 0.0
+var float winUpperShadow = 0.0
+var float lossBodyRatio = 0.0
+var float lossCloseStrength = 0.0
+var float lossVolRatio = 0.0
+var float lossUpperShadow = 0.0
+var int winCount = 0
+var int lossCount = 0
+
+// --- تحديث الإحصائيات التكيفية ---
+// متغيرات مؤقتة (تُعلن خارج if وتُستخدم داخله)
+var float temp_pbr = 0.0
+var float temp_pcs = 0.0
+var float temp_pvr = 0.0
+var float temp_pus = 0.0
+var bool temp_prevBullish = false
+var bool temp_nextDayUp = false
+
+if bar_index > adaptiveLookback and useAdaptiveFilter
+    // نتحقق من نتيجة الشمعة السابقة (هل صعدت أم هبطت بعدها؟)
+    temp_prevBullish := close[1] > open[1]
+    temp_nextDayUp := close > close[1]
+
+    if temp_prevBullish
+        temp_pbr := math.abs(close[1] - open[1]) / (high[1] - low[1] + 0.0001)
+        temp_pcs := (close[1] - low[1]) / (high[1] - low[1] + 0.0001)
+        temp_pvr := volume[1] / (nz(volumeSma20[1], volume[1]) + 0.0001)
+        temp_pus := (high[1] - math.max(open[1], close[1])) / (high[1] - low[1] + 0.0001)
+
+        if temp_nextDayUp
+            // رابحة! نسجل في متوسط الرابحات
+            winBodyRatio := (winBodyRatio * winCount + temp_pbr) / (winCount + 1)
+            winCloseStrength := (winCloseStrength * winCount + temp_pcs) / (winCount + 1)
+            winVolRatio := (winVolRatio * winCount + temp_pvr) / (winCount + 1)
+            winUpperShadow := (winUpperShadow * winCount + temp_pus) / (winCount + 1)
+            winCount := winCount + 1
+        else
+            // خاسرة! نسجل في متوسط الخاسرات
+            lossBodyRatio := (lossBodyRatio * lossCount + temp_pbr) / (lossCount + 1)
+            lossCloseStrength := (lossCloseStrength * lossCount + temp_pcs) / (lossCount + 1)
+            lossVolRatio := (lossVolRatio * lossCount + temp_pvr) / (lossCount + 1)
+            lossUpperShadow := (lossUpperShadow * lossCount + temp_pus) / (lossCount + 1)
+            lossCount := lossCount + 1
+
+// --- حساب درجة الثقة التكيفية ---
+f_adaptiveScore() =>
+    float score = 0.5
+    float fbr = f_candleBodyRatio()
+    float fur = f_candleUpperRatio()
+    float fcs = f_candleCloseStrength()
+    float fvr = f_candleVolRatio()
+    if useAdaptiveFilter and winCount >= adaptiveMinSamples and lossCount >= adaptiveMinSamples
+        float dWinBody = math.abs(fbr - winBodyRatio)
+        float dWinClose = math.abs(fcs - winCloseStrength)
+        float dWinVol = math.abs(fvr - winVolRatio)
+        float dWinUpper = math.abs(fur - winUpperShadow)
+        float dLossBody = math.abs(fbr - lossBodyRatio)
+        float dLossClose = math.abs(fcs - lossCloseStrength)
+        float dLossVol = math.abs(fvr - lossVolRatio)
+        float dLossUpper = math.abs(fur - lossUpperShadow)
+        float totalWin = dWinBody + dWinClose + dWinVol + dWinUpper + 0.0001
+        float totalLoss = dLossBody + dLossClose + dLossVol + dLossUpper + 0.0001
+        score := totalLoss / (totalWin + totalLoss)
+    score
+
+f_adaptiveFilter() =>
+    bool pass = true
+    if useAdaptiveFilter
+        pass := f_adaptiveScore() >= adaptiveConfidenceThreshold
+    pass
+
+// --- نظام التصويت المتكامل (Ensemble) ---
+f_ensembleDecision(bool ruleBased, bool adaptive, bool mtf) =>
+    int votes = (ruleBased ? 1 : 0) + (adaptive ? 1 : 0) + (mtf ? 1 : 0)
+    bool final = votes >= 2
+    if not useEnsembleVote
+        final := ruleBased
+    final
+
+// ========== فلتر الاتجاه الرئيسي (من كود الانحرافات) ==========
+calcADX(len) =>
+    float up = ta.change(high)
+    float down = -ta.change(low)
+    float plusDM = na(up) ? na : (up > down and up > 0 ? up : 0)
+    float minusDM = na(down) ? na : (down > up and down > 0 ? down : 0)
+    float tr = ta.tr(true)
+    float plusDI = 100 * ta.rma(plusDM, len) / ta.rma(tr, len)
+    float minusDI = 100 * ta.rma(minusDM, len) / ta.rma(tr, len)
+    float adx = 100 * ta.rma(math.abs(plusDI - minusDI) / (plusDI + minusDI), len)
+    [plusDI, minusDI, adx]
+
+[diPlus, diMinus, adxValue] = calcADX(14)
+adxStrength = adxValue > 25 ? 0.7 : adxValue > 20 ? 0.5 : 0.3
+adxDirection = diPlus > diMinus ? 1 : -1
+
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+maTrend = (ema20 > ema50 ? 1 : -1) + (ema20 > ema100 ? 1 : -1) + (ema50 > ema100 ? 1 : -1)
+maTrendStrength = maTrend / 3
+
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+macdTrend = macdLine > signalLine ? 1 : -1
+macdHistogramStrength = math.abs(macdLine - signalLine) / ta.atr(14) * 10
+macdStrength = math.min(0.8, macdHistogramStrength)
+
+bbMiddle = ta.sma(close, 20)
+bbUpper = bbMiddle + ta.stdev(close, 20) * 2
+bbLower = bbMiddle - ta.stdev(close, 20) * 2
+bbPosition = (close - bbLower) / (bbUpper - bbLower)
+bbTrend = bbPosition > 0.7 ? 1 : bbPosition < 0.3 ? -1 : 0
+
+var float trendStrengthValue = 0.0
+var int overallTrend = 0
+
+if useTrendFilter
+    float uptrendVotes = 0.0
+    float downtrendVotes = 0.0
+    if maTrendStrength > 0.2
+        uptrendVotes := uptrendVotes + math.abs(maTrendStrength)
+    else if maTrendStrength < -0.2
+        downtrendVotes := downtrendVotes + math.abs(maTrendStrength)
+    if adxDirection == 1 and adxStrength > 0.4
+        uptrendVotes := uptrendVotes + adxStrength
+    else if adxDirection == -1 and adxStrength > 0.4
+        downtrendVotes := downtrendVotes + adxStrength
+    if macdTrend == 1 and macdStrength > 0.3
+        uptrendVotes := uptrendVotes + macdStrength
+    else if macdTrend == -1 and macdStrength > 0.3
+        downtrendVotes := downtrendVotes + macdStrength
+    if bbTrend == 1
+        uptrendVotes := uptrendVotes + 0.5
+    else if bbTrend == -1
+        downtrendVotes := downtrendVotes + 0.5
+    float totalVotes = uptrendVotes + downtrendVotes
+    if totalVotes > 0
+        if uptrendVotes > downtrendVotes
+            overallTrend := 1
+            trendStrengthValue := uptrendVotes / totalVotes
+        else if downtrendVotes > uptrendVotes
+            overallTrend := -1
+            trendStrengthValue := downtrendVotes / totalVotes
+        else
+            overallTrend := 0
+            trendStrengthValue := 0.5
+    else
+        overallTrend := 0
+        trendStrengthValue := 0.5
+    trendStrengthValue := ta.ema(trendStrengthValue, 5)
+else
+    overallTrend := 0
+    trendStrengthValue := 0.5
+
+isStrongUptrend = overallTrend == 1 and trendStrengthValue >= trendThreshold
+isStrongDowntrend = overallTrend == -1 and trendStrengthValue >= trendThreshold
+isSideways = overallTrend == 0 or trendStrengthValue < trendThreshold
+
+allowBuySignals = not useTrendFilter or not isStrongDowntrend
+allowSellSignals = not useTrendFilter or not isStrongUptrend
+isUptrend   = ema20 > ema50
+isDowntrend = ema20 < ema50
+
+// ========== كشف القمم والقيعان (Pivots) ==========
+isPeakPrice = high == ta.highest(high, L)
+isPeakRSI   = rsi_div == ta.highest(rsi_div, L)
+isPeakOBV   = obv_smooth == ta.highest(obv_smooth, L)
+isPeakVol   = finVol == ta.highest(finVol, L)
+isPeakStoch = stochK == ta.highest(stochK, L)
+
+isTroughPrice = low == ta.lowest(low, L)
+isTroughRSI   = rsi_div == ta.lowest(rsi_div, L)
+isTroughOBV   = obv_smooth == ta.lowest(obv_smooth, L)
+isTroughVol   = finVol == ta.lowest(finVol, L)
+isTroughStoch = stochK == ta.lowest(stochK, L)
+
+// متغيرات تخزين القمم والقيعان
+var float priceHigh1 = na
+var float priceHigh2 = na
+var int priceHBar1 = na
+var int priceHBar2 = na
+
+var float rsiHigh1 = na
+var float rsiHigh2 = na
+var int rsiHBar1 = na
+var int rsiHBar2 = na
+
+var float obvHigh1 = na
+var float obvHigh2 = na
+var int obvHBar1 = na
+var int obvHBar2 = na
+
+var float finVolHigh1 = na
+var float finVolHigh2 = na
+var int finVolHBar1 = na
+var int finVolHBar2 = na
+
+var float stochHigh1 = na
+var float stochHigh2 = na
+var int stochHBar1 = na
+var int stochHBar2 = na
+
+var float priceLow1 = na
+var float priceLow2 = na
+var int priceLBar1 = na
+var int priceLBar2 = na
+
+var float rsiLow1 = na
+var float rsiLow2 = na
+var int rsiLBar1 = na
+var int rsiLBar2 = na
+
+var float obvLow1 = na
+var float obvLow2 = na
+var int obvLBar1 = na
+var int obvLBar2 = na
+
+var float finVolLow1 = na
+var float finVolLow2 = na
+var int finVolLBar1 = na
+var int finVolLBar2 = na
+
+var float stochLow1 = na
+var float stochLow2 = na
+var int stochLBar1 = na
+var int stochLBar2 = na
+
+// تحديث القمم
+if isPeakPrice
+    priceHigh2 := priceHigh1
+    priceHBar2 := priceHBar1
+    priceHigh1 := high
+    priceHBar1 := bar_index
+
+if isPeakRSI
+    rsiHigh2 := rsiHigh1
+    rsiHBar2 := rsiHBar1
+    rsiHigh1 := rsi_div
+    rsiHBar1 := bar_index
+
+if isPeakOBV
+    obvHigh2 := obvHigh1
+    obvHBar2 := obvHBar1
+    obvHigh1 := obv_smooth
+    obvHBar1 := bar_index
+
+if isPeakVol
+    finVolHigh2 := finVolHigh1
+    finVolHBar2 := finVolHBar1
+    finVolHigh1 := finVol
+    finVolHBar1 := bar_index
+
+if isPeakStoch
+    stochHigh2 := stochHigh1
+    stochHBar2 := stochHBar1
+    stochHigh1 := stochK
+    stochHBar1 := bar_index
+
+// تحديث القيعان
+if isTroughPrice
+    priceLow2 := priceLow1
+    priceLBar2 := priceLBar1
+    priceLow1 := low
+    priceLBar1 := bar_index
+
+if isTroughRSI
+    rsiLow2 := rsiLow1
+    rsiLBar2 := rsiLBar1
+    rsiLow1 := rsi_div
+    rsiLBar1 := bar_index
+
+if isTroughOBV
+    obvLow2 := obvLow1
+    obvLBar2 := obvLBar1
+    obvLow1 := obv_smooth
+    obvLBar1 := bar_index
+
+if isTroughVol
+    finVolLow2 := finVolLow1
+    finVolLBar2 := finVolLBar1
+    finVolLow1 := finVol
+    finVolLBar1 := bar_index
+
+if isTroughStoch
+    stochLow2 := stochLow1
+    stochLBar2 := stochLBar1
+    stochLow1 := stochK
+    stochLBar1 := bar_index
+
+// حالات القمم والقيعان
+statePriceTop = f_state(priceHigh1, priceHigh2)
+stateRSITop   = f_state(rsiHigh1,   rsiHigh2)
+stateOBVTop   = f_state(obvHigh1,   obvHigh2)
+stateVolTop   = f_state(finVolHigh1, finVolHigh2)
+stateStochTop = f_state(stochHigh1, stochHigh2)
+
+distTopRSI  = not na(priceHBar1) and not na(rsiHBar1) ? absI(priceHBar1 - rsiHBar1) : BIG
+distTopOBV  = not na(priceHBar1) and not na(obvHBar1) ? absI(priceHBar1 - obvHBar1) : BIG
+distTopVol  = not na(priceHBar1) and not na(finVolHBar1) ? absI(priceHBar1 - finVolHBar1) : BIG
+distTopStoch = not na(priceHBar1) and not na(stochHBar1) ? absI(priceHBar1 - stochHBar1) : BIG
+
+timeTopRSI   = distTopRSI <= confirmBars
+timeTopOBV   = distTopOBV <= confirmBars
+timeTopVol   = distTopVol <= confirmBars
+timeTopStoch = distTopStoch <= confirmBars
+
+statePriceLow = f_state(priceLow1, priceLow2)
+stateRSILow   = f_state(rsiLow1,   rsiLow2)
+stateOBVLow   = f_state(obvLow1,   obvLow2)
+stateVolLow   = f_state(finVolLow1, finVolLow2)
+stateStochLow = f_state(stochLow1, stochLow2)
+
+distLowRSI   = not na(priceLBar1) and not na(rsiLBar1) ? absI(priceLBar1 - rsiLBar1) : BIG
+distLowOBV   = not na(priceLBar1) and not na(obvLBar1) ? absI(priceLBar1 - obvLBar1) : BIG
+distLowVol   = not na(priceLBar1) and not na(finVolLBar1) ? absI(priceLBar1 - finVolLBar1) : BIG
+distLowStoch = not na(priceLBar1) and not na(stochLBar1) ? absI(priceLBar1 - stochLBar1) : BIG
+
+timeLowRSI   = distLowRSI <= confirmBars
+timeLowOBV   = distLowOBV <= confirmBars
+timeLowVol   = distLowVol <= confirmBars
+timeLowStoch = distLowStoch <= confirmBars
+
+// ========== ⭐ حساب Scores مع EGX Boost ==========
+
+// ⭐ Tier System مع A++
+getTierEGX(score, isBearish) =>
+    highScore = score >= highProbCutoff
+    medScore  = score >= medProbCutoff
+    hasMultipleConf = (timeTopRSI and timeTopOBV) or (timeLowRSI and timeLowOBV)
+    hasStochConf = useStoch ? (isBearish ? timeTopStoch : timeLowStoch) : false
+    hasVolConf   = useFinVol ? (isBearish ? timeTopVol : timeLowVol) : false
+    // ⭐ شروط EGX الجديدة
+    hasBurst = useBurstFilter ? (isBearish ? isStrongBearish : isStrongBullish) : false
+    hasLimit = useLimitFilter ? (isBearish ? nearLimitDown : nearLimitUp) : false
+    hasAccumEGX = useAccum ? (isBearish ? false : isAccumulating) : false
+
+    // ⭐ A++ = أعلى درجة (EGX Special)
+    if score >= 0.85 and hasMultipleConf and hasBurst and (hasLimit or hasAccumEGX)
+        "A++"
+    else if highScore and hasMultipleConf and (hasStochConf or hasVolConf or hasBurst)
+        "A+"
+    else if highScore and (hasMultipleConf or hasStochConf or hasVolConf or hasBurst)
+        "A"
+    else if medScore
+        "B"
+    else
+        "C"
+
+calcBearishScoreEGX() =>
+    f1 = (statePriceTop == 1 and stateRSITop <= 0) ? (stateRSITop == -1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceTop == 1 and stateOBVTop <= 0) ? (stateOBVTop == -1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeTopStoch
+        if stochK > stochOverbought and stateStochTop <= 0
+            f3 := 0.75
+        else if stochK > stochOverbought
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeTopVol
+        if stateVolTop <= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolTop <= 0
+            f4 := 0.55
+    f5 = isUptrend ? 0.35 : isDowntrend ? 0.75 : 0.50
+    f6 = 0.50
+    if timeTopRSI and timeTopOBV
+        f6 := 0.85
+    else if timeTopRSI or timeTopOBV
+        f6 := 0.65
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeTopRSI ? 1 : 0) + (timeTopOBV ? 1 : 0) + (timeTopVol and useFinVol ? 1 : 0) + (timeTopStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+
+    // ⭐ عوامل EGX الجديدة
+    f_egx1 = 0.25
+    if useBurstFilter and isStrongBearish
+        f_egx1 := 0.90
+
+    f_egx2 = 0.25
+    if useLimitFilter and nearLimitDown
+        f_egx2 := 0.85
+
+    f_egx3 = 0.25
+    // للـ Bearish التراكم مش مهم قوي، بس نخليه للتناسق
+
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 
+         1.2 * logit(clamp(f2, 0.1, 0.9)) + 
+         1.0 * logit(clamp(f3, 0.1, 0.9)) + 
+         0.8 * logit(clamp(f4, 0.1, 0.9)) + 
+         1.1 * logit(clamp(f5, 0.1, 0.9)) + 
+         1.4 * logit(clamp(f6, 0.1, 0.9)) + 
+         0.9 * logit(clamp(f7, 0.1, 0.9)) + 
+         1.0 * logit(clamp(f8, 0.1, 0.9)) +
+         egxBurstWeight * logit(clamp(f_egx1, 0.1, 0.9)) +
+         egxLimitWeight * logit(clamp(f_egx2, 0.1, 0.9)) +
+         egxAccumWeight * logit(clamp(f_egx3, 0.1, 0.9))
+
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+    clamp(prob, 0.05, 0.95)
+
+calcBullishScoreEGX() =>
+    f1 = (statePriceLow == -1 and stateRSILow >= 0) ? (stateRSILow == 1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceLow == -1 and stateOBVLow >= 0) ? (stateOBVLow == 1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeLowStoch
+        if stochK < stochOversold and stateStochLow >= 0
+            f3 := 0.75
+        else if stochK < stochOversold
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeLowVol
+        if stateVolLow >= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolLow >= 0
+            f4 := 0.55
+    f5 = isDowntrend ? 0.35 : isUptrend ? 0.75 : 0.50
+    f6 = 0.50
+    if timeLowRSI and timeLowOBV
+        f6 := 0.85
+    else if timeLowRSI or timeLowOBV
+        f6 := 0.65
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeLowRSI ? 1 : 0) + (timeLowOBV ? 1 : 0) + (timeLowVol and useFinVol ? 1 : 0) + (timeLowStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+
+    // ⭐ عوامل EGX الجديدة
+    f_egx1 = 0.25
+    if useBurstFilter and isStrongBullish
+        f_egx1 := 0.90
+
+    f_egx2 = 0.25
+    if useLimitFilter and nearLimitUp
+        f_egx2 := 0.85
+
+    f_egx3 = 0.25
+    if useAccum and isAccumulating
+        f_egx3 := 0.80
+
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 
+         1.2 * logit(clamp(f2, 0.1, 0.9)) + 
+         1.0 * logit(clamp(f3, 0.1, 0.9)) + 
+         0.8 * logit(clamp(f4, 0.1, 0.9)) + 
+         1.1 * logit(clamp(f5, 0.1, 0.9)) + 
+         1.4 * logit(clamp(f6, 0.1, 0.9)) + 
+         0.9 * logit(clamp(f7, 0.1, 0.9)) + 
+         1.0 * logit(clamp(f8, 0.1, 0.9)) +
+         egxBurstWeight * logit(clamp(f_egx1, 0.1, 0.9)) +
+         egxLimitWeight * logit(clamp(f_egx2, 0.1, 0.9)) +
+         egxAccumWeight * logit(clamp(f_egx3, 0.1, 0.9))
+
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+    clamp(prob, 0.05, 0.95)
+
+bearishScore = modeTop ? calcBearishScoreEGX() : 0.0
+bearishValid = modeTop and bearishScore >= medProbCutoff and allowSellSignals
+bearishTier  = modeTop ? getTierEGX(bearishScore, true) : ""
+
+bullishScore = modeBottom ? calcBullishScoreEGX() : 0.0
+bullishValid = modeBottom and bullishScore >= medProbCutoff and allowBuySignals
+bullishTier  = modeBottom ? getTierEGX(bullishScore, false) : ""
+
+
+// ⭐ حساب الفلاتر التكيفية
+float dynMinBody = f_dynMinBody()
+float dynMaxUpper = f_dynMaxUpper()
+float dynMinClose = f_dynMinClose()
+float dynVolMin = f_dynVolMin()
+float dynVolMax = f_dynVolMax()
+bool mtfUp = f_mtfUp()
+bool mtfDown = f_mtfDown()
+float adaptiveScore = f_adaptiveScore()
+bool isAdaptiveOk = f_adaptiveFilter()
+bool isMTFBuyOk = not useMTFConfirm or mtfUp
+bool isMTFSellOk = not useMTFConfirm or mtfDown
+
+// ⭐ نظام التصويت المتكامل (2 من 3)
+bool ensembleBuy = f_ensembleDecision(isContinuation, isAdaptiveOk, isMTFBuyOk)
+bool ensembleSell = f_ensembleDecision(isContinuation, isAdaptiveOk, isMTFSellOk)
+
+
+showBearish = bearishValid and barstate.isconfirmed and (showTierFilter == "Todos" or (showTierFilter == "A+ e A++ apenas" and (bearishTier == "A+" or bearishTier == "A++")) or (showTierFilter == "A++ apenas" and bearishTier == "A++"))
+showBullish = bullishValid and barstate.isconfirmed and (showTierFilter == "Todos" or (showTierFilter == "A+ e A++ apenas" and (bullishTier == "A+" or bullishTier == "A++")) or (showTierFilter == "A++ apenas" and bullishTier == "A++"))
+
+bool aPlusPlusAlert = showBullish and bullishTier == "A++"
+
+var int lastAPlusBar = -9999
+var float lastAPlusHigh = na
+var float lastAPlusLow = na
+var bool aPlusGuardActive = false
+var bool aPlusGuardFailed = false
+var bool lastAPlusWasTrap = false
+var bool lastAPlusWasExh = false
+var int lastSmartEntryBar = -9999
+
+if aPlusPlusAlert
+    lastAPlusBar := bar_index
+    lastAPlusHigh := high
+    lastAPlusLow := low
+    aPlusGuardActive := true
+    aPlusGuardFailed := false
+    lastAPlusWasTrap := isTrap
+    lastAPlusWasExh := isExhaustion
+
+bool inAPlusGuardWindow = aPlusGuardActive and bar_index >= lastAPlusBar and (bar_index - lastAPlusBar) <= pullbackMaxBars + 2
+bool brokeAPlusLow = useAPlusGuard and failOnBreakLow and inAPlusGuardWindow and bar_index > lastAPlusBar and barstate.isconfirmed and close < lastAPlusLow
+float dropFromAPlusHigh = not na(lastAPlusHigh) and lastAPlusHigh > 0 ? (lastAPlusHigh - close) / lastAPlusHigh * 100.0 : 0.0
+bool droppedFromHigh = useAPlusGuard and inAPlusGuardWindow and bar_index > lastAPlusBar and dropFromAPlusHigh >= failDropPct
+
+if brokeAPlusLow or droppedFromHigh
+    aPlusGuardFailed := true
+    aPlusGuardActive := false
+
+bool aPlusQualityOK = not blockBadAPlusSetup or (not lastAPlusWasTrap and not lastAPlusWasExh)
+bool guardAllowsEntry = not useAPlusGuard or (not aPlusGuardFailed and aPlusQualityOK)
+
+float atrEntry = ta.atr(14)
+float swingLowEntry = ta.lowest(low, 10)
+bool overExtended = (close - swingLowEntry) > maxExtensionATR * atrEntry
+bool chaseRisk = (blockChaseBurst and isStrongBullish) or (blockChaseLimit and nearLimitUp) or (blockExhaustTrap and (isExhaustion or isTrap)) or overExtended
+bool safeImmediate = aPlusPlusAlert and not chaseRisk and guardAllowsEntry and (not useCandleDetect or isContinuation) and ensembleBuy
+
+bool inPullbackWindow = bar_index > lastAPlusBar and (bar_index - lastAPlusBar) <= pullbackMaxBars and not na(lastAPlusHigh) and not na(lastAPlusLow) and guardAllowsEntry
+float pbFibLevel = lastAPlusHigh - (lastAPlusHigh - lastAPlusLow) * pullbackPct / 100.0
+bool touchedFib = inPullbackWindow and low <= pbFibLevel
+bool touchedEma = useEmaPullback and inPullbackWindow and low <= ema20
+bool bounceOK = close > open and close > math.min(nz(pbFibLevel, close), nz(ema20, close))
+bool structureOK = not requireHoldStructure or low >= lastAPlusLow
+bool qualityPullback = (not requireEnsemblePullback or ensembleBuy) and (not requireContPullback or isContinuation) and (not blockExhaustTrap or (not isExhaustion and not isTrap))
+bool pullbackEntryRaw = useSmartEntry and smartEntryMode == "Pullback" and inPullbackWindow and (touchedFib or touchedEma) and bounceOK and structureOK and qualityPullback and allowBuySignals and barstate.isconfirmed
+bool pullbackEntry = pullbackEntryRaw and not pullbackEntryRaw[1]
+bool aPlusWaitPullback = aPlusPlusAlert and useSmartEntry and smartEntryMode == "Pullback" and (chaseRisk or not guardAllowsEntry)
+bool aPlusFailedAlert = showGuardLabels and brokeAPlusLow and not brokeAPlusLow[1]
+bool aPlusDangerAlert = showGuardLabels and droppedFromHigh and not droppedFromHigh[1] and not aPlusGuardFailed[1]
+
+// ⭐ إحصائية تحقق: بعد إشارة BUY A++ هل أغلق السعر أعلى بعد evalBars شمعة؟
+var int appBuySignals = 0
+var int appBuyWins = 0
+bool prevBarWasBuyApp = barstate.isconfirmed and bullishValid[evalBars] and bullishTier[evalBars] == "A++"
+if prevBarWasBuyApp
+    appBuySignals := appBuySignals + 1
+    if close > close[evalBars]
+        appBuyWins := appBuyWins + 1
+
+//====================================================================================
+// 🌱 إشارة الشراء المبكرة (EARLY BUY): تتكون عند القاع قبل شمعة الانفجار
+//====================================================================================
+// الفكرة: انحراف صاعد (السعر يصنع قاعاً أدنى بينما RSI/OBV يرفضان الهبوط)
+// + تراكم ذكي (شراء خفي) + تشبع بيعي، وبدون شمعة انفجار (عشان تكون مبكرة فعلاً)
+// الشرط الإجباري الوحيد: انحراف صاعد عند القاع
+bool earlyDiverge  = statePriceLow == -1 and (stateRSILow >= 0 or stateOBVLow >= 0)
+// شروط مساندة: يكفي تحقق earlyMinConf منها (بدل اشتراطها كلها)
+bool earlyWindow   = timeLowRSI and timeLowOBV
+bool earlyOversold = not useStoch or stochK <= earlyStochMax
+bool earlyAccumOK  = accumRatio >= earlyAccumMin
+int earlyConfCount = (earlyWindow ? 1 : 0) + (earlyOversold ? 1 : 0) + (earlyAccumOK ? 1 : 0)
+// فلتر الاتجاه اختياري هنا: القيعان الحقيقية تحدث وسط هبوط قوي فالفلتر كان يمنع الإشارة
+bool earlyTrendOK = earlyIgnoreTrend or allowBuySignals
+bool earlyRaw = useEarlySignal and earlyDiverge and earlyConfCount >= earlyMinConf and earlyTrendOK and not isStrongBullish
+
+var int lastEarlyBar = -9999
+bool earlyBuyCandidate = earlyRaw and barstate.isconfirmed and (bar_index - lastEarlyBar) > earlyCooldown
+if earlyBuyCandidate
+    lastEarlyBar := bar_index
+
+// 🎯 وضع التأكيد: الإشارة لا تصدر إلا لو الشمعة التالية أغلقت أعلى من شمعة الانحراف
+// (يفلتر "السكاكين الساقطة" مقابل دخول متأخر بشمعة وبسعر أعلى قليلاً)
+bool earlyBuy = earlyConfirmMode ? (earlyBuyCandidate[1] and barstate.isconfirmed and close > close[1]) : earlyBuyCandidate
+
+bool smartBuyEntry = useSmartEntry ? (smartEntryMode == "Pullback" ? pullbackEntry : smartEntryMode == "Safe Immediate" ? safeImmediate : earlyBuy) : aPlusPlusAlert
+
+if smartBuyEntry
+    lastSmartEntryBar := bar_index
+
+var int smartEntrySignals = 0
+var int smartEntryWins = 0
+if barstate.isconfirmed and smartBuyEntry[evalBars]
+    smartEntrySignals := smartEntrySignals + 1
+    if close > close[evalBars]
+        smartEntryWins := smartEntryWins + 1
+
+// إحصائية تحقق: بعد EARLY BUY هل أغلق السعر أعلى بعد evalBars شمعة؟
+var int earlySignals = 0
+var int earlyWins = 0
+if barstate.isconfirmed and earlyBuy[evalBars]
+    earlySignals := earlySignals + 1
+    if close > close[evalBars]
+        earlyWins := earlyWins + 1
+
+//====================================================================================
+// 🔻 إشارة الخروج المبكرة (EARLY SELL): تتكون عند القمة قبل شمعة الانهيار
+//====================================================================================
+// مرآة معكوسة لإشارة الشراء: السعر يصنع قمة أعلى بينما RSI/OBV يرفضان الصعود (انحراف هابط)
+bool earlySellDiverge = statePriceTop == 1 and (stateRSITop <= 0 or stateOBVTop <= 0)
+// شروط مساندة: يكفي تحقق earlyMinConf منها
+bool earlySellWindow  = timeTopRSI and timeTopOBV
+bool earlyOverbought  = not useStoch or stochK >= (100 - earlyStochMax)
+bool earlyDistOK      = accumRatio <= 1.0 / earlyAccumMin
+int earlySellConfCount = (earlySellWindow ? 1 : 0) + (earlyOverbought ? 1 : 0) + (earlyDistOK ? 1 : 0)
+bool earlySellTrendOK = earlyIgnoreTrend or allowSellSignals
+bool earlySellRaw = useEarlySignal and earlySellDiverge and earlySellConfCount >= earlyMinConf and earlySellTrendOK and not isStrongBearish
+
+var int lastEarlySellBar = -9999
+bool earlySellCandidate = earlySellRaw and barstate.isconfirmed and (bar_index - lastEarlySellBar) > earlyCooldown
+if earlySellCandidate
+    lastEarlySellBar := bar_index
+
+// 🎯 وضع التأكيد: إشارة الخروج لا تصدر إلا لو الشمعة التالية أغلقت أدنى من شمعة الانحراف
+bool earlySell = earlyConfirmMode ? (earlySellCandidate[1] and barstate.isconfirmed and close < close[1]) : earlySellCandidate
+
+// إحصائية تحقق: بعد EARLY SELL هل أغلق السعر أدنى بعد evalBars شمعة؟
+var int earlySellSignals = 0
+var int earlySellWins = 0
+if barstate.isconfirmed and earlySell[evalBars]
+    earlySellSignals := earlySellSignals + 1
+    if close < close[evalBars]
+        earlySellWins := earlySellWins + 1
+
+// 🛡️ مراقبة الخروج بعد الدخول الذكي — حماية من الهبوط بعد A++
+bool inPostEntryWatch = lastSmartEntryBar > 0 and bar_index > lastSmartEntryBar and (bar_index - lastSmartEntryBar) <= exitWatchBars
+bool postEntryBreakLow = exitOnBreakLow and inPostEntryWatch and barstate.isconfirmed and not na(lastAPlusLow) and close < lastAPlusLow
+bool postEntryBearDiv = exitOnBearDiv and inPostEntryWatch and earlySell
+bool postEntryTrendBreak = inPostEntryWatch and barstate.isconfirmed and close < ema20 and close < open and isStrongBearish
+bool postEntryExit = showGuardLabels and (postEntryBreakLow or postEntryBearDiv or postEntryTrendBreak)
+bool postEntryExitSignal = postEntryExit and not postEntryExit[1]
+
+//====================================================================================
+// 📋 5. حساب مؤشر المتنبئ المتقدم (Buy/Sell Trend Master)
+//====================================================================================
+
+// Hybrid Supertrend
+[st1, dir1] = ta.supertrend(fac1, atrP1)
+[st2, dir2] = ta.supertrend(fac2, atrP2)
+[st3, dir3] = ta.supertrend(fac3, atrP3)
+
+is_hybrid_green = dir1 < 0 and dir2 < 0 and dir3 < 0
+is_hybrid_red   = dir1 > 0 and dir2 > 0 and dir3 > 0
+
+// HMA & EMA Channel
+hma = ta.hma(close, h_len)
+ema_high = ta.ema(high, ema_len)
+ema_low  = ta.ema(low, ema_len)
+
+is_hma_green = hma > hma[1]
+is_hma_red   = hma < hma[1]
+
+// Rules
+bool trend_buy_cond  = is_hybrid_green and is_hma_green
+bool trend_sell_cond = is_hybrid_red and is_hma_red
+bool scalp_buy_cond  = ta.crossover(close, ema_high)
+bool scalp_sell_cond = ta.crossunder(close, ema_low)
+
+// Oscillator (for histogram)
+atr_v   = ta.atr(14)
+osc_val = (close - hma) / (atr_v > 0 ? atr_v : syminfo.mintick)
+
+color col_green = color.rgb(18, 228, 158)
+color col_red   = color.rgb(236, 86, 16)
+
+color hist_col = trend_buy_cond  ? col_green : 
+                 trend_sell_cond ? col_red   : 
+                 color.gray
+
+// ========== نظام التصويت للمتنبئ ==========
+int bullish_signals = (trend_buy_cond ? 2 : 0) + (scalp_buy_cond ? 1 : 0) + (is_hybrid_green ? 1 : 0) + (is_hma_green ? 1 : 0) + (useBurstFilter and isStrongBullish ? 1 : 0) + (useLimitFilter and nearLimitUp ? 1 : 0) + (useAccum and isAccumulating ? 1 : 0)
+int bearish_signals = (trend_sell_cond ? 2 : 0) + (scalp_sell_cond ? 1 : 0) + (is_hybrid_red ? 1 : 0) + (is_hma_red ? 1 : 0) + (useBurstFilter and isStrongBearish ? 1 : 0) + (useLimitFilter and nearLimitDown ? 1 : 0)
+
+string signal_type_adv = "محايد"
+if bullish_signals > bearish_signals and bullish_signals >= min_signals_required
+    signal_type_adv := "شراء 🟢"
+else if bearish_signals > bullish_signals and bearish_signals >= min_signals_required
+    signal_type_adv := "بيع 🔴"
+
+float final_confidence = 50.0
+if signal_type_adv != "محايد"
+    int max_signals = math.max(bullish_signals, bearish_signals)
+    bool trendBoost = (signal_type_adv == "شراء 🟢" and is_hybrid_green and is_hma_green) or (signal_type_adv == "بيع 🔴" and is_hybrid_red and is_hma_red)
+    bool scalpBoost = (signal_type_adv == "شراء 🟢" and scalp_buy_cond) or (signal_type_adv == "بيع 🔴" and scalp_sell_cond)
+    bool burstBoost = (signal_type_adv == "شراء 🟢" and isStrongBullish) or (signal_type_adv == "بيع 🔴" and isStrongBearish)
+    bool limitBoost = (signal_type_adv == "شراء 🟢" and nearLimitUp) or (signal_type_adv == "بيع 🔴" and nearLimitDown)
+    final_confidence := math.min(95.0, 65.0 + max_signals * 5.0 + (trendBoost ? 5.0 : 0.0) + (scalpBoost ? 5.0 : 0.0) + (burstBoost ? 3.0 : 0.0) + (limitBoost ? 2.0 : 0.0))
+
+float tp1_adv = na
+float tp2_adv = na
+float tp3_adv = na
+float sl_adv = na
+
+if signal_type_adv == "شراء 🟢"
+    tp1_adv := close * (1 + tp1_percent / 100)
+    tp2_adv := close * (1 + tp2_percent / 100)
+    tp3_adv := close * (1 + tp3_percent / 100)
+    sl_adv  := close * (1 - stop_loss_percent / 100)
+else if signal_type_adv == "بيع 🔴"
+    tp1_adv := close * (1 - tp1_percent / 100)
+    tp2_adv := close * (1 - tp2_percent / 100)
+    tp3_adv := close * (1 - tp3_percent / 100)
+    sl_adv  := close * (1 + stop_loss_percent / 100)
+
+//====================================================================================
+// 📋 6. الرسوم البيانية (Visualizations)
+//====================================================================================
+
+//====================================================================================
+// 📋 6. الرسوم البيانية (Visualizations) - مع نظام Offset الذكي
+//====================================================================================
+
+// ---------- 6.0 إعدادات الإزاحة (Offset Settings) ----------
+// كل نوع إشارة له "طبقة" خاصة لتجنب التداخل
+var float OFFSET_TREND    = 1.0   // أعلى أولوية
+var float OFFSET_BURST    = 2.0   // Burst
+var float OFFSET_LIMIT    = 3.0   // Limit
+var float OFFSET_SCALP    = 4.0   // Scalp
+var float OFFSET_DIVERGE  = 5.0   // Divergence (أقل أولوية)
+
+// حساب ATR لتحديد حجم الإزاحة ديناميكياً
+float atr_offset = ta.atr(14) * 0.3  // 30% من ATR
+
+// ---------- 6.1 رسم الانحرافات (Divergence Labels) ----------
+// إزاحة أكبر للانحرافات - خاصة A++ عشان تبقى واضحة ومش متداخلة
+float divOffset = atr_offset * 0.6  // زودنا من 0.3 لـ 0.6 (ضعف)
+
+if showLabels and showBearish and not na(priceHigh1) and not na(priceHBar1)
+    string labelText = bearishTier == "A++" ? "🔻🔻🔻 SELL A++ | Score: " + str.tostring(math.round(bearishScore * 100)) + "%" : bearishTier == "A+" ? "🔻🔻 SELL A+ | Score: " + str.tostring(math.round(bearishScore * 100)) + "%" : "🔻 SELL " + bearishTier + " | Score: " + str.tostring(math.round(bearishScore * 100)) + "%"
+    color labelColor = bearishTier == "A++" ? color.new(#b71c1c, 20) : bearishTier == "A+" ? color.new(#ff1744, 20) : bearishTier == "A" ? color.new(#ff6d00, 20) : color.new(#ffa000, 20)
+    labelSize = bearishTier == "A++" ? size.large : bearishTier == "A+" ? size.normal : size.small
+    // إزاحة أكبر: A++ تبعد أكتر عشان تبقى مميزة
+    float tierOffset = bearishTier == "A++" ? divOffset * 2.0 : bearishTier == "A+" ? divOffset * 0.5 : bearishTier == "A" ? divOffset * 2.5 : divOffset * 4
+    // الرسم على شمعة اكتمال الشرط (bar_index) وليس شمعة القمة القديمة، لتقييم تاريخي صادق
+    label.new(x=bar_index, y=high + tierOffset, text=labelText, style=label.style_label_down, color=labelColor, textcolor=color.white, size=labelSize)
+
+if showLabels and showBullish and not na(priceLow1) and not na(priceLBar1)
+    // ⭐ NEW: إضافة مؤشر نوع الشمعة للـ BUY A++
+    string candleTypeText = ""
+    color candleTypeColor = color.white
+    if useCandleDetect and bullishTier == "A++"
+        // ⭐ NEW: نظام التصويت المتكامل (Ensemble)
+        string ensembleText = ""
+        color ensembleColor = color.white
+        if useEnsembleVote
+            if ensembleBuy
+                ensembleText := " ✅ 2/3"
+                ensembleColor := color.new(#00e676, 0)
+            else
+                ensembleText := " ❌ 1/3"
+                ensembleColor := color.new(#ff1744, 0)
+
+        // ⭐ NEW: درجة الثقة التكيفية
+        string adaptiveText = ""
+        if useAdaptiveFilter and winCount >= adaptiveMinSamples
+            if adaptiveScore >= 0.7
+                adaptiveText := " 🤖 STRONG"
+            else if adaptiveScore >= adaptiveConfidenceThreshold
+                adaptiveText := " 🤖 OK"
+            else
+                adaptiveText := " 🤖 WEAK"
+
+        if isContinuation
+            candleTypeText := " ✅ CONT" + ensembleText + adaptiveText
+            candleTypeColor := ensembleBuy ? color.new(#00e676, 0) : color.new(#ffa000, 0)
+        else if isExhaustion
+            candleTypeText := " ⚠️ EXH" + ensembleText + adaptiveText
+            candleTypeColor := color.new(#ff1744, 0)
+        else if isTrap
+            candleTypeText := " ❌ TRAP" + ensembleText + adaptiveText
+            candleTypeColor := color.new(#ff1744, 0)
+        else
+            candleTypeText := " ⚠️ WEAK" + ensembleText + adaptiveText
+            candleTypeColor := ensembleBuy ? color.new(#ffa000, 0) : color.new(#ff1744, 0)
+
+    string labelTextBull = bullishTier == "A++" ? "🟢🟢🟢 BUY A++" + candleTypeText + " | Score: " + str.tostring(math.round(bullishScore * 100)) + "%" : bullishTier == "A+" ? "🟢🟢 BUY A+ | Score: " + str.tostring(math.round(bullishScore * 100)) + "%" : "🟢 BUY " + bullishTier + " | Score: " + str.tostring(math.round(bullishScore * 100)) + "%"
+    color labelColorBull = bullishTier == "A++" ? color.new(#1b5e20, 20) : bullishTier == "A+" ? color.new(#00e676, 20) : bullishTier == "A" ? color.new(#26a69a, 20) : color.new(#4caf50, 20)
+    labelSizeBull = bullishTier == "A++" ? size.large : bullishTier == "A+" ? size.normal : size.small
+    float tierOffset = bullishTier == "A++" ? divOffset * 2.0 : bullishTier == "A+" ? divOffset * 0.5 : bullishTier == "A" ? divOffset * 2.5 : divOffset * 4
+    // الرسم على شمعة اكتمال الشرط (bar_index) وليس شمعة القاع القديمة، لتقييم تاريخي صادق
+    label.new(x=bar_index, y=low - tierOffset, text=labelTextBull, style=label.style_label_up, color=labelColorBull, textcolor=candleTypeColor, size=labelSizeBull)
+
+// 🌱 رسم الإشارة المبكرة: تظهر على شمعة القاع قبل الانفجار (بدون Lookahead)
+if earlyBuy
+    label.new(x=bar_index, y=low - divOffset * 3.0, text="🌱 EARLY BUY", style=label.style_label_up, color=color.new(#00c853, 10), textcolor=color.white, size=size.normal)
+
+if showSmartEntryLabels and aPlusWaitPullback
+    string waitText = not guardAllowsEntry ? "⛔ A++ BLOCKED\nEXH/TRAP" : "⏳ A++ WAIT\nPullback"
+    label.new(x=bar_index, y=high + divOffset * 4.0, text=waitText, style=label.style_label_down, color=color.new(#ff6f00, 15), textcolor=color.white, size=size.small)
+
+if showGuardLabels and aPlusFailedAlert
+    label.new(x=bar_index, y=high + divOffset * 5.0, text="❌ A++ FAILED\nكسر القاع", style=label.style_label_down, color=color.new(#d50000, 10), textcolor=color.white, size=size.normal)
+
+if showGuardLabels and aPlusDangerAlert
+    label.new(x=bar_index, y=high + divOffset * 5.5, text="⚠️ A++ DANGER\nهبوط " + str.tostring(dropFromAPlusHigh, "#.#") + "%", style=label.style_label_down, color=color.new(#ff6f00, 10), textcolor=color.white, size=size.small)
+
+if showSmartEntryLabels and smartBuyEntry and smartEntryMode == "Pullback"
+    label.new(x=bar_index, y=low - divOffset * 4.5, text="✅ SMART ENTRY", style=label.style_label_up, color=color.new(#00e676, 5), textcolor=color.black, size=size.normal)
+
+if showSmartEntryLabels and smartBuyEntry and smartEntryMode == "Safe Immediate"
+    label.new(x=bar_index, y=low - divOffset * 4.5, text="✅ SAFE ENTRY", style=label.style_label_up, color=color.new(#00c853, 5), textcolor=color.black, size=size.normal)
+
+if showGuardLabels and postEntryExitSignal
+    string exitText = postEntryBreakLow ? "🛑 EXIT NOW\nكسر قاع A++" : postEntryBearDiv ? "🛑 EXIT NOW\nانحراف هابط" : "🛑 EXIT NOW\nكسر EMA20"
+    label.new(x=bar_index, y=high + divOffset * 3.5, text=exitText, style=label.style_label_down, color=color.new(#d50000, 5), textcolor=color.white, size=size.normal)
+
+// 🔻 رسم إشارة الخروج المبكرة: تظهر على شمعة القمة قبل الهبوط (بدون Lookahead)
+if earlySell
+    label.new(x=bar_index, y=high + divOffset * 3.0, text="🔻 EARLY SELL", style=label.style_label_down, color=color.new(#d50000, 10), textcolor=color.white, size=size.normal)
+
+var float segTop = na
+var float segBottom = na
+
+if showLines
+    if not na(priceHigh1) and not na(priceHigh2)
+        segTop := f_seg(priceHigh1, priceHBar1, priceHigh2, priceHBar2)
+    if not na(priceLow1) and not na(priceLow2)
+        segBottom := f_seg(priceLow1, priceLBar1, priceLow2, priceLBar2)
+
+plot(showLines and modeTop ? segTop : na, "Reta Topos", color.new(#ff1744, 60), linewidth=1, style=plot.style_line)
+plot(showLines and modeBottom ? segBottom : na, "Reta Fundos", color.new(#00e676, 60), linewidth=1, style=plot.style_line)
+
+// ---------- 6.2 رسم المتنبئ (Histogram + Momentum Line) ----------
+plot(osc_val, "Signal Histogram", color=color.new(hist_col, 20), style=plot.style_columns, linewidth=2)
+plot(osc_val, "Momentum Line", color=color.white, linewidth=2)
+
+// خط الصفر
+hline(0, "Neutral Line", color=color.new(color.gray, 50), linestyle=hline.style_dotted)
+
+// ---------- 6.3 نظام الإشارات بدون تداخل (Smart Offset) ----------
+// عدادات محلية منفصلة للشراء والبيع (تتعادل كل شمعة تلقائياً)
+int signalCountBuy = 0
+int signalCountSell = 0
+
+// === Trend Labels (أعلى أولوية - أقل إزاحة) ===
+bool isNewTrendBuy = trend_buy_cond and not trend_buy_cond[1]
+bool isNewTrendSell = trend_sell_cond and not trend_sell_cond[1]
+
+if isNewTrendBuy
+    signalCountBuy := signalCountBuy + 1
+    float off = atr_offset * (signalCountBuy - 1) * 0.8
+    label.new(bar_index, high + off, "TREND BUY", 
+        style=label.style_label_up, 
+        color=col_green, 
+        textcolor=color.black, 
+        size=size.tiny,
+        yloc=yloc.price)
+
+if isNewTrendSell
+    signalCountSell := signalCountSell + 1
+    float off = atr_offset * (signalCountSell - 1) * 0.8
+    label.new(bar_index, low - off, "TREND SELL", 
+        style=label.style_label_down, 
+        color=col_red, 
+        textcolor=color.white, 
+        size=size.tiny,
+        yloc=yloc.price)
+
+// === Scalp Markers ===
+if scalp_buy_cond
+    signalCountBuy := signalCountBuy + 1
+    float off = atr_offset * (signalCountBuy - 1) * 0.8
+    label.new(bar_index, high + off, "▲", 
+        style=label.style_label_down, 
+        color=color.new(color.lime, 50), 
+        textcolor=color.black, 
+        size=size.small,
+        yloc=yloc.price)
+
+if scalp_sell_cond
+    signalCountSell := signalCountSell + 1
+    float off = atr_offset * (signalCountSell - 1) * 0.8
+    label.new(bar_index, low - off, "▼", 
+        style=label.style_label_up, 
+        color=color.new(color.red, 50), 
+        textcolor=color.white, 
+        size=size.small,
+        yloc=yloc.price)
+
+// === EGX Burst Labels ===
+bool isNewBurstBuy = useBurstFilter and isStrongBullish and not isStrongBullish[1]
+bool isNewBurstSell = useBurstFilter and isStrongBearish and not isStrongBearish[1]
+
+if isNewBurstBuy
+    signalCountBuy := signalCountBuy + 1
+    float off = atr_offset * (signalCountBuy - 1) * 0.8
+    label.new(bar_index, high + off, "🚀 BURST", 
+        style=label.style_label_up, 
+        color=color.new(#ff00ff, 30), 
+        textcolor=color.white, 
+        size=size.tiny,
+        yloc=yloc.price)
+
+if isNewBurstSell
+    signalCountSell := signalCountSell + 1
+    float off = atr_offset * (signalCountSell - 1) * 0.8
+    label.new(bar_index, low - off, "🚀 BURST", 
+        style=label.style_label_down, 
+        color=color.new(#ff00ff, 30), 
+        textcolor=color.white, 
+        size=size.tiny,
+        yloc=yloc.price)
+
+// === EGX Limit Labels ===
+bool isNewLimitUp = useLimitFilter and nearLimitUp and not nearLimitUp[1]
+bool isNewLimitDown = useLimitFilter and nearLimitDown and not nearLimitDown[1]
+
+if isNewLimitUp
+    signalCountBuy := signalCountBuy + 1
+    float off = atr_offset * (signalCountBuy - 1) * 0.8
+    label.new(bar_index, high + off, "⚡ LIMIT+", 
+        style=label.style_label_up, 
+        color=color.new(#ffd700, 30), 
+        textcolor=color.black, 
+        size=size.tiny,
+        yloc=yloc.price)
+
+if isNewLimitDown
+    signalCountSell := signalCountSell + 1
+    float off = atr_offset * (signalCountSell - 1) * 0.8
+    label.new(bar_index, low - off, "⚡ LIMIT-", 
+        style=label.style_label_down, 
+        color=color.new(#ffd700, 30), 
+        textcolor=color.black, 
+        size=size.tiny,
+        yloc=yloc.price)
+
+// ---------- 6.9 تنظيف الملصقات المتداخلة (Auto-Cleanup) ----------
+if barstate.islast
+    // احذف الملصقات القديمة إذا زادت عن 50
+    if array.size(label.all) > 400
+        for i = 0 to array.size(label.all) - 401
+            label.delete(array.get(label.all, i))
+
+// ---------- 6.3 جداول المعلومات ----------
+// جدول الانحرافات (في أسفل اليمين)
+var table tDiv = table.new(position.bottom_right, 5, 19, bgcolor=color.new(#0d1117, 95), border_color=color.new(#58a6ff, 40))
+
+if showTableDiv and showTables and barstate.islast
+    table.cell(tDiv, 0, 0, "Série", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(tDiv, 1, 0, "Topo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(tDiv, 2, 0, "Δ Topo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(tDiv, 3, 0, "Fundo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(tDiv, 4, 0, "Δ Fundo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(tDiv, 0, 1, "Preço", text_color=color.gray)
+    table.cell(tDiv, 1, 1, f_stateTxt(statePriceTop), text_color=statePriceTop==1?color.new(#ff1744,0):color.gray)
+    table.cell(tDiv, 2, 1, "", text_color=color.gray)
+    table.cell(tDiv, 3, 1, f_stateTxt(statePriceLow), text_color=statePriceLow==-1?color.new(#00e676,0):color.gray)
+    table.cell(tDiv, 4, 1, "", text_color=color.gray)
+    table.cell(tDiv, 0, 2, "RSI", text_color=color.gray)
+    table.cell(tDiv, 1, 2, f_stateTxt(stateRSITop), text_color=stateRSITop<=0?color.new(#ff6d00,0):color.gray)
+    table.cell(tDiv, 2, 2, str.tostring(distTopRSI), text_color=distTopRSI<=confirmBars?color.new(#00e676,0):color.gray)
+    table.cell(tDiv, 3, 2, f_stateTxt(stateRSILow), text_color=stateRSILow>=0?color.new(#00e676,0):color.gray)
+    table.cell(tDiv, 4, 2, str.tostring(distLowRSI), text_color=distLowRSI<=confirmBars?color.new(#00e676,0):color.gray)
+    table.cell(tDiv, 0, 3, "OBV", text_color=color.gray)
+    table.cell(tDiv, 1, 3, f_stateTxt(stateOBVTop), text_color=stateOBVTop<=0?color.new(#ff6d00,0):color.gray)
+    table.cell(tDiv, 2, 3, str.tostring(distTopOBV), text_color=distTopOBV<=confirmBars?color.new(#00e676,0):color.gray)
+    table.cell(tDiv, 3, 3, f_stateTxt(stateOBVLow), text_color=stateOBVLow>=0?color.new(#00e676,0):color.gray)
+    table.cell(tDiv, 4, 3, str.tostring(distLowOBV), text_color=distLowOBV<=confirmBars?color.new(#00e676,0):color.gray)
+    if useStoch
+        table.cell(tDiv, 0, 4, "Stoch", text_color=color.gray)
+        table.cell(tDiv, 1, 4, f_stateTxt(stateStochTop), text_color=stateStochTop<=0?color.new(#ff6d00,0):color.gray)
+        table.cell(tDiv, 2, 4, str.tostring(distTopStoch), text_color=distTopStoch<=confirmBars?color.new(#00e676,0):color.gray)
+        table.cell(tDiv, 3, 4, f_stateTxt(stateStochLow), text_color=stateStochLow>=0?color.new(#00e676,0):color.gray)
+        table.cell(tDiv, 4, 4, str.tostring(distLowStoch), text_color=distLowStoch<=confirmBars?color.new(#00e676,0):color.gray)
+    table.cell(tDiv, 0, 6, "SINAL TOPO", text_color=color.new(#ff1744,0))
+    string sellText = showBearish ? bearishTier + " " + str.tostring(math.round(bearishScore*100)) + "%" : (allowSellSignals ? "---" : "🚫 BLOQ")
+    table.cell(tDiv, 1, 6, sellText, text_color=color.new(#ff1744,0))
+    table.cell(tDiv, 0, 7, "SINAL FUNDO", text_color=color.new(#00e676,0))
+    string buyText = showBullish ? bullishTier + " " + str.tostring(math.round(bullishScore*100)) + "%" : (allowBuySignals ? "---" : "🚫 BLOQ")
+    table.cell(tDiv, 1, 7, buyText, text_color=color.new(#00e676,0))
+    table.cell(tDiv, 0, 9, "TREND", text_color=color.gray)
+    string trendDisplay = useTrendFilter ? (overallTrend == 1 ? "▲ " + str.tostring(math.round(trendStrengthValue*100)) + "%" : overallTrend == -1 ? "▼ " + str.tostring(math.round(trendStrengthValue*100)) + "%" : "● SIDEWAYS") : "FILTER OFF"
+    color trendDisplayColor = overallTrend == 1 ? color.new(#00e676,0) : overallTrend == -1 ? color.new(#ff1744,0) : color.gray
+    table.cell(tDiv, 1, 9, trendDisplay, text_color=trendDisplayColor)
+    table.cell(tDiv, 0, 10, "Config", text_color=color.gray)
+    table.cell(tDiv, 1, 10, "L" + str.tostring(L), text_color=color.gray)
+    table.cell(tDiv, 2, 10, "Jan:" + str.tostring(confirmBars), text_color=color.gray)
+    table.cell(tDiv, 3, 10, "Threshold:" + str.tostring(math.round(trendThreshold*100)) + "%", text_color=color.gray)
+    // ⭐ صفوف EGX الجديدة
+    table.cell(tDiv, 0, 11, "🚀 EGX BOOST", text_color=color.new(#ff00ff,0), bgcolor=color.new(#1a0033, 80))
+    table.cell(tDiv, 1, 11, "Burst:" + (useBurstFilter ? (isStrongBullish ? "🟢" : isStrongBearish ? "🔴" : "⚪") : "OFF"), text_color=color.gray)
+    table.cell(tDiv, 2, 11, "Limit:" + (useLimitFilter ? (nearLimitUp ? "🟢" : nearLimitDown ? "🔴" : "⚪") : "OFF"), text_color=color.gray)
+    table.cell(tDiv, 3, 11, "Accum:" + (useAccum ? (isAccumulating ? "🟢" : "⚪") : "OFF"), text_color=color.gray)
+    table.cell(tDiv, 0, 12, "BodyRatio", text_color=color.gray)
+    table.cell(tDiv, 1, 12, str.tostring(bodyRatio, "#.##"), text_color=bodyRatio>=burstThreshold?color.new(#00e676,0):color.gray)
+    table.cell(tDiv, 2, 12, "VolRatio", text_color=color.gray)
+    table.cell(tDiv, 3, 12, str.tostring(volumeRatio, "#.##"), text_color=volumeRatio>=volumeBurstMult?color.new(#00e676,0):color.gray)
+    // ⭐ إحصائية A++: نسبة نجاح "الشمعة التالية صعود"
+    table.cell(tDiv, 0, 13, "A++ ⏭️ +" + str.tostring(evalBars) + "🕯️ Up", text_color=color.new(#00e676,0), bgcolor=color.new(#00331a, 80))
+    string appStatTxt = appBuySignals > 0 ? str.tostring(appBuyWins) + "/" + str.tostring(appBuySignals) + " (" + str.tostring(math.round(appBuyWins * 100.0 / appBuySignals)) + "%)" : "لا توجد إشارات"
+    table.cell(tDiv, 1, 13, appStatTxt, text_color=appBuySignals > 0 and appBuyWins * 2 >= appBuySignals ? color.new(#00e676,0) : color.new(#ffa000,0))
+    // 🌱 إحصائية Early Buy: نسبة نجاح "الشمعة التالية صعود"
+    table.cell(tDiv, 0, 14, "🌱 Early ⏭️ +" + str.tostring(evalBars) + "🕯️ Up", text_color=color.new(#00c853,0), bgcolor=color.new(#003300, 80))
+    string earlyStatTxt = earlySignals > 0 ? str.tostring(earlyWins) + "/" + str.tostring(earlySignals) + " (" + str.tostring(math.round(earlyWins * 100.0 / earlySignals)) + "%)" : "لا توجد إشارات"
+    table.cell(tDiv, 1, 14, earlyStatTxt, text_color=earlySignals > 0 and earlyWins * 2 >= earlySignals ? color.new(#00e676,0) : color.new(#ffa000,0))
+    // تشخيص لحظي: أي شرط ناقص الآن؟
+    table.cell(tDiv, 2, 14, "Div:" + (earlyDiverge ? "🟢" : "⚪"), text_color=color.gray)
+    table.cell(tDiv, 3, 14, "Conf:" + str.tostring(earlyConfCount) + "/" + str.tostring(earlyMinConf), text_color=earlyConfCount >= earlyMinConf ? color.new(#00e676,0) : color.gray)
+    // 🔻 إحصائية Early Sell: نسبة نجاح "الشمعة التالية هبوط"
+    table.cell(tDiv, 0, 15, "🔻 Early ⏭️ +" + str.tostring(evalBars) + "🕯️ Down", text_color=color.new(#ff5252,0), bgcolor=color.new(#330000, 80))
+    string earlySellStatTxt = earlySellSignals > 0 ? str.tostring(earlySellWins) + "/" + str.tostring(earlySellSignals) + " (" + str.tostring(math.round(earlySellWins * 100.0 / earlySellSignals)) + "%)" : "لا توجد إشارات"
+    table.cell(tDiv, 1, 15, earlySellStatTxt, text_color=earlySellSignals > 0 and earlySellWins * 2 >= earlySellSignals ? color.new(#00e676,0) : color.new(#ffa000,0))
+    table.cell(tDiv, 2, 15, "Div:" + (earlySellDiverge ? "🔴" : "⚪"), text_color=color.gray)
+    table.cell(tDiv, 3, 15, "Conf:" + str.tostring(earlySellConfCount) + "/" + str.tostring(earlyMinConf), text_color=earlySellConfCount >= earlyMinConf ? color.new(#ff5252,0) : color.gray)
+
+    // ⭐ NEW: صفوف النظام التكيفي
+    table.cell(tDiv, 0, 16, "🧠 ADAPTIVE AI", text_color=color.new(#00e676,0), bgcolor=color.new(#00331a, 80))
+    string adaptiveStatTxt = winCount >= adaptiveMinSamples ? "W:" + str.tostring(winCount) + " L:" + str.tostring(lossCount) + " Score:" + str.tostring(adaptiveScore, "#.##") : "Learning..."
+    table.cell(tDiv, 1, 16, adaptiveStatTxt, text_color=winCount >= adaptiveMinSamples ? (adaptiveScore >= adaptiveConfidenceThreshold ? color.new(#00e676,0) : color.new(#ff1744,0)) : color.gray)
+    table.cell(tDiv, 2, 16, "Ensemble:" + (ensembleBuy ? "🟢" : "🔴"), text_color=color.gray)
+    table.cell(tDiv, 3, 16, "MTF:" + (mtfUp ? "🟢" : "⚪"), text_color=color.gray)
+    table.cell(tDiv, 0, 17, "🎯 Smart Entry", text_color=color.new(#00e676, 0), bgcolor=color.new(#00331a, 80))
+    string smartStatTxt = smartEntrySignals > 0 ? str.tostring(smartEntryWins) + "/" + str.tostring(smartEntrySignals) + " (" + str.tostring(math.round(smartEntryWins * 100.0 / smartEntrySignals)) + "%)" : "لا توجد إشارات"
+    table.cell(tDiv, 1, 17, smartStatTxt, text_color=smartEntrySignals > 0 and smartEntryWins * 2 >= smartEntrySignals ? color.new(#00e676, 0) : color.new(#ffa000, 0))
+    table.cell(tDiv, 2, 17, "Mode:" + smartEntryMode, text_color=color.gray)
+    table.cell(tDiv, 3, 17, chaseRisk ? "⏳ WAIT" : "✅ OK", text_color=chaseRisk ? color.new(#ff6f00, 0) : color.new(#00e676, 0))
+    table.cell(tDiv, 0, 18, "🛡️ A++ Guard", text_color=color.new(#ff5252, 0), bgcolor=color.new(#330000, 80))
+    string guardTxt = aPlusGuardFailed ? "❌ FAILED" : aPlusGuardActive ? "⏳ ACTIVE" : guardAllowsEntry ? "✅ OK" : "⛔ BLOCK"
+    table.cell(tDiv, 1, 18, guardTxt, text_color=aPlusGuardFailed ? color.new(#ff1744, 0) : aPlusGuardActive ? color.new(#ffa000, 0) : color.new(#00e676, 0))
+    table.cell(tDiv, 2, 18, "Drop:" + str.tostring(dropFromAPlusHigh, "#.#") + "%", text_color=dropFromAPlusHigh >= failDropPct ? color.new(#ff1744, 0) : color.gray)
+    table.cell(tDiv, 3, 18, inPostEntryWatch ? "🛑 WATCH" : "⚪", text_color=inPostEntryWatch ? color.new(#ff6f00, 0) : color.gray)
+
+// جدول المتنبئ (في أعلى اليمين)
+var table predTable = table.new(position.top_right, 2, 8, bgcolor=color.rgb(0, 0, 0, 80), 
+        border_color=color.rgb(48, 54, 61, 60), 
+        border_width=2)
+
+if show_pred_table and showTables and barstate.islast
+    table.cell(predTable, 0, 0, "PREDICTOR", 
+        bgcolor=color.rgb(26, 26, 26, 100), 
+        text_color=color.rgb(255, 204, 0, 100), 
+        text_size=size.large, text_halign=text.align_center)
+    table.cell(predTable, 1, 0, "القيمة", 
+        bgcolor=color.rgb(26, 26, 26, 100), 
+        text_color=color.rgb(255, 204, 0, 100), 
+        text_size=size.large, text_halign=text.align_center)
+    table.cell(predTable, 0, 1, "الإشارة", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.gray)
+    color predColor = signal_type_adv == "شراء 🟢" ? color.rgb(0, 255, 0, 100) : 
+                      signal_type_adv == "بيع 🔴" ? color.rgb(255, 0, 0, 100) : 
+                      color.white
+    table.cell(predTable, 1, 1, signal_type_adv != "محايد" ? signal_type_adv : "انتظار", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=predColor)
+    table.cell(predTable, 0, 2, "الثقة", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.gray)
+    table.cell(predTable, 1, 2, str.tostring(final_confidence, "#.#") + "%", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.rgb(255, 255, 0, 100))
+    table.cell(predTable, 0, 3, "الإشارات", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.gray)
+    table.cell(predTable, 1, 3, "↑" + str.tostring(bullish_signals) + " | ↓" + str.tostring(bearish_signals), 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.rgb(0, 170, 255, 100))
+    table.cell(predTable, 0, 4, "TP1", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.gray)
+    table.cell(predTable, 1, 4, not na(tp1_adv) ? str.tostring(tp1_adv, "#.##") : "---", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.rgb(255, 255, 0, 100))
+    table.cell(predTable, 0, 5, "TP2", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.gray)
+    table.cell(predTable, 1, 5, not na(tp2_adv) ? str.tostring(tp2_adv, "#.##") : "---", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.rgb(0, 255, 136, 100))
+    table.cell(predTable, 0, 6, "TP3", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.gray)
+    table.cell(predTable, 1, 6, not na(tp3_adv) ? str.tostring(tp3_adv, "#.##") : "---", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.rgb(0, 255, 0, 100))
+    table.cell(predTable, 0, 7, "SL", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.gray)
+    table.cell(predTable, 1, 7, not na(sl_adv) ? str.tostring(sl_adv, "#.##") : "---", 
+        bgcolor=color.rgb(10, 10, 10, 100), 
+        text_color=color.rgb(255, 68, 68, 100))
+
+//====================================================================================
+// 📋 7. التنبيهات (Alerts) من كلا المؤشرين
+//====================================================================================
+
+// تنبيهات الانحرافات
+alertcondition(showBearish and bearishTier == "A+", "🔻 VENDA A+ (Divergência)", "Venda de alta qualidade detectada")
+alertcondition(showBullish and bullishTier == "A+", "🟢 COMPRA A+ (Divergência)", "Compra de alta qualidade detectada")
+// ⭐ تنبيه A++
+alertcondition(showBearish and bearishTier == "A++", "🔻🔻 VENDA A++ (EGX Super Signal)", "Venda A++ detectada - EGX Limit Down potential!")
+alertcondition(showBullish and bullishTier == "A++", "🟢🟢 COMPRA A++ (EGX Super Signal)", "Compra A++ detectada - EGX Limit Up potential!")
+alertcondition(aPlusPlusAlert, "👀 A++ Alert (راقب - لا تدخل فوراً)", "A++ ظهرت - انتظر تصحيح أو Safe Entry")
+alertcondition(aPlusFailedAlert, "❌ A++ FAILED (كسر القاع)", "إعداد A++ فشل - لا تدخل")
+alertcondition(aPlusDangerAlert, "⚠️ A++ DANGER (هبوط حاد)", "هبوط حاد بعد A++ - تجنب الدخول")
+alertcondition(postEntryExitSignal, "🛑 EXIT NOW (بعد الدخول)", "خروج فوري - الإعداد انكسر بعد الدخول")
+alertcondition(smartBuyEntry and smartEntryMode == "Pullback", "✅ Smart Entry (Pullback)", "دخول ذكي بعد تصحيح فيبوناتشي/EMA20")
+alertcondition(safeImmediate, "✅ Safe Immediate Entry", "دخول فوري آمن - شمعة استمرار بدون مطاردة")
+// 🌱 تنبيه الإشارة المبكرة
+alertcondition(earlyBuy, "🌱 EARLY BUY (قبل الانفجار)", "انحراف صاعد + تراكم ذكي عند القاع - إشارة مبكرة محتملة قبل الصعود!")
+// 🔻 تنبيه الخروج المبكر
+alertcondition(earlySell, "🔻 EARLY SELL (قبل الهبوط)", "انحراف هابط + توزيع عند القمة - إشارة خروج مبكرة محتملة قبل الهبوط!")
+
+// تنبيهات المتنبئ الأساسية
+alertcondition(trend_buy_cond and not trend_buy_cond[1], "Trend Buy", "Hybrid ST + HMA are Green")
+alertcondition(trend_sell_cond and not trend_sell_cond[1], "Trend Sell", "Hybrid ST + HMA are Red")
+alertcondition(scalp_buy_cond, "Scalp Buy", "Price closed above the Upper EMA line!")
+alertcondition(scalp_sell_cond, "Scalp Sell", "Price closed below the Lower EMA line!")
+
+// تنبيهات المتنبئ المتقدمة
+alertcondition(signal_type_adv == "شراء 🟢" and final_confidence >= min_confidence, 
+               "Advanced Buy", 
+               "Advanced Buy Signal (confidence >= min_confidence)")
+alertcondition(signal_type_adv == "بيع 🔴" and final_confidence >= min_confidence, 
+               "Advanced Sell", 
+               "Advanced Sell Signal (confidence >= min_confidence)")
+
+// ⭐ تنبيهات EGX الجديدة
+alertcondition(useBurstFilter and isStrongBullish and not isStrongBullish[1], 
+               "🚀 EGX Burst Buy", 
+               "Strong bullish burst detected - High momentum candle with volume spike!")
+alertcondition(useBurstFilter and isStrongBearish and not isStrongBearish[1], 
+               "🚀 EGX Burst Sell", 
+               "Strong bearish burst detected - High momentum candle with volume spike!")
+alertcondition(useLimitFilter and nearLimitUp and not nearLimitUp[1], 
+               "📈 EGX Near Limit Up", 
+               "Price approaching daily limit up - Strong buying pressure!")
+alertcondition(useLimitFilter and nearLimitDown and not nearLimitDown[1], 
+               "📉 EGX Near Limit Down", 
+               "Price approaching daily limit down - Strong selling pressure!")
+
+//====================================================================================
+// 📋 8. Plots إضافية (للحفاظ على التوافق مع الإصدارات)
+//====================================================================================
+plot(showLabels ? rsi_div : na, "RSI", color.new(#2962FF, 0), linewidth=1, display=display.none)
+plot(showLabels ? obv_smooth : na, "OBV Smooth", color.new(#FF9800, 0), linewidth=1, display=display.none)
+plot(useStoch and showLabels ? stochK : na, "Stoch K", color.new(#00E676, 0), linewidth=1, display=display.none)
+plot(showLabels ? bearishScore : na, "Bearish Score", display=display.none)
+plot(showLabels ? bullishScore : na, "Bullish Score", display=display.none)
+
+// ⭐ Plots EGX الجديدة (hidden)
+plot(useBurstFilter ? bodyRatio : na, "Body Ratio", display=display.none)
+plot(useBurstFilter ? volumeRatio : na, "Volume Ratio", display=display.none)
+plot(useAccum ? accumRatio : na, "Accumulation Ratio", display=display.none)
+plot(useLimitFilter ? upProgress : na, "Limit Up Progress", display=display.none)
+
+// ⭐ NEW: Plots كشف نوع الشمعة (hidden)
+plot(useCandleDetect ? candleBodyRatio : na, "Candle Body Ratio", display=display.none)
+plot(useCandleDetect ? candleCloseStrength : na, "Candle Close Strength", display=display.none)
+plot(useCandleDetect ? candleUpperRatio : na, "Candle Upper Shadow Ratio", display=display.none)
+plot(useCandleDetect ? candleVolRatio : na, "Candle Volume Ratio", display=display.none)
