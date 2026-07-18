@@ -291,6 +291,7 @@ stochD = ta.sma(stochK, 3)
 
 float finVol = close * volume
 finVolMA = ta.sma(finVol, 20)
+volumeSma20 = ta.sma(volume, 20)
 volumeStrong = finVol > finVolMA * minVolumeRatio
 
 // ⭐ حساب فلاتر EGX
@@ -389,7 +390,7 @@ if bar_index > adaptiveLookback and useAdaptiveFilter
     if temp_prevBullish
         temp_pbr := math.abs(close[1] - open[1]) / (high[1] - low[1] + 0.0001)
         temp_pcs := (close[1] - low[1]) / (high[1] - low[1] + 0.0001)
-        temp_pvr := volume[1] / (nz(ta.sma(volume, 20)[1], volume[1]) + 0.0001)
+        temp_pvr := volume[1] / (nz(volumeSma20[1], volume[1]) + 0.0001)
         temp_pus := (high[1] - math.max(open[1], close[1])) / (high[1] - low[1] + 0.0001)
 
         if temp_nextDayUp
@@ -410,11 +411,11 @@ if bar_index > adaptiveLookback and useAdaptiveFilter
 // --- حساب درجة الثقة التكيفية ---
 f_adaptiveScore() =>
     float score = 0.5
+    float fbr = f_candleBodyRatio()
+    float fur = f_candleUpperRatio()
+    float fcs = f_candleCloseStrength()
+    float fvr = f_candleVolRatio()
     if useAdaptiveFilter and winCount >= adaptiveMinSamples and lossCount >= adaptiveMinSamples
-        float fbr = f_candleBodyRatio()
-        float fur = f_candleUpperRatio()
-        float fcs = f_candleCloseStrength()
-        float fvr = f_candleVolRatio()
         float dWinBody = math.abs(fbr - winBodyRatio)
         float dWinClose = math.abs(fcs - winCloseStrength)
         float dWinVol = math.abs(fvr - winVolRatio)
@@ -1049,7 +1050,7 @@ float divOffset = atr_offset * 0.6  // زودنا من 0.3 لـ 0.6 (ضعف)
 if showLabels and showBearish and not na(priceHigh1) and not na(priceHBar1)
     string labelText = bearishTier == "A++" ? "🔻🔻🔻 SELL A++ | Score: " + str.tostring(math.round(bearishScore * 100)) + "%" : bearishTier == "A+" ? "🔻🔻 SELL A+ | Score: " + str.tostring(math.round(bearishScore * 100)) + "%" : "🔻 SELL " + bearishTier + " | Score: " + str.tostring(math.round(bearishScore * 100)) + "%"
     color labelColor = bearishTier == "A++" ? color.new(#b71c1c, 20) : bearishTier == "A+" ? color.new(#ff1744, 20) : bearishTier == "A" ? color.new(#ff6d00, 20) : color.new(#ffa000, 20)
-    size labelSize = bearishTier == "A++" ? size.large : bearishTier == "A+" ? size.normal : size.small
+    labelSize = bearishTier == "A++" ? size.large : bearishTier == "A+" ? size.normal : size.small
     // إزاحة أكبر: A++ تبعد أكتر عشان تبقى مميزة
     float tierOffset = bearishTier == "A++" ? divOffset * 2.0 : bearishTier == "A+" ? divOffset * 0.5 : bearishTier == "A" ? divOffset * 2.5 : divOffset * 4
     // الرسم على شمعة اكتمال الشرط (bar_index) وليس شمعة القمة القديمة، لتقييم تاريخي صادق
@@ -1096,7 +1097,7 @@ if showLabels and showBullish and not na(priceLow1) and not na(priceLBar1)
 
     string labelTextBull = bullishTier == "A++" ? "🟢🟢🟢 BUY A++" + candleTypeText + " | Score: " + str.tostring(math.round(bullishScore * 100)) + "%" : bullishTier == "A+" ? "🟢🟢 BUY A+ | Score: " + str.tostring(math.round(bullishScore * 100)) + "%" : "🟢 BUY " + bullishTier + " | Score: " + str.tostring(math.round(bullishScore * 100)) + "%"
     color labelColorBull = bullishTier == "A++" ? color.new(#1b5e20, 20) : bullishTier == "A+" ? color.new(#00e676, 20) : bullishTier == "A" ? color.new(#26a69a, 20) : color.new(#4caf50, 20)
-    size labelSizeBull = bullishTier == "A++" ? size.large : bullishTier == "A+" ? size.normal : size.small
+    labelSizeBull = bullishTier == "A++" ? size.large : bullishTier == "A+" ? size.normal : size.small
     float tierOffset = bullishTier == "A++" ? divOffset * 2.0 : bullishTier == "A+" ? divOffset * 0.5 : bullishTier == "A" ? divOffset * 2.5 : divOffset * 4
     // الرسم على شمعة اكتمال الشرط (bar_index) وليس شمعة القاع القديمة، لتقييم تاريخي صادق
     label.new(x=bar_index, y=low - tierOffset, text=labelTextBull, style=label.style_label_up, color=labelColorBull, textcolor=candleTypeColor, size=labelSizeBull)
