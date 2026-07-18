@@ -1,0 +1,301 @@
+//@version=5
+indicator("C.T.S Statistical Model", overlay=true, max_lines_count=500, max_labels_count=500)
+
+//====================================================================================
+// 📊 SECTION: HISTORICAL PATTERN MATCHING (STATISTICAL MODEL)
+//====================================================================================
+
+// ==================== INPUTS ====================
+patternGroup = "📊 Pattern Historical Analysis (Statistical Model)"
+
+historical_lookback = input.int(500, "Historical Lookback", minval=100, maxval=1000, step=50, group=patternGroup)
+filter_by_trend = input.bool(true, "Match Same Trend", group=patternGroup)
+filter_by_rsi = input.bool(true, "Match Same RSI Range", group=patternGroup)
+filter_by_volume = input.bool(true, "Match Same Volume", group=patternGroup)
+filter_by_pattern_name = input.bool(true, "Match Same Pattern Name", group=patternGroup)
+rsi_tolerance = input.int(10, "RSI Tolerance", minval=5, maxval=20, step=1, group=patternGroup)
+volume_tolerance = input.float(0.8, "Volume Tolerance (multiplier)", minval=0.5, maxval=1.5, step=0.1, group=patternGroup)
+min_pattern_matches = input.int(2, "Minimum Pattern Matches", minval=1, maxval=10, step=1, group=patternGroup)
+
+scalpGroup = "⚡ Scalping Signals & Filters"
+min_signals_required = input.int(3, "Minimum Signals", minval=2, maxval=6, step=1, group=scalpGroup)
+min_confidence = input.float(75.0, "Minimum Confidence %", minval=60, maxval=90, step=1, group=scalpGroup)
+require_strong_trend = input.bool(true, "Require Strong Trend", group=scalpGroup)
+min_trend_strength = input.float(1.5, "Min Trend Strength %", minval=0.5, maxval=5.0, step=0.1, group=scalpGroup)
+require_rsi_extreme = input.bool(false, "Require RSI Extreme", group=scalpGroup)
+require_volume_confirmation = input.bool(false, "Require Volume Confirmation", group=scalpGroup)
+require_macd_confirmation = input.bool(true, "Require MACD Confirmation", group=scalpGroup)
+
+targetGroup = "🎯 Targets & Stop Loss"
+tp1_percent = input.float(1.0, "TP1 %", minval=0.5, maxval=5.0, step=0.1, group=targetGroup)
+tp2_percent = input.float(2.0, "TP2 %", minval=1.0, maxval=8.0, step=0.1, group=targetGroup)
+tp3_percent = input.float(3.5, "TP3 %", minval=2.0, maxval=12.0, step=0.1, group=targetGroup)
+stop_loss_percent = input.float(1.5, "Stop Loss %", minval=0.5, maxval=5.0, step=0.1, group=targetGroup)
+
+displayGroupStats = "🎨 Display & Lines Control (Statistical)"
+show_prediction_stats = input.bool(true, "Show Prediction Lines", group=displayGroupStats)
+show_analysis_table_stats = input.bool(true, "Show Analysis Table", group=displayGroupStats)
+lines_display_mode_stats = input.string("All", "Display Lines", options=["All", "TP Only", "SL Only", "TP Green Only", "TP Yellow Only"], group=displayGroupStats)
+show_tp1_stats = input.bool(true, "Show TP1", group=displayGroupStats)
+show_tp2_stats = input.bool(true, "Show TP2", group=displayGroupStats)
+show_tp3_stats = input.bool(true, "Show TP3", group=displayGroupStats)
+show_sl_stats = input.bool(true, "Show SL", group=displayGroupStats)
+
+// ==================== INDICATORS ====================
+rsi_adv = ta.rsi(close, 14)
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+ema9 = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+ema50 = ta.ema(close, 50)
+volume_ma = ta.sma(volume, 20)
+atrMeasure = ta.atr(14)
+
+trend_strength = math.abs(ema9 - ema21) / ema21 * 100
+is_uptrend = ema9 > ema21 and ema21 > ema50
+is_downtrend = ema9 < ema21 and ema21 < ema50
+is_oversold = rsi_adv < 30
+is_overbought = rsi_adv > 70
+is_rsi_increasing = rsi_adv > rsi_adv[1]
+is_rsi_decreasing = rsi_adv < rsi_adv[1]
+macd_bullish = macdLine > signalLine and histLine > histLine[1]
+macd_bearish = macdLine < signalLine and histLine < histLine[1]
+volume_strong = volume > volume_ma * 1.2
+strong_trend = trend_strength > min_trend_strength
+
+// ==================== PATTERN DETECTION (C1-C4 & WOLFE) ====================
+candle_body = math.abs(close - open)
+candle_range = high - low
+upper_wick = high - math.max(close, open)
+lower_wick = math.min(close, open) - low
+
+body_percent = candle_range > 0 ? (candle_body / candle_range) * 100 : 0.0
+upper_wick_strong = upper_wick > (candle_body * 1.5)
+lower_wick_strong = lower_wick > (candle_body * 1.5)
+bullish_wick_signal = lower_wick_strong and close > open
+bearish_wick_signal = upper_wick_strong and close < open
+
+// C1 (bullish pin bar)
+C1_signal = bullish_wick_signal and body_percent >= 15 and ema9 > ema21 and close > ema9 and volume >= volume_ma
+// C2 (bullish harami)
+C2_signal = high < high[1] and low > low[1] and close > open and body_percent >= 15 and ema9 > ema21 and close > ema9
+// C3 (bearish shooting star)
+C3_signal = bearish_wick_signal and body_percent >= 15 and ema9 < ema21 and close < ema9 and volume >= volume_ma
+// C4 (bearish harami)
+C4_signal = high < high[1] and low > low[1] and close < open and body_percent >= 15 and ema9 < ema21 and close < ema9
+
+// Wolfe pattern (simplified) — guard against zero body
+wolfe_body_max = 20.0
+wolfe_wick_ratio = 1.8
+wolfe_bullish = candle_body > 0 and body_percent <= wolfe_body_max and lower_wick > 0 and upper_wick > 0 and (lower_wick / candle_body) >= wolfe_wick_ratio and close > open and close[1] > open[1]
+wolfe_bearish = candle_body > 0 and body_percent <= wolfe_body_max and upper_wick > 0 and lower_wick > 0 and (upper_wick / candle_body) >= wolfe_wick_ratio and close < open and close[1] < open[1]
+
+// ==================== PATTERN HISTORY STORAGE ====================
+type PatternData
+    int bar_num
+    string pattern_name
+    float entry_price
+    float rsi_value
+    float volume_value
+    bool is_uptrend
+    bool is_downtrend
+
+var array<PatternData> pattern_history = array.new<PatternData>()
+
+string current_pat_name = C1_signal ? "C1" : C2_signal ? "C2" : C3_signal ? "C3" : C4_signal ? "C4" : wolfe_bullish ? "WOLFE_BULL" : wolfe_bearish ? "WOLFE_BEAR" : ""
+bool current_bullish_pattern = C1_signal or C2_signal or wolfe_bullish
+bool current_bearish_pattern = C3_signal or C4_signal or wolfe_bearish
+bool pattern_detected = current_bullish_pattern or current_bearish_pattern
+
+// Store patterns when they occur (on confirmed bars)
+if pattern_detected and barstate.isconfirmed
+    pat = PatternData.new(bar_index, current_pat_name, close, rsi_adv, volume, is_uptrend, is_downtrend)
+    array.push(pattern_history, pat)
+    if array.size(pattern_history) > historical_lookback
+        array.remove(pattern_history, 0)
+
+// ==================== SIGNAL COUNTING & CONFIDENCE ====================
+int bullish_signals = 0
+int bearish_signals = 0
+
+// RSI extreme
+if is_oversold and is_rsi_increasing
+    bullish_signals += 2
+if is_overbought and is_rsi_decreasing
+    bearish_signals += 2
+
+// MACD
+if macd_bullish
+    bullish_signals += 2
+if macd_bearish
+    bearish_signals += 2
+
+// Volume & Trend
+if volume_strong and macd_bullish
+    bullish_signals += 1
+if volume_strong and macd_bearish
+    bearish_signals += 1
+if close > ema9 and ema9 > ema21
+    bullish_signals += 1
+if close < ema9 and ema9 < ema21
+    bearish_signals += 1
+
+// Candlestick patterns
+if C1_signal or C2_signal
+    bullish_signals += 2
+if C3_signal or C4_signal
+    bearish_signals += 2
+if wolfe_bullish
+    bullish_signals += 2
+if wolfe_bearish
+    bearish_signals += 2
+
+// ==================== HISTORICAL MATCHING ====================
+int match_count_bull = 0
+int match_count_bear = 0
+
+is_bullish_pattern_name(string name) =>
+    name == "C1" or name == "C2" or name == "WOLFE_BULL"
+
+is_bearish_pattern_name(string name) =>
+    name == "C3" or name == "C4" or name == "WOLFE_BEAR"
+
+volume_in_tolerance(float hist_vol, float current_vol) =>
+    safe_current = math.max(current_vol, 1.0)
+    vol_low = safe_current * volume_tolerance
+    vol_high = safe_current / volume_tolerance
+    hist_vol >= vol_low and hist_vol <= vol_high
+
+if pattern_detected and barstate.isconfirmed and array.size(pattern_history) > 1
+    float current_rsi = rsi_adv
+    float current_volume = volume
+    bool current_trend_up = is_uptrend
+    bool current_trend_down = is_downtrend
+
+    for each in pattern_history
+        if each.bar_num == bar_index
+            continue
+
+        bool trend_match = not filter_by_trend or (current_trend_up and each.is_uptrend) or (current_trend_down and each.is_downtrend)
+        bool rsi_match = not filter_by_rsi or math.abs(each.rsi_value - current_rsi) <= rsi_tolerance
+        bool volume_match = not filter_by_volume or volume_in_tolerance(each.volume_value, current_volume)
+        bool name_match = not filter_by_pattern_name or each.pattern_name == current_pat_name
+
+        if trend_match and rsi_match and volume_match and name_match
+            if current_bullish_pattern and is_bullish_pattern_name(each.pattern_name)
+                match_count_bull += 1
+            else if current_bearish_pattern and is_bearish_pattern_name(each.pattern_name)
+                match_count_bear += 1
+
+// ==================== FINAL SIGNAL ====================
+string signal_type_adv = "Neutral"
+float final_confidence = 50.0
+
+bool historical_bull_confirmed = match_count_bull >= min_pattern_matches
+bool historical_bear_confirmed = match_count_bear >= min_pattern_matches
+
+bool buy_filters_ok = not require_strong_trend or strong_trend
+buy_filters_ok := buy_filters_ok and (not require_rsi_extreme or is_oversold)
+buy_filters_ok := buy_filters_ok and (not require_volume_confirmation or volume_strong)
+buy_filters_ok := buy_filters_ok and (not require_macd_confirmation or macd_bullish)
+
+bool sell_filters_ok = not require_strong_trend or strong_trend
+sell_filters_ok := sell_filters_ok and (not require_rsi_extreme or is_overbought)
+sell_filters_ok := sell_filters_ok and (not require_volume_confirmation or volume_strong)
+sell_filters_ok := sell_filters_ok and (not require_macd_confirmation or macd_bearish)
+
+bool buy_signal = ((bullish_signals > bearish_signals and bullish_signals >= min_signals_required) or (historical_bull_confirmed and bullish_signals >= 1)) and buy_filters_ok
+bool sell_signal = ((bearish_signals > bullish_signals and bearish_signals >= min_signals_required) or (historical_bear_confirmed and bearish_signals >= 1)) and sell_filters_ok
+
+if buy_signal and not sell_signal
+    signal_type_adv := "Buy 🟢"
+    final_confidence := 70.0 + (bullish_signals * 5.0)
+    if is_oversold
+        final_confidence += 5
+    if volume_strong
+        final_confidence += 5
+    if strong_trend
+        final_confidence += 5
+    if historical_bull_confirmed
+        final_confidence += 10
+else if sell_signal and not buy_signal
+    signal_type_adv := "Sell 🔴"
+    final_confidence := 70.0 + (bearish_signals * 5.0)
+    if is_overbought
+        final_confidence += 5
+    if volume_strong
+        final_confidence += 5
+    if strong_trend
+        final_confidence += 5
+    if historical_bear_confirmed
+        final_confidence += 10
+
+final_confidence := math.min(final_confidence, 95.0)
+
+// ==================== TP/SL LEVELS ====================
+bool is_buy = signal_type_adv == "Buy 🟢"
+tp1_adv = is_buy ? close * (1 + tp1_percent / 100) : close * (1 - tp1_percent / 100)
+tp2_adv = is_buy ? close * (1 + tp2_percent / 100) : close * (1 - tp2_percent / 100)
+tp3_adv = is_buy ? close * (1 + tp3_percent / 100) : close * (1 - tp3_percent / 100)
+sl_adv = is_buy ? close * (1 - stop_loss_percent / 100) : close * (1 + stop_loss_percent / 100)
+
+// ==================== DISPLAY LINES & LABELS ====================
+bool show_levels = show_prediction_stats and final_confidence >= min_confidence and signal_type_adv != "Neutral" and barstate.isconfirmed
+
+if show_levels
+    if show_tp1_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "TP Only" or lines_display_mode_stats == "TP Yellow Only")
+        line.new(bar_index, tp1_adv, bar_index + 100, tp1_adv, extend=extend.right, color=color.new(#ffff00, 60), width=2)
+    if show_tp2_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "TP Only" or lines_display_mode_stats == "TP Green Only")
+        line.new(bar_index, tp2_adv, bar_index + 100, tp2_adv, extend=extend.right, color=color.new(#00ff88, 60), width=2)
+    if show_tp3_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "TP Only" or lines_display_mode_stats == "TP Green Only")
+        line.new(bar_index, tp3_adv, bar_index + 100, tp3_adv, extend=extend.right, color=color.new(#00ff00, 60), width=2)
+    if show_sl_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "SL Only")
+        line.new(bar_index, sl_adv, bar_index + 100, sl_adv, extend=extend.right, color=color.new(#ff0000, 60), width=2)
+
+if signal_type_adv != "Neutral" and final_confidence >= min_confidence and barstate.isconfirmed
+    color label_color = is_buy ? color.new(#00ff00, 20) : color.new(#ff0000, 20)
+    string lbl_txt = signal_type_adv + "\n" + str.tostring(final_confidence, "#.#") + "%\nTP1: " + str.tostring(tp1_adv, "#.##") + "\nTP2: " + str.tostring(tp2_adv, "#.##") + "\nTP3: " + str.tostring(tp3_adv, "#.##") + "\nSL: " + str.tostring(sl_adv, "#.##")
+    float offset_y = atrMeasure * 2.0
+    float lbl_y = is_buy ? low - offset_y : high + offset_y
+    label.new(bar_index, lbl_y, lbl_txt, style=is_buy ? label.style_label_up : label.style_label_down, color=label_color, textcolor=color.white, size=size.small)
+
+// ==================== STATISTICS TABLE ====================
+if show_analysis_table_stats and barstate.islast
+    var table stats = table.new(position.top_left, 2, 8, bgcolor=color.new(#000000, 50))
+    table.cell(stats, 0, 0, "📊 Statistical Model", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.large)
+    table.cell(stats, 1, 0, "Value", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.large)
+
+    table.cell(stats, 0, 1, "Signal", bgcolor=#0a0a0a, text_color=color.gray)
+    table.cell(stats, 1, 1, signal_type_adv, bgcolor=#0a0a0a, text_color=#ffffff, text_size=size.large)
+
+    table.cell(stats, 0, 2, "Confidence", bgcolor=#0a0a0a, text_color=color.gray)
+    color conf_color = final_confidence >= 80 ? #00ff00 : final_confidence >= 70 ? #88ff00 : #ffaa00
+    table.cell(stats, 1, 2, str.tostring(final_confidence, "#.#") + "%", bgcolor=#0a0a0a, text_color=conf_color)
+
+    table.cell(stats, 0, 3, "Bullish Signals", bgcolor=#0a0a0a, text_color=color.gray)
+    table.cell(stats, 1, 3, str.tostring(bullish_signals), bgcolor=#0a0a0a, text_color=#00ff00)
+
+    table.cell(stats, 0, 4, "Bearish Signals", bgcolor=#0a0a0a, text_color=color.gray)
+    table.cell(stats, 1, 4, str.tostring(bearish_signals), bgcolor=#0a0a0a, text_color=#ff0000)
+
+    table.cell(stats, 0, 5, "Historical Matches Bull", bgcolor=#0a0a0a, text_color=color.gray)
+    table.cell(stats, 1, 5, str.tostring(match_count_bull), bgcolor=#0a0a0a, text_color=#00ff00)
+
+    table.cell(stats, 0, 6, "Historical Matches Bear", bgcolor=#0a0a0a, text_color=color.gray)
+    table.cell(stats, 1, 6, str.tostring(match_count_bear), bgcolor=#0a0a0a, text_color=#ff0000)
+
+    table.cell(stats, 0, 7, "Patterns in History", bgcolor=#0a0a0a, text_color=color.gray)
+    table.cell(stats, 1, 7, str.tostring(array.size(pattern_history)), bgcolor=#0a0a0a, text_color=#ffff00)
+
+// ==================== ALERTS ====================
+if is_buy and final_confidence >= min_confidence and barstate.isconfirmed
+    alert("🟢 Strong Buy Signal!\nConfidence: " + str.tostring(final_confidence, "#.#") + "%", alert.freq_once_per_bar)
+
+if signal_type_adv == "Sell 🔴" and final_confidence >= min_confidence and barstate.isconfirmed
+    alert("🔴 Strong Sell Signal!\nConfidence: " + str.tostring(final_confidence, "#.#") + "%", alert.freq_once_per_bar)
+
+alertcondition(is_buy and final_confidence >= min_confidence, "🟢 Strong Buy", "Buy")
+alertcondition(signal_type_adv == "Sell 🔴" and final_confidence >= min_confidence, "🔴 Strong Sell", "Sell")
+
+//====================================================================================
+// END OF STATISTICAL MODEL SECTION
+//====================================================================================
