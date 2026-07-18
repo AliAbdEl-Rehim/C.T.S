@@ -76,6 +76,18 @@ earlyCooldown = input.int(5, "فاصل أدنى بين الإشارات (شمو�
 earlyConfirmMode = input.bool(false, "🎯 انتظار شمعة تأكيد (أدق لكن أبطأ بشمعة)", group=groupEarly)
 evalBars = input.int(1, "📏 أفق قياس النجاح في الجدول (شموع)", minval=1, maxval=10, group=groupEarly)
 
+groupSmartEntry = "🎯 دخول ذكي (حل التأخر بعد A++)"
+useSmartEntry = input.bool(true, "تفعيل الدخول الذكي", group=groupSmartEntry)
+smartEntryMode = input.string("Pullback", "نمط الدخول", options=["Pullback", "Safe Immediate", "Early Only"], group=groupSmartEntry)
+pullbackPct = input.float(38.2, "نسبة تصحيح فيبوناتشي %", minval=10.0, maxval=61.8, step=0.1, group=groupSmartEntry)
+pullbackMaxBars = input.int(5, "أقصى شموع انتظار التصحيح", minval=1, maxval=20, group=groupSmartEntry)
+maxExtensionATR = input.float(1.2, "حد الامتداد الأقصى (ATR x)", minval=0.5, maxval=3.0, step=0.1, group=groupSmartEntry)
+blockChaseBurst = input.bool(true, "منع المطاردة بعد شمعة انفجار", group=groupSmartEntry)
+blockChaseLimit = input.bool(true, "منع المطاردة قرب الحد الأقصى", group=groupSmartEntry)
+blockExhaustTrap = input.bool(true, "منع الدخول عند استنزاف/كمين", group=groupSmartEntry)
+useEmaPullback = input.bool(true, "السماح بالدخول عند دعم EMA20", group=groupSmartEntry)
+showSmartEntryLabels = input.bool(true, "إظهار ليبل الدخول الذكي", group=groupSmartEntry)
+
 groupEGXWeight = "⚖️ أوزان EGX في Score"
 egxBurstWeight = input.float(1.5, "وزن Burst Filter", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
 egxLimitWeight = input.float(1.3, "وزن Limit Filter", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
@@ -424,13 +436,7 @@ f_adaptiveFilter() =>
 
 // --- نظام التصويت المتكامل (Ensemble) ---
 f_ensembleDecision(bool ruleBased, bool adaptive, bool mtf) =>
-    int votes = 0
-    if ruleBased
-        votes += 1
-    if adaptive
-        votes += 1
-    if mtf
-        votes += 1
+    int votes = (ruleBased ? 1 : 0) + (adaptive ? 1 : 0) + (mtf ? 1 : 0)
     bool final = votes >= 2
     if not useEnsembleVote
         final := ruleBased
@@ -839,6 +845,32 @@ bool ensembleSell = f_ensembleDecision(isContinuation, isAdaptiveOk, isMTFSellOk
 showBearish = bearishValid and barstate.isconfirmed and (showTierFilter == "Todos" or (showTierFilter == "A+ e A++ apenas" and (bearishTier == "A+" or bearishTier == "A++")) or (showTierFilter == "A++ apenas" and bearishTier == "A++"))
 showBullish = bullishValid and barstate.isconfirmed and (showTierFilter == "Todos" or (showTierFilter == "A+ e A++ apenas" and (bullishTier == "A+" or bullishTier == "A++")) or (showTierFilter == "A++ apenas" and bullishTier == "A++"))
 
+bool aPlusPlusAlert = showBullish and bullishTier == "A++"
+
+var int lastAPlusBar = -9999
+var float lastAPlusHigh = na
+var float lastAPlusLow = na
+
+if aPlusPlusAlert
+    lastAPlusBar := bar_index
+    lastAPlusHigh := high
+    lastAPlusLow := low
+
+float atrEntry = ta.atr(14)
+float swingLowEntry = ta.lowest(low, 10)
+bool overExtended = (close - swingLowEntry) > maxExtensionATR * atrEntry
+bool chaseRisk = (blockChaseBurst and isStrongBullish) or (blockChaseLimit and nearLimitUp) or (blockExhaustTrap and (isExhaustion or isTrap)) or overExtended
+bool safeImmediate = aPlusPlusAlert and not chaseRisk and (not useCandleDetect or isContinuation) and ensembleBuy
+
+bool inPullbackWindow = bar_index > lastAPlusBar and (bar_index - lastAPlusBar) <= pullbackMaxBars and not na(lastAPlusHigh) and not na(lastAPlusLow)
+float pbFibLevel = lastAPlusHigh - (lastAPlusHigh - lastAPlusLow) * pullbackPct / 100.0
+bool touchedFib = inPullbackWindow and low <= pbFibLevel
+bool touchedEma = useEmaPullback and inPullbackWindow and low <= ema20
+bool bounceOK = close > open and close > math.min(nz(pbFibLevel, close), nz(ema20, close))
+bool pullbackEntryRaw = useSmartEntry and smartEntryMode == "Pullback" and inPullbackWindow and (touchedFib or touchedEma) and bounceOK and allowBuySignals and barstate.isconfirmed
+bool pullbackEntry = pullbackEntryRaw and not pullbackEntryRaw[1]
+bool aPlusWaitPullback = aPlusPlusAlert and useSmartEntry and smartEntryMode == "Pullback" and chaseRisk
+
 // ⭐ إحصائية تحقق: بعد إشارة BUY A++ هل أغلق السعر أعلى بعد evalBars شمعة؟
 var int appBuySignals = 0
 var int appBuyWins = 0
@@ -872,6 +904,15 @@ if earlyBuyCandidate
 // 🎯 وضع التأكيد: الإشارة لا تصدر إلا لو الشمعة التالية أغلقت أعلى من شمعة الانحراف
 // (يفلتر "السكاكين الساقطة" مقابل دخول متأخر بشمعة وبسعر أعلى قليلاً)
 bool earlyBuy = earlyConfirmMode ? (earlyBuyCandidate[1] and barstate.isconfirmed and close > close[1]) : earlyBuyCandidate
+
+bool smartBuyEntry = useSmartEntry ? (smartEntryMode == "Pullback" ? pullbackEntry : smartEntryMode == "Safe Immediate" ? safeImmediate : earlyBuy) : aPlusPlusAlert
+
+var int smartEntrySignals = 0
+var int smartEntryWins = 0
+if barstate.isconfirmed and smartBuyEntry[evalBars]
+    smartEntrySignals := smartEntrySignals + 1
+    if close > close[evalBars]
+        smartEntryWins := smartEntryWins + 1
 
 // إحصائية تحقق: بعد EARLY BUY هل أغلق السعر أعلى بعد evalBars شمعة؟
 var int earlySignals = 0
@@ -960,21 +1001,11 @@ else if bearish_signals > bullish_signals and bearish_signals >= min_signals_req
 float final_confidence = 50.0
 if signal_type_adv != "محايد"
     int max_signals = math.max(bullish_signals, bearish_signals)
-    final_confidence := 65.0 + (max_signals * 5.0)
-    if (signal_type_adv == "شراء 🟢" and is_hybrid_green and is_hma_green) or
-       (signal_type_adv == "بيع 🔴" and is_hybrid_red and is_hma_red)
-        final_confidence += 5
-    if (signal_type_adv == "شراء 🟢" and scalp_buy_cond) or
-       (signal_type_adv == "بيع 🔴" and scalp_sell_cond)
-        final_confidence += 5
-    // ⭐ زيادة الثقة لو فيه Burst أو Limit
-    if (signal_type_adv == "شراء 🟢" and isStrongBullish) or
-       (signal_type_adv == "بيع 🔴" and isStrongBearish)
-        final_confidence += 3
-    if (signal_type_adv == "شراء 🟢" and nearLimitUp) or
-       (signal_type_adv == "بيع 🔴" and nearLimitDown)
-        final_confidence += 2
-    final_confidence := math.min(final_confidence, 95)
+    bool trendBoost = (signal_type_adv == "شراء 🟢" and is_hybrid_green and is_hma_green) or (signal_type_adv == "بيع 🔴" and is_hybrid_red and is_hma_red)
+    bool scalpBoost = (signal_type_adv == "شراء 🟢" and scalp_buy_cond) or (signal_type_adv == "بيع 🔴" and scalp_sell_cond)
+    bool burstBoost = (signal_type_adv == "شراء 🟢" and isStrongBullish) or (signal_type_adv == "بيع 🔴" and isStrongBearish)
+    bool limitBoost = (signal_type_adv == "شراء 🟢" and nearLimitUp) or (signal_type_adv == "بيع 🔴" and nearLimitDown)
+    final_confidence := math.min(95.0, 65.0 + max_signals * 5.0 + (trendBoost ? 5.0 : 0.0) + (scalpBoost ? 5.0 : 0.0) + (burstBoost ? 3.0 : 0.0) + (limitBoost ? 2.0 : 0.0))
 
 float tp1_adv = na
 float tp2_adv = na
@@ -1073,6 +1104,15 @@ if showLabels and showBullish and not na(priceLow1) and not na(priceLBar1)
 // 🌱 رسم الإشارة المبكرة: تظهر على شمعة القاع قبل الانفجار (بدون Lookahead)
 if earlyBuy
     label.new(x=bar_index, y=low - divOffset * 3.0, text="🌱 EARLY BUY", style=label.style_label_up, color=color.new(#00c853, 10), textcolor=color.white, size=size.normal)
+
+if showSmartEntryLabels and aPlusWaitPullback
+    label.new(x=bar_index, y=high + divOffset * 4.0, text="⏳ A++ WAIT\nPullback", style=label.style_label_down, color=color.new(#ff6f00, 15), textcolor=color.white, size=size.small)
+
+if showSmartEntryLabels and smartBuyEntry and smartEntryMode == "Pullback"
+    label.new(x=bar_index, y=low - divOffset * 4.5, text="✅ SMART ENTRY", style=label.style_label_up, color=color.new(#00e676, 5), textcolor=color.black, size=size.normal)
+
+if showSmartEntryLabels and smartBuyEntry and smartEntryMode == "Safe Immediate"
+    label.new(x=bar_index, y=low - divOffset * 4.5, text="✅ SAFE ENTRY", style=label.style_label_up, color=color.new(#00c853, 5), textcolor=color.black, size=size.normal)
 
 // 🔻 رسم إشارة الخروج المبكرة: تظهر على شمعة القمة قبل الهبوط (بدون Lookahead)
 if earlySell
@@ -1204,7 +1244,7 @@ if barstate.islast
 
 // ---------- 6.3 جداول المعلومات ----------
 // جدول الانحرافات (في أسفل اليمين)
-var table tDiv = table.new(position.bottom_right, 5, 17, bgcolor=color.new(#0d1117, 95), border_color=color.new(#58a6ff, 40))
+var table tDiv = table.new(position.bottom_right, 5, 18, bgcolor=color.new(#0d1117, 95), border_color=color.new(#58a6ff, 40))
 
 if showTableDiv and showTables and barstate.islast
     table.cell(tDiv, 0, 0, "Série", text_color=color.white, bgcolor=color.new(#161b22, 0))
@@ -1280,6 +1320,11 @@ if showTableDiv and showTables and barstate.islast
     table.cell(tDiv, 1, 16, adaptiveStatTxt, text_color=winCount >= adaptiveMinSamples ? (adaptiveScore >= adaptiveConfidenceThreshold ? color.new(#00e676,0) : color.new(#ff1744,0)) : color.gray)
     table.cell(tDiv, 2, 16, "Ensemble:" + (ensembleBuy ? "🟢" : "🔴"), text_color=color.gray)
     table.cell(tDiv, 3, 16, "MTF:" + (mtfUp ? "🟢" : "⚪"), text_color=color.gray)
+    table.cell(tDiv, 0, 17, "🎯 Smart Entry", text_color=color.new(#00e676, 0), bgcolor=color.new(#00331a, 80))
+    string smartStatTxt = smartEntrySignals > 0 ? str.tostring(smartEntryWins) + "/" + str.tostring(smartEntrySignals) + " (" + str.tostring(math.round(smartEntryWins * 100.0 / smartEntrySignals)) + "%)" : "لا توجد إشارات"
+    table.cell(tDiv, 1, 17, smartStatTxt, text_color=smartEntrySignals > 0 and smartEntryWins * 2 >= smartEntrySignals ? color.new(#00e676, 0) : color.new(#ffa000, 0))
+    table.cell(tDiv, 2, 17, "Mode:" + smartEntryMode, text_color=color.gray)
+    table.cell(tDiv, 3, 17, chaseRisk ? "⏳ WAIT" : "✅ OK", text_color=chaseRisk ? color.new(#ff6f00, 0) : color.new(#00e676, 0))
 
 // جدول المتنبئ (في أعلى اليمين)
 var table predTable = table.new(position.top_right, 2, 8, bgcolor=color.rgb(0, 0, 0, 80), 
@@ -1351,6 +1396,9 @@ alertcondition(showBullish and bullishTier == "A+", "🟢 COMPRA A+ (Divergênci
 // ⭐ تنبيه A++
 alertcondition(showBearish and bearishTier == "A++", "🔻🔻 VENDA A++ (EGX Super Signal)", "Venda A++ detectada - EGX Limit Down potential!")
 alertcondition(showBullish and bullishTier == "A++", "🟢🟢 COMPRA A++ (EGX Super Signal)", "Compra A++ detectada - EGX Limit Up potential!")
+alertcondition(aPlusPlusAlert, "👀 A++ Alert (راقب - لا تدخل فوراً)", "A++ ظهرت - انتظر تصحيح أو Safe Entry")
+alertcondition(smartBuyEntry and smartEntryMode == "Pullback", "✅ Smart Entry (Pullback)", "دخول ذكي بعد تصحيح فيبوناتشي/EMA20")
+alertcondition(safeImmediate, "✅ Safe Immediate Entry", "دخول فوري آمن - شمعة استمرار بدون مطاردة")
 // 🌱 تنبيه الإشارة المبكرة
 alertcondition(earlyBuy, "🌱 EARLY BUY (قبل الانفجار)", "انحراف صاعد + تراكم ذكي عند القاع - إشارة مبكرة محتملة قبل الصعود!")
 // 🔻 تنبيه الخروج المبكر
