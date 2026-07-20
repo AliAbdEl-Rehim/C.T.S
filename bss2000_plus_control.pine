@@ -210,7 +210,7 @@ if newTrendSell
 atr_v = ta.atr(14)
 osc_val = (close - hma) / (atr_v > 0 ? atr_v : syminfo.mintick)
 
-hline(0, color=color.gray, linestyle=hline.style_dotted, display=display.pane)
+plot(0, "Zero Line", color=color.gray, linewidth=1, style=plot.style_line, display=display.pane)
 plot(osc_val, color=color.gray, style=plot.style_columns, display=display.pane)
 plot(osc_val, color=color.white, linewidth=2, display=display.pane)
 
