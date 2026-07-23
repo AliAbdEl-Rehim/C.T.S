@@ -1,0 +1,297 @@
+//@version=6
+indicator("BSS2000+ Control Pro", shorttitle="BSS2000+", overlay=true, max_labels_count=500)
+
+// ==========================================
+// 📊 إعدادات التحكم في الإشارات
+// ==========================================
+grp_signals = "🎛️ التحكم في الإشارات"
+showEarlyBuy = input.bool(true, "🚀 إظهار إشارات EARLY BUY", group=grp_signals)
+showBreakout = input.bool(true, "🔥 إظهار إشارات BREAKOUT", group=grp_signals)
+showTrendBuy = input.bool(true, "🟢 إظهار إشارات TREND BUY", group=grp_signals)
+showTrendSell = input.bool(true, "🔴 إظهار إشارات TREND SELL", group=grp_signals)
+showScalpBuy = input.bool(true, "🟢 إظهار إشارات SCALP BUY", group=grp_signals)
+showScalpSell = input.bool(true, "🔴 إظهار إشارات SCALP SELL", group=grp_signals)
+showAdvanced = input.bool(true, "⭐ إظهار الإشارات المتقدمة", group=grp_signals)
+showLines = input.bool(true, "📏 إظهار الخطوط المساعدة", group=grp_signals)
+showTable = input.bool(true, "📊 إظهار الجداول", group=grp_signals)
+
+grp_filter = "🛡️ فلاتر تقليل الإشارات الخاطئة"
+useConfirmedOnly = input.bool(true, "إشارات عند إغلاق الشمعة فقط", group=grp_filter)
+useTrendFilter = input.bool(true, "فلتر الاتجاه الرئيسي", group=grp_filter)
+useAdxFilter = input.bool(true, "فلتر قوة الاتجاه ADX", group=grp_filter)
+adxMin = input.float(20.0, "حد ADX الأدنى", minval=10.0, maxval=40.0, step=1.0, group=grp_filter)
+earlyMinScore = input.int(2, "حد أدنى شروط EARLY BUY (من 5)", minval=1, maxval=5, group=grp_filter)
+signalCooldown = input.int(5, "فاصل بين الإشارات (شموع)", minval=1, maxval=30, group=grp_filter)
+maxExtensionAtr = input.float(1.5, "منع الشراء إذا الامتداد > ATR x", minval=0.5, maxval=4.0, step=0.1, group=grp_filter)
+rsiBuyMax = input.int(65, "حد RSI الأقصى للشراء", minval=50, maxval=80, group=grp_filter)
+requireBreakoutTrend = input.bool(true, "BREAKOUT مع اتجاه صاعد", group=grp_filter)
+requireScalpTrend = input.bool(true, "SCALP مع اتجاه Hybrid", group=grp_filter)
+
+// ==========================================
+// 1. HYBRID SUPERTREND
+// ==========================================
+grp_st = "⚙️ إعدادات SUPERTREND"
+atrP1 = input.int(7, "Fast ATR", group=grp_st)
+fac1  = input.float(1.5, "Fast Factor", step=0.1, group=grp_st)
+atrP2 = input.int(14, "Med ATR", group=grp_st)
+fac2  = input.float(2.5, "Med Factor", step=0.1, group=grp_st)
+atrP3 = input.int(21, "Slow ATR", group=grp_st)
+fac3  = input.float(3.5, "Slow Factor", step=0.1, group=grp_st)
+
+[st1, dir1] = ta.supertrend(fac1, atrP1)
+[st2, dir2] = ta.supertrend(fac2, atrP2)
+[st3, dir3] = ta.supertrend(fac3, atrP3)
+
+is_hybrid_green = dir1 < 0 and dir2 < 0 and dir3 < 0
+is_hybrid_red   = dir1 > 0 and dir2 > 0 and dir3 > 0
+
+// ==========================================
+// 2. HMA & EMA
+// ==========================================
+grp_td = "📈 إعدادات الاتجاه"
+h_len   = input.int(30, "HMA Length", group=grp_td)
+ema_len = input.int(14, "Scalp EMA Length", group=grp_td)
+
+hma = ta.hma(close, h_len)
+ema_high = ta.ema(high, ema_len)
+ema_low  = ta.ema(low, ema_len)
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+
+is_hma_green = hma > hma[1]
+is_hma_red   = hma < hma[1]
+
+trend_buy_cond  = is_hybrid_green and is_hma_green
+trend_sell_cond = is_hybrid_red and is_hma_red
+scalp_buy_raw   = ta.crossover(close, ema_high)
+scalp_sell_raw  = ta.crossunder(close, ema_low)
+scalp_buy_cond  = scalp_buy_raw and (not requireScalpTrend or is_hybrid_green)
+scalp_sell_cond = scalp_sell_raw and (not requireScalpTrend or is_hybrid_red)
+
+// ==========================================
+// 3. ADX + فلاتر عامة
+// ==========================================
+calcADX(len) =>
+    float up = ta.change(high)
+    float down = -ta.change(low)
+    float plusDM = na(up) ? na : (up > down and up > 0 ? up : 0)
+    float minusDM = na(down) ? na : (down > up and down > 0 ? down : 0)
+    float tr = ta.tr(true)
+    float plusDI = 100 * ta.rma(plusDM, len) / ta.rma(tr, len)
+    float minusDI = 100 * ta.rma(minusDM, len) / ta.rma(tr, len)
+    float adx = 100 * ta.rma(math.abs(plusDI - minusDI) / (plusDI + minusDI), len)
+    [plusDI, minusDI, adx]
+
+[diPlus, diMinus, adxValue] = calcADX(14)
+isTrendStrong = not useAdxFilter or adxValue >= adxMin
+isUptrend = ema20 > ema50
+isDowntrend = ema20 < ema50
+allowBuy = not useTrendFilter or (not isDowntrend or close > ema50)
+allowSell = not useTrendFilter or (not isUptrend or close < ema50)
+
+atrVal = ta.atr(14)
+swingLow = ta.lowest(low, 10)
+overExtended = (close - swingLow) > maxExtensionAtr * atrVal
+buyContextOK = allowBuy and not overExtended and isTrendStrong
+
+bool barOK = not useConfirmedOnly or barstate.isconfirmed
+
+// ==========================================
+// 4. BREAKOUT DETECTOR
+// ==========================================
+grp_break = "🔥 إعدادات الاختراق"
+lookback = input.int(20, "Breakout Lookback", minval=5, maxval=50, group=grp_break)
+breakoutThreshold = input.float(1.5, "Breakout Threshold", minval=1.0, maxval=3.0, step=0.1, group=grp_break)
+volumeMult = input.float(1.5, "ضعف الحجم للاختراق", minval=1.0, maxval=3.0, step=0.1, group=grp_break)
+momentumThreshold = input.float(3.0, "نسبة الزخم %", minval=1.0, maxval=10.0, step=0.5, group=grp_break)
+
+highestHigh = ta.highest(high, lookback)
+lowestLow = ta.lowest(low, lookback)
+
+breakoutSize = close - highestHigh[1]
+breakdownSize = lowestLow[1] - close
+breakoutRatio = breakoutSize / atrVal
+breakdownRatio = breakdownSize / atrVal
+
+isBreakoutRaw = close > highestHigh[1] and breakoutRatio >= breakoutThreshold
+isBreakdownRaw = close < lowestLow[1] and breakdownRatio >= breakoutThreshold
+isBreakout = isBreakoutRaw and (not requireBreakoutTrend or is_hybrid_green) and close > ema50
+isBreakdown = isBreakdownRaw and (not requireBreakoutTrend or is_hybrid_red) and close < ema50
+
+// ==========================================
+// 5. INDICATORS
+// ==========================================
+rsiVal = ta.rsi(close, 14)
+rsiOversold = rsiVal < 30
+rsiRising = rsiVal > rsiVal[1]
+rsiNotHot = rsiVal < rsiBuyMax
+
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+macdBullish = macdLine > signalLine and histLine > histLine[1]
+macdBearish = macdLine < signalLine and histLine < histLine[1]
+
+volumeMa = ta.sma(volume, 20)
+volumeSpike = volume > volumeMa * volumeMult
+
+priceChange = (close - close[1]) / close[1] * 100
+momentumSpike = priceChange > momentumThreshold
+
+// ==========================================
+// 6. EARLY BUY — نظام نقاط (بدل شرط واحد ضعيف)
+// ==========================================
+int earlyScore = 0
+string earlyBuyReason = ""
+
+bool c1 = close < lowestLow[5] and rsiOversold and rsiRising
+bool c2 = isBreakout and volumeSpike
+bool c3 = close > close[1] and rsiRising and macdBullish
+bool c4 = close > open and (close - open) > atrVal * 0.8 and close > close[1] * 1.01 and rsiOversold
+bool c5 = close > ema50 and close[1] <= ema50 and volumeSpike
+
+earlyScore := (c1 ? 1 : 0) + (c2 ? 1 : 0) + (c3 ? 1 : 0) + (c4 ? 1 : 0) + (c5 ? 1 : 0)
+earlyBuyReason := c2 ? "اختراق بحجم" : c1 ? "قاع + RSI" : c4 ? "شمعة انعكاس" : c5 ? "اختراق EMA50" : c3 ? "انعكاس MACD" : ""
+
+bool earlyBuyRaw = earlyScore >= earlyMinScore and rsiNotHot and buyContextOK and barOK
+var int lastEarlyBar = -9999
+bool earlyBuySignal = earlyBuyRaw and (bar_index - lastEarlyBar) > signalCooldown
+if earlyBuySignal
+    lastEarlyBar := bar_index
+
+// ==========================================
+// 7. PREDICTOR — تصويت بدون تكرار
+// ==========================================
+grp_pred = "🧠 إعدادات المتنبئ"
+min_signals_required = input.int(3, "Min Signals", minval=1, maxval=8, group=grp_pred)
+min_confidence = input.float(60.0, "Min Confidence %", minval=20, maxval=90, group=grp_pred)
+tp1_percent = input.float(2.0, "TP1 %", minval=0.5, maxval=5.0, group=grp_pred)
+tp2_percent = input.float(4.0, "TP2 %", minval=1.0, maxval=8.0, group=grp_pred)
+tp3_percent = input.float(6.0, "TP3 %", minval=2.0, maxval=12.0, group=grp_pred)
+stop_loss_percent = input.float(2.0, "Stop Loss %", minval=0.5, maxval=5.0, group=grp_pred)
+
+int bullish_signals = 0
+int bearish_signals = 0
+
+bullish_signals := (trend_buy_cond ? 3 : 0) + (scalp_buy_cond ? 1 : 0) + (isBreakout and volumeSpike ? 2 : 0) + (momentumSpike and is_hybrid_green ? 1 : 0) + (earlyBuySignal ? 2 : 0) + (macdBullish and rsiNotHot ? 1 : 0)
+bearish_signals := (trend_sell_cond ? 3 : 0) + (scalp_sell_cond ? 1 : 0) + (isBreakdown and volumeSpike ? 2 : 0) + (macdBearish ? 1 : 0)
+
+string signal_type_adv = "محايد"
+if bullish_signals >= min_signals_required and bullish_signals > bearish_signals and buyContextOK
+    signal_type_adv := "شراء 🟢"
+else if bearish_signals >= min_signals_required and bearish_signals > bullish_signals and allowSell
+    signal_type_adv := "بيع 🔴"
+
+float final_confidence = 50.0
+if signal_type_adv != "محايد"
+    int max_signals = math.max(bullish_signals, bearish_signals)
+    final_confidence := math.min(95.0, 55.0 + max_signals * 4.0)
+
+bool hasSignalNow = signal_type_adv != "محايد" and final_confidence >= min_confidence and barOK
+bool newAdvancedBuy = hasSignalNow and signal_type_adv == "شراء 🟢" and (not hasSignalNow[1] or signal_type_adv[1] != "شراء 🟢")
+bool newAdvancedSell = hasSignalNow and signal_type_adv == "بيع 🔴" and (not hasSignalNow[1] or signal_type_adv[1] != "بيع 🔴")
+
+var int lastBreakoutBar = -9999
+var int lastTrendBuyBar = -9999
+var int lastTrendSellBar = -9999
+
+bool newBreakout = isBreakout and volumeSpike and barOK and (bar_index - lastBreakoutBar) > signalCooldown
+bool newTrendBuy = trend_buy_cond and not trend_buy_cond[1] and barOK and buyContextOK and (bar_index - lastTrendBuyBar) > signalCooldown
+bool newTrendSell = trend_sell_cond and not trend_sell_cond[1] and barOK and allowSell and (bar_index - lastTrendSellBar) > signalCooldown
+
+if newBreakout
+    lastBreakoutBar := bar_index
+if newTrendBuy
+    lastTrendBuyBar := bar_index
+if newTrendSell
+    lastTrendSellBar := bar_index
+
+// ==========================================
+// 8. VISUALIZATION - النافذة السفلية
+// ==========================================
+atr_v = ta.atr(14)
+osc_val = (close - hma) / (atr_v > 0 ? atr_v : syminfo.mintick)
+
+plot(0, "Zero Line", color=color.gray, linewidth=1, style=plot.style_line, display=display.pane)
+plot(osc_val, color=color.gray, style=plot.style_columns, display=display.pane)
+plot(osc_val, color=color.white, linewidth=2, display=display.pane)
+
+// ==========================================
+// 9. عرض الإشارات على الشارت
+// ==========================================
+float atrOffset = ta.atr(14) * 0.4
+
+if showEarlyBuy and earlyBuySignal
+    label.new(x=bar_index, y=low - atrOffset * 5, text="🚀 EARLY BUY\n" + earlyBuyReason + "\nScore:" + str.tostring(earlyScore) + "/5", style=label.style_label_up, color=color.new(color.purple, 90), textcolor=color.white, size=size.large)
+    if showLines
+        line.new(x1=bar_index, y1=low, x2=bar_index, y2=low - atrOffset * 4, color=color.purple, width=2, style=line.style_dashed)
+
+if showBreakout and newBreakout
+    label.new(x=bar_index, y=low - atrOffset * 3, text="🔥 BREAKOUT\n" + str.tostring(breakoutRatio, "#.##") + "x ATR\nVol:" + str.tostring(volume / volumeMa, "#.#") + "x", style=label.style_label_up, color=color.new(color.blue, 80), textcolor=color.white, size=size.normal)
+
+if showTrendBuy and newTrendBuy
+    label.new(x=bar_index, y=low - atrOffset * 4, text="🟢 TREND BUY\nConf:" + str.tostring(math.round(final_confidence)) + "%", style=label.style_label_up, color=color.new(color.green, 90), textcolor=color.white, size=size.large)
+
+if showTrendSell and newTrendSell
+    label.new(x=bar_index, y=high + atrOffset * 4, text="🔴 TREND SELL\nConf:" + str.tostring(math.round(final_confidence)) + "%", style=label.style_label_down, color=color.new(color.red, 90), textcolor=color.white, size=size.large)
+
+if showScalpBuy and scalp_buy_cond and barOK
+    label.new(x=bar_index, y=low - atrOffset * 2, text="🟢 SCALP", style=label.style_label_up, color=color.new(color.lime, 70), textcolor=color.black, size=size.normal)
+
+if showScalpSell and scalp_sell_cond and barOK
+    label.new(x=bar_index, y=high + atrOffset * 2, text="🔴 SCALP", style=label.style_label_down, color=color.new(color.red, 70), textcolor=color.white, size=size.normal)
+
+if showAdvanced and newAdvancedBuy
+    string labelText = "🟢 " + signal_type_adv + " | " + str.tostring(math.round(final_confidence)) + "%\n↑" + str.tostring(bullish_signals) + " ↓" + str.tostring(bearish_signals)
+    if is_hybrid_green and is_hma_green
+        labelText += "\n📈 اتجاه صاعد"
+    if isBreakout
+        labelText += "\n🔥 اختراق"
+    if earlyBuySignal
+        labelText += "\n🚀 مبكر"
+    label.new(x=bar_index, y=low - atrOffset * 7, text=labelText, style=label.style_label_up, color=color.new(color.green, 80), textcolor=color.white, size=size.normal)
+
+if showAdvanced and newAdvancedSell
+    string labelTextSell = "🔴 " + signal_type_adv + " | " + str.tostring(math.round(final_confidence)) + "%\n↑" + str.tostring(bullish_signals) + " ↓" + str.tostring(bearish_signals)
+    if is_hybrid_red and is_hma_red
+        labelTextSell += "\n📉 اتجاه هابط"
+    if isBreakdown
+        labelTextSell += "\n💥 انهيار"
+    label.new(x=bar_index, y=high + atrOffset * 7, text=labelTextSell, style=label.style_label_down, color=color.new(color.red, 80), textcolor=color.white, size=size.normal)
+
+// ==========================================
+// 10. TABLES
+// ==========================================
+var table predTable = table.new(position.top_right, 2, 9, bgcolor=color.rgb(0, 0, 0, 85), border_color=color.rgb(48, 54, 61, 60))
+
+if showTable and barstate.islast
+    table.cell(predTable, 0, 0, "📊 BSS2000+", bgcolor=color.rgb(26, 26, 26, 100), text_color=color.rgb(255, 204, 0, 100), text_size=size.large, text_halign=text.align_center)
+    table.cell(predTable, 1, 0, "VALUE", bgcolor=color.rgb(26, 26, 26, 100), text_color=color.rgb(255, 204, 0, 100), text_size=size.large, text_halign=text.align_center)
+    table.cell(predTable, 0, 1, "Signal", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.gray)
+    color predColor = signal_type_adv == "شراء 🟢" ? color.green : signal_type_adv == "بيع 🔴" ? color.red : color.white
+    table.cell(predTable, 1, 1, hasSignalNow ? signal_type_adv : "Waiting", bgcolor=color.rgb(10, 10, 10, 100), text_color=predColor)
+    table.cell(predTable, 0, 2, "Confidence", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.gray)
+    table.cell(predTable, 1, 2, str.tostring(final_confidence, "#.#") + "%", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.yellow)
+    table.cell(predTable, 0, 3, "Votes", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.gray)
+    table.cell(predTable, 1, 3, "🟢" + str.tostring(bullish_signals) + " 🔴" + str.tostring(bearish_signals), bgcolor=color.rgb(10, 10, 10, 100), text_color=color.rgb(0, 170, 255, 100))
+    table.cell(predTable, 0, 4, "ADX", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.gray)
+    table.cell(predTable, 1, 4, str.tostring(adxValue, "#.#"), bgcolor=color.rgb(10, 10, 10, 100), text_color=isTrendStrong ? color.green : color.gray)
+    table.cell(predTable, 0, 5, "Breakout", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.gray)
+    table.cell(predTable, 1, 5, isBreakout ? "🔥 YES" : "---", bgcolor=color.rgb(10, 10, 10, 100), text_color=isBreakout ? color.blue : color.gray)
+    table.cell(predTable, 0, 6, "Early Buy", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.gray)
+    table.cell(predTable, 1, 6, earlyBuySignal ? "🚀 YES" : str.tostring(earlyScore) + "/5", bgcolor=color.rgb(10, 10, 10, 100), text_color=earlyBuySignal ? color.purple : color.gray)
+    table.cell(predTable, 0, 7, "RSI", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.gray)
+    table.cell(predTable, 1, 7, str.tostring(math.round(rsiVal)), bgcolor=color.rgb(10, 10, 10, 100), text_color=rsiVal > 70 ? color.red : rsiVal < 30 ? color.green : color.gray)
+    table.cell(predTable, 0, 8, "Filter", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.gray)
+    string filterTxt = buyContextOK ? "✅ OK" : overExtended ? "⛔ Extended" : "⛔ Trend"
+    table.cell(predTable, 1, 8, filterTxt, bgcolor=color.rgb(10, 10, 10, 100), text_color=buyContextOK ? color.green : color.red)
+
+// ==========================================
+// 11. ALERTS
+// ==========================================
+alertcondition(showEarlyBuy and earlyBuySignal, "🚀 EARLY BUY", "Early Buy Signal Detected!")
+alertcondition(showBreakout and newBreakout, "🔥 BREAKOUT", "Breakout with Volume Spike!")
+alertcondition(showTrendBuy and newTrendBuy, "Trend Buy", "Trend Buy Signal")
+alertcondition(showTrendSell and newTrendSell, "Trend Sell", "Trend Sell Signal")
+alertcondition(showScalpBuy and scalp_buy_cond and barOK, "Scalp Buy", "Scalp Buy Signal")
+alertcondition(showScalpSell and scalp_sell_cond and barOK, "Scalp Sell", "Scalp Sell Signal")
+alertcondition(showAdvanced and newAdvancedBuy, "Advanced Buy", "Advanced Buy Signal")
+alertcondition(showAdvanced and newAdvancedSell, "Advanced Sell", "Advanced Sell Signal")
