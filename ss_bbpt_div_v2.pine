@@ -56,6 +56,12 @@ show_voting_table = input.bool(true, "إظهار جدول التصويت", group
 show_dir_div = input.bool(true, "إظهار إشارة عكس الاتجاه", group="Display")
 show_original_labels = input.bool(true, "إظهار ملصقات BUY/SELL الأصلية", group="Display")
 
+grp_stats = "📊 النظام الإحصائي (Historical Pattern)"
+useStats = input.bool(true, "تفعيل الإحصاء التاريخي", group=grp_stats)
+lookback_bars = input.int(500, "عدد الشموع للبحث", minval=100, maxval=1000, step=50, group=grp_stats)
+lookahead_bars = input.int(5, "عدد الشموع لتقييم النجاح", minval=1, maxval=20, step=1, group=grp_stats, tooltip="بعد كم شمعة نقارن السعر لتحديد نجاح الإشارة؟")
+show_stats_labels = input.bool(true, "إظهار ليبل نسبة النجاح التاريخي", group=grp_stats)
+
 // ========================================================================
 // 📦 PART 2: SUPER STOCHASTIC
 // ========================================================================
@@ -300,6 +306,43 @@ string bear_tier = bearishReversal ? get_tier(filters_bear) : ""
 strongBullishSignal = bullishDivergence and (isKHammer or isKDoji) and k < 50 and barstate.isconfirmed
 strongBearishSignal = bearishDivergence and (isKShootingStar or isKDoji) and k > 50 and barstate.isconfirmed
 
+// شروط تاريخية بدون barstate (للبحث في الماضي)
+bool historicalBullCondition = bullishDivergence and (isKHammer or isKDoji) and k < 50
+bool historicalBearCondition = bearishDivergence and (isKShootingStar or isKDoji) and k > 50
+bool finalBullishSignal = strongBullishSignal or bullishReversal
+bool finalBearishSignal = strongBearishSignal or bearishReversal
+
+// ========================================================================
+// 📦 PART 21: النظام الإحصائي (Historical Pattern Statistics)
+// ========================================================================
+var int totalBullMatches = 0
+var int successBullMatches = 0
+var int totalBearMatches = 0
+var int successBearMatches = 0
+var float bullWinRate = 50.0
+var float bearWinRate = 50.0
+
+if barstate.islast and useStats
+    int tBull = 0
+    int sBull = 0
+    int tBear = 0
+    int sBear = 0
+    for i = lookahead_bars + 1 to lookback_bars
+        if historicalBullCondition[i]
+            tBull += 1
+            if close[i - lookahead_bars] > close[i]
+                sBull += 1
+        if historicalBearCondition[i]
+            tBear += 1
+            if close[i - lookahead_bars] < close[i]
+                sBear += 1
+    totalBullMatches := tBull
+    successBullMatches := sBull
+    totalBearMatches := tBear
+    successBearMatches := sBear
+    bullWinRate := tBull > 0 ? 100.0 * sBull / tBull : 50.0
+    bearWinRate := tBear > 0 ? 100.0 * sBear / tBear : 50.0
+
 // ========================================================================
 // 📦 PART 8: VOTING ENGINE
 // ========================================================================
@@ -502,3 +545,33 @@ if barstate.islast
     table.cell(infoTable, 0, 7, "Filter Score", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
     string fScore = raw_bullishReversal ? str.tostring(bullFilterScore) + "/5" : raw_bearishReversal ? str.tostring(bearFilterScore) + "/5" : "—"
     table.cell(infoTable, 1, 7, fScore, text_color=color.yellow)
+
+// ========================================================================
+// 📦 PART 22: جدول الإحصاء التاريخي
+// ========================================================================
+var table statsTable = table.new(position.bottom_left, 2, 4, bgcolor=color.rgb(0, 0, 0, 85), border_color=color.rgb(255, 165, 0, 80), border_width=1)
+
+if barstate.islast and useStats
+    table.cell(statsTable, 0, 0, "📈 إحصاء " + str.tostring(lookback_bars) + " شمعة", bgcolor=color.rgb(30, 30, 30, 100), text_color=color.rgb(255, 204, 0), text_size=size.small)
+    table.cell(statsTable, 1, 0, "النتيجة", bgcolor=color.rgb(30, 30, 30, 100), text_color=color.rgb(255, 204, 0), text_size=size.small)
+    color bullColor = bullWinRate >= 60 ? color.green : bullWinRate >= 45 ? color.yellow : color.red
+    table.cell(statsTable, 0, 1, "🟢 صاعد", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.white)
+    table.cell(statsTable, 1, 1, str.tostring(totalBullMatches) + " | " + str.tostring(bullWinRate, "#.0") + "%", bgcolor=color.rgb(10, 10, 10, 100), text_color=bullColor)
+    color bearColor = bearWinRate >= 60 ? color.green : bearWinRate >= 45 ? color.yellow : color.red
+    table.cell(statsTable, 0, 2, "🔴 هابط", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.white)
+    table.cell(statsTable, 1, 2, str.tostring(totalBearMatches) + " | " + str.tostring(bearWinRate, "#.0") + "%", bgcolor=color.rgb(10, 10, 10, 100), text_color=bearColor)
+    string currentRec = "⚠️ انتظار"
+    color recColor = color.gray
+    if finalBullishSignal
+        currentRec := bullWinRate >= 60 ? "🟢 شراء قوي" : bullWinRate >= 45 ? "🟡 شراء بحذر" : "🔴 تجنب"
+        recColor := bullWinRate >= 60 ? color.green : bullWinRate >= 45 ? color.yellow : color.red
+    else if finalBearishSignal
+        currentRec := bearWinRate >= 60 ? "🔴 بيع قوي" : bearWinRate >= 45 ? "🟡 بيع بحذر" : "🔴 تجنب"
+        recColor := bearWinRate >= 60 ? color.red : bearWinRate >= 45 ? color.yellow : color.red
+    table.cell(statsTable, 0, 3, "💡 توصية", bgcolor=color.rgb(10, 10, 10, 100), text_color=color.white)
+    table.cell(statsTable, 1, 3, currentRec, bgcolor=color.rgb(10, 10, 10, 100), text_color=recColor)
+
+if show_stats_labels and barstate.islast and useStats and (finalBullishSignal or finalBearishSignal)
+    string statsLabel = (finalBullishSignal ? "🟢 صاعد" : "🔴 هابط") + " | تاريخي: " + str.tostring(finalBullishSignal ? bullWinRate : bearWinRate, "#.0") + "%"
+    color statsLabelColor = finalBullishSignal ? (bullWinRate >= 60 ? color.green : color.orange) : (bearWinRate >= 60 ? color.red : color.orange)
+    label.new(bar_index, finalBullishSignal ? k - 15 : k + 15, statsLabel, yloc=yloc.price, color=statsLabelColor, textcolor=color.white, style=label.style_label_down, size=size.small)
