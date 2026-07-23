@@ -21,6 +21,9 @@ show_div_labels = input.bool(true, "إظهار إشارات الاختلاف", g
 show_k_reversal = input.bool(true, "إظهار الشمعات الانعكاسية على %K", group=grp_div)
 
 grp_filters = "🎯 فلاتر زيادة الدقة"
+reversalMode = input.string("متوازن", "وضع إشارة الانعكاس", options=["صارم", "متوازن", "مرن"], group=grp_filters, tooltip="صارم=كل الفلاتر | متوازن=3 من 5 | مرن=الانعكاس الخام فقط")
+min_reversal_filters = input.int(3, "الحد الأدنى للفلاتر (وضع متوازن)", minval=1, maxval=5, group=grp_filters)
+show_raw_reversal = input.bool(true, "إظهار الانعكاس الخام (ضعيف)", group=grp_filters)
 use_rsi_filter = input.bool(true, "تفعيل فلتر RSI", group=grp_filters)
 rsi_len = input.int(14, "فترة RSI", minval=5, maxval=50, group=grp_filters)
 rsi_oversold = input.int(30, "منطقة تشبع بيعي", minval=10, maxval=40, group=grp_filters)
@@ -39,7 +42,7 @@ trend_ma_slow = input.int(50, "المتوسط البطيء", minval=20, maxval=2
 
 use_support_resistance_filter = input.bool(true, "تفعيل فلتر الدعم/المقاومة", group=grp_filters)
 sr_lookback = input.int(30, "فترة البحث عن الدعم/المقاومة", minval=10, maxval=100, group=grp_filters)
-sr_tolerance = input.float(0.5, "نسبة التسامح % من ATR", minval=0.1, maxval=2.0, step=0.1, group=grp_filters)
+sr_tolerance = input.float(0.5, "تسامح الدعم/المقاومة (x ATR)", minval=0.1, maxval=3.0, step=0.1, group=grp_filters)
 
 grp_voting = "⚙️ نظام التصويت"
 min_signals_required = input.int(2, "الحد الأدنى للإشارات", minval=1, maxval=5, step=1, group=grp_voting)
@@ -143,7 +146,7 @@ if array.size(pivot_highs) >= 3
         resistance_level := sum_highs / count2
 
 atr = ta.atr(14)
-sr_tolerance_val = sr_tolerance * atr / 100
+sr_tolerance_val = sr_tolerance * atr
 is_near_support = not na(support_level) and low <= support_level + sr_tolerance_val
 is_near_resistance = not na(resistance_level) and high >= resistance_level - sr_tolerance_val
 
@@ -261,21 +264,29 @@ bool trend_down = Trend < Trend[1]
 bool raw_bullishReversal = k_up and trend_down
 bool raw_bearishReversal = k_down and trend_up
 
-bool rsi_ok_bull = not use_rsi_filter or rsi <= rsi_oversold + 10
-bool rsi_ok_bear = not use_rsi_filter or rsi >= rsi_overbought - 10
-bool obv_ok_bull = not use_obv_filter or obv_smooth > obv_smooth[1]
-bool obv_ok_bear = not use_obv_filter or obv_smooth < obv_smooth[1]
-bool volume_ok = not use_volume_filter or volume_strong
+bool rsi_ok_bull = not use_rsi_filter or rsi <= rsi_oversold + 15
+bool rsi_ok_bear = not use_rsi_filter or rsi >= rsi_overbought - 15
+bool obv_ok_bull = not use_obv_filter or obv_smooth >= obv_smooth[1]
+bool obv_ok_bear = not use_obv_filter or obv_smooth <= obv_smooth[1]
+bool volume_ok_bull = not use_volume_filter or volume_strong or volume >= vol_ma
+bool volume_ok_bear = not use_volume_filter or volume_strong or volume >= vol_ma
 bool trend_filter_ok_bull = not use_trend_filter or not trend_bear
 bool trend_filter_ok_bear = not use_trend_filter or not trend_bull
-bool sr_ok_bull = not use_support_resistance_filter or is_near_support
-bool sr_ok_bear = not use_support_resistance_filter or is_near_resistance
+bool sr_ok_bull = not use_support_resistance_filter or is_near_support or array.size(pivot_lows) < 3
+bool sr_ok_bear = not use_support_resistance_filter or is_near_resistance or array.size(pivot_highs) < 3
 
-bool bullishReversal = raw_bullishReversal and rsi_ok_bull and obv_ok_bull and volume_ok and trend_filter_ok_bull and sr_ok_bull and barstate.isconfirmed
-bool bearishReversal = raw_bearishReversal and rsi_ok_bear and obv_ok_bear and volume_ok and trend_filter_ok_bear and sr_ok_bear and barstate.isconfirmed
+int bullFilterScore = (rsi_ok_bull ? 1 : 0) + (obv_ok_bull ? 1 : 0) + (volume_ok_bull ? 1 : 0) + (trend_filter_ok_bull ? 1 : 0) + (sr_ok_bull ? 1 : 0)
+int bearFilterScore = (rsi_ok_bear ? 1 : 0) + (obv_ok_bear ? 1 : 0) + (volume_ok_bear ? 1 : 0) + (trend_filter_ok_bear ? 1 : 0) + (sr_ok_bear ? 1 : 0)
 
-int filters_bull = (raw_bullishReversal ? 1 : 0) + (rsi_ok_bull ? 1 : 0) + (obv_ok_bull ? 1 : 0) + (volume_ok ? 1 : 0) + (trend_filter_ok_bull ? 1 : 0) + (sr_ok_bull ? 1 : 0)
-int filters_bear = (raw_bearishReversal ? 1 : 0) + (rsi_ok_bear ? 1 : 0) + (obv_ok_bear ? 1 : 0) + (volume_ok ? 1 : 0) + (trend_filter_ok_bear ? 1 : 0) + (sr_ok_bear ? 1 : 0)
+int requiredFilters = reversalMode == "صارم" ? 5 : reversalMode == "متوازن" ? min_reversal_filters : 0
+
+bool bullishReversal = raw_bullishReversal and bullFilterScore >= requiredFilters and barstate.isconfirmed
+bool bearishReversal = raw_bearishReversal and bearFilterScore >= requiredFilters and barstate.isconfirmed
+bool weakBullishReversal = show_raw_reversal and raw_bullishReversal and not bullishReversal and barstate.isconfirmed
+bool weakBearishReversal = show_raw_reversal and raw_bearishReversal and not bearishReversal and barstate.isconfirmed
+
+int filters_bull = (raw_bullishReversal ? 1 : 0) + bullFilterScore
+int filters_bear = (raw_bearishReversal ? 1 : 0) + bearFilterScore
 
 get_tier(int filter_count) =>
     filter_count >= 6 ? "A+" : filter_count >= 5 ? "A" : filter_count >= 4 ? "B" : "C"
@@ -394,6 +405,10 @@ if show_dir_div and barstate.isconfirmed and (bullishReversal or bearishReversal
     label.new(bar_index, k + 8, labelText, yloc=yloc.price, color=labelColor, textcolor=color.white, style=label.style_label_up, size=size.large)
     line.new(bar_index, k - 2, bar_index, k + 8, color=lineColor, style=line.style_dashed, width=1)
 
+if show_dir_div and barstate.isconfirmed and (weakBullishReversal or weakBearishReversal)
+    string weakText = weakBullishReversal ? "🟡 انعكاس ضعيف ↑" : "🟡 انعكاس ضعيف ↓"
+    label.new(bar_index, k + 5, weakText, yloc=yloc.price, color=color.new(#ffa000, 85), textcolor=color.white, style=label.style_label_up, size=size.small)
+
 // ========================================================================
 // 📦 PART 13: STRONG DIVERGENCE SIGNALS
 // ========================================================================
@@ -462,7 +477,7 @@ if show_voting_table and barstate.islast and signal_type_adv != "محايد" and
 // ========================================================================
 // 📦 PART 17: INFO TABLE
 // ========================================================================
-var table infoTable = table.new(position.bottom_right, 2, 6, bgcolor=color.new(#0d1117, 90), border_color=color.gray)
+var table infoTable = table.new(position.bottom_right, 2, 8, bgcolor=color.new(#0d1117, 90), border_color=color.gray)
 
 if barstate.islast
     table.cell(infoTable, 0, 0, "Variable", bgcolor=color.new(#161b22, 100), text_color=color.white, text_size=size.small)
@@ -481,3 +496,9 @@ if barstate.islast
     string divText = bullishDivergence ? "🟢 BULLISH" : bearishDivergence ? "🔴 BEARISH" : "لا يوجد"
     color divC = bullishDivergence ? color.green : bearishDivergence ? color.red : color.gray
     table.cell(infoTable, 1, 5, divText, text_color=divC)
+    table.cell(infoTable, 0, 6, "Reversal Raw", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
+    string revRaw = raw_bullishReversal ? "🟢 BULL" : raw_bearishReversal ? "🔴 BEAR" : "—"
+    table.cell(infoTable, 1, 6, revRaw, text_color=raw_bullishReversal ? color.green : raw_bearishReversal ? color.red : color.gray)
+    table.cell(infoTable, 0, 7, "Filter Score", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
+    string fScore = raw_bullishReversal ? str.tostring(bullFilterScore) + "/5" : raw_bearishReversal ? str.tostring(bearFilterScore) + "/5" : "—"
+    table.cell(infoTable, 1, 7, fScore, text_color=color.yellow)
