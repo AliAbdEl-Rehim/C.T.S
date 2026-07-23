@@ -1,0 +1,718 @@
+//@version=6
+indicator("DRE x Secondary Fusion • BBPT Zero Command", shorttitle="DRE-SEC v3", overlay=true, max_labels_count=500, max_lines_count=500)
+
+//====================================================================================
+// Fusion: Secondary divergence score + DRE BBPT/K-reversal + Stats500 + BBPT Zero
+//====================================================================================
+
+logit(p) =>
+    float denom = 1.0 - p + 0.0001
+    math.log(p / denom)
+
+clamp(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+absI(x) =>
+    x >= 0 ? x : -x
+
+f_state(float cur, float prev) =>
+    na(cur) or na(prev) ? 0 : cur > prev ? 1 : cur < prev ? -1 : 0
+
+f_seg(float y1, int x1, float y2, int x2) =>
+    int a = x1
+    int b = x2
+    float ya = y1
+    float yb = y2
+    float slope = a != b ? (ya - yb) / (a - b) : na
+    bool inRange = bar_index >= b and bar_index <= a
+    inRange and not na(slope) ? (yb + slope * (bar_index - b)) : na
+
+const int BIG = 10000000
+
+//====================================================================================
+// INPUTS
+//====================================================================================
+groupMode = "Detection"
+modeTop = input.bool(true, "Analyze TOP (bearish)", group=groupMode)
+modeBottom = input.bool(true, "Analyze BOTTOM (bullish)", group=groupMode)
+
+groupTrend = "Trend Filter"
+useTrendFilter = input.bool(true, "Enable trend filter", group=groupTrend)
+trendThreshold = input.float(0.6, "Trend strength (0-1)", minval=0.3, maxval=0.9, step=0.05, group=groupTrend)
+
+groupPivot = "Fast Pivot"
+L = input.int(3, "Left bars (lookback)", minval=1, group=groupPivot)
+
+groupRSI = "RSI"
+rsiLen = input.int(14, "RSI length", minval=2, group=groupRSI)
+
+groupStoch = "Stochastic"
+useStoch = input.bool(true, "Use Stochastic confirm", group=groupStoch)
+stochLen = input.int(14, "Stoch length", minval=5, group=groupStoch)
+stochOverbought = input.int(80, "Overbought", minval=70, maxval=90, group=groupStoch)
+stochOversold = input.int(20, "Oversold", minval=10, maxval=30, group=groupStoch)
+
+groupConfirm = "Confirm Window"
+confirmBars = input.int(5, "Max bars between pivots", minval=1, group=groupConfirm)
+
+groupVol = "Volume"
+useFinVol = input.bool(true, "Use financial volume", group=groupVol)
+minVolumeRatio = input.float(1.2, "Min volume vs MA", minval=0.8, maxval=2.0, step=0.1, group=groupVol)
+
+groupScore = "Score"
+highProbCutoff = input.float(0.70, "High prob cutoff", minval=0.60, maxval=0.85, step=0.01, group=groupScore)
+medProbCutoff = input.float(0.50, "Medium prob cutoff", minval=0.35, maxval=0.65, step=0.01, group=groupScore)
+useVolatilityFilter = input.bool(true, "ATR volatility filter", group=groupScore)
+
+groupDre = "DRE Engine"
+useDreBoost = input.bool(true, "Boost score with DRE confirm", group=groupDre)
+atr_length = input.int(5, "BBPT ATR length", minval=1, group=groupDre)
+lookback_lowest = input.int(50, "BBPT lookback", minval=10, group=groupDre)
+showDreMarkers = input.bool(true, "Show DRE early markers", group=groupDre)
+
+groupBBPTZero = "BBPT+ Zero Alert"
+enable_zero_alert = input.bool(true, "Enable Zero Touch Alert", group=groupBBPTZero)
+zero_sensitivity = input.float(0.15, "Zero sensitivity", minval=0.0, maxval=2.0, step=0.01, group=groupBBPTZero)
+show_zero_label = input.bool(true, "Show zero touch label", group=groupBBPTZero)
+show_touch_labels = input.bool(true, "Show ±2 touch labels", group=groupBBPTZero)
+show_touch_bg = input.bool(true, "Background on ±2 touch", group=groupBBPTZero)
+zero_bg_color = input.color(color.new(color.blue, 85), "Zero touch BG", group=groupBBPTZero)
+touch_bg_bull = input.color(color.new(#ffffff, 88), "BG Bull +2 touch", group=groupBBPTZero)
+touch_bg_bear = input.color(color.new(#ffffff, 88), "BG Bear -2 touch", group=groupBBPTZero)
+bbpt_zero_boost = input.bool(true, "Boost bullish on BearTrend2 zero", group=groupBBPTZero)
+
+groupStat = "Stats500"
+useStatSystem = input.bool(true, "Enable historical stats", group=groupStat)
+statLookback = input.int(500, "Lookback bars", minval=100, maxval=2000, step=50, group=groupStat)
+statFwdBars = input.int(5, "Forward bars to measure", minval=1, maxval=20, group=groupStat)
+simTolerance = input.int(8, "Score similarity (points)", minval=2, maxval=20, group=groupStat)
+minSamples = input.int(8, "Min similar samples", minval=3, maxval=50, group=groupStat)
+minStatSuccess = input.float(55.0, "Min stats success %", minval=50, maxval=80, step=1, group=groupStat)
+
+groupStyle = "Display"
+showTable = input.bool(true, "Show command panel", group=groupStyle)
+showLines = input.bool(true, "Draw price rails", group=groupStyle)
+showLabels = input.bool(true, "Show signal labels", group=groupStyle)
+showAplusOnly = input.bool(false, "Show A+ / Fusion only", group=groupStyle)
+labelCooldown = input.int(5, "Min bars between labels", minval=1, maxval=20, group=groupStyle)
+
+//====================================================================================
+// BASE + TREND + DRE BBPT
+//====================================================================================
+atr = ta.atr(14)
+atrSmooth = ta.ema(atr, 20)
+volatilityRegime = atr / atrSmooth
+isVolatile = volatilityRegime > 1.2
+isCalm = volatilityRegime < 0.8
+
+rsi = ta.rsi(close, rsiLen)
+
+var float obv = 0.0
+float delta = close > close[1] ? volume : close < close[1] ? -volume : 0.0
+obv := nz(obv[1], 0.0) + delta
+obv_smooth = ta.ema(obv, 5)
+
+stochK = ta.sma(ta.stoch(close, high, low, stochLen), 3)
+stochD = ta.sma(stochK, 3)
+stochCrossUp = ta.crossover(stochK, stochD)
+stochCrossDown = ta.crossunder(stochK, stochD)
+
+float finVol = close * volume
+finVolMA = ta.sma(finVol, 20)
+volumeStrong = finVol > finVolMA * minVolumeRatio
+
+calcADX(len) =>
+    float up = ta.change(high)
+    float down = -ta.change(low)
+    float plusDM = na(up) ? na : (up > down and up > 0 ? up : 0.0)
+    float minusDM = na(down) ? na : (down > up and down > 0 ? down : 0.0)
+    float tr = ta.tr(true)
+    float plusDI = 100 * ta.rma(plusDM, len) / ta.rma(tr, len)
+    float minusDI = 100 * ta.rma(minusDM, len) / ta.rma(tr, len)
+    float adx = 100 * ta.rma(math.abs(plusDI - minusDI) / (plusDI + minusDI), len)
+    [plusDI, minusDI, adx]
+
+[diPlus, diMinus, adxValue] = calcADX(14)
+adxStrength = adxValue > 25 ? 0.7 : adxValue > 20 ? 0.5 : 0.3
+adxDirection = diPlus > diMinus ? 1 : -1
+
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+maTrend = (ema20 > ema50 ? 1 : -1) + (ema20 > ema100 ? 1 : -1) + (ema50 > ema100 ? 1 : -1)
+maTrendStrength = maTrend / 3.0
+
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+macdTrend = macdLine > signalLine ? 1 : -1
+macdHistogramStrength = math.abs(macdLine - signalLine) / ta.atr(14) * 10.0
+macdStrength = math.min(0.8, macdHistogramStrength)
+
+bbMiddle = ta.sma(close, 20)
+bbUpper = bbMiddle + ta.stdev(close, 20) * 2.0
+bbLower = bbMiddle - ta.stdev(close, 20) * 2.0
+bbPosition = (close - bbLower) / (bbUpper - bbLower)
+bbTrend = bbPosition > 0.7 ? 1 : bbPosition < 0.3 ? -1 : 0
+
+var float trendStrengthValue = 0.5
+var int overallTrend = 0
+
+if useTrendFilter
+    float uptrendVotes = 0.0
+    float downtrendVotes = 0.0
+    if maTrendStrength > 0.2
+        uptrendVotes := uptrendVotes + math.abs(maTrendStrength)
+    else if maTrendStrength < -0.2
+        downtrendVotes := downtrendVotes + math.abs(maTrendStrength)
+    if adxDirection == 1 and adxStrength > 0.4
+        uptrendVotes := uptrendVotes + adxStrength
+    else if adxDirection == -1 and adxStrength > 0.4
+        downtrendVotes := downtrendVotes + adxStrength
+    if macdTrend == 1 and macdStrength > 0.3
+        uptrendVotes := uptrendVotes + macdStrength
+    else if macdTrend == -1 and macdStrength > 0.3
+        downtrendVotes := downtrendVotes + macdStrength
+    if bbTrend == 1
+        uptrendVotes := uptrendVotes + 0.5
+    else if bbTrend == -1
+        downtrendVotes := downtrendVotes + 0.5
+    float totalVotes = uptrendVotes + downtrendVotes
+    if totalVotes > 0
+        if uptrendVotes > downtrendVotes
+            overallTrend := 1
+            trendStrengthValue := uptrendVotes / totalVotes
+        else if downtrendVotes > uptrendVotes
+            overallTrend := -1
+            trendStrengthValue := downtrendVotes / totalVotes
+        else
+            overallTrend := 0
+            trendStrengthValue := 0.5
+    else
+        overallTrend := 0
+        trendStrengthValue := 0.5
+    trendStrengthValue := ta.ema(trendStrengthValue, 5)
+else
+    overallTrend := 0
+    trendStrengthValue := 0.5
+
+isStrongUptrend = overallTrend == 1 and trendStrengthValue >= trendThreshold
+isStrongDowntrend = overallTrend == -1 and trendStrengthValue >= trendThreshold
+allowBuySignals = not useTrendFilter or not isStrongDowntrend
+allowSellSignals = not useTrendFilter or not isStrongUptrend
+isUptrend = ema20 > ema50
+isDowntrend = ema20 < ema50
+bearishContext = overallTrend == -1 and trendStrengthValue >= 0.50
+bullishContext = overallTrend == 1 and trendStrengthValue >= 0.50
+
+// BBPT unified
+atr5 = ta.atr(atr_length)
+BullTrend = (close - ta.lowest(low, lookback_lowest)) / atr5
+BearTrend = (ta.highest(high, lookback_lowest) - close) / atr5
+BearTrend2 = -BearTrend
+bbptTrend = BullTrend - BearTrend
+bbptUp = bbptTrend > bbptTrend[1]
+bbptDown = bbptTrend < bbptTrend[1]
+
+// BBPT+ Zero detection
+is_near_zero = math.abs(BearTrend2) <= zero_sensitivity
+is_crossing_zero = ta.cross(BearTrend2, 0)
+zero_touch_condition = enable_zero_alert and (is_near_zero or is_crossing_zero)
+bull_touch_plus2 = BullTrend >= 2 and BullTrend[1] < 2
+bear_touch_minus2 = BearTrend2 <= -2 and BearTrend2[1] > -2
+
+// DRE candle patterns on Stochastic K
+kOpen = stochK[1]
+kClose = stochK
+kHigh = math.max(stochK, stochK[1])
+kLow = math.min(stochK, stochK[1])
+kBody = math.abs(kClose - kOpen)
+kRange = kHigh - kLow
+kUpperWick = kHigh - math.max(kOpen, kClose)
+kLowerWick = math.min(kOpen, kClose) - kLow
+isKHammer = kLowerWick > kBody * 2.0 and kBody > 0.3 and kRange > 1.5 and stochK < 40
+isKShootingStar = kUpperWick > kBody * 2.0 and kBody > 0.3 and kRange > 1.5 and stochK > 60
+isKDoji = kBody <= kRange * 0.15 and kRange > 2.0
+dreBullEarly = (stochK > stochK[1] and bbptDown) or isKHammer or (stochCrossUp and stochK < 40) or (zero_touch_condition and bbpt_zero_boost)
+dreBearEarly = (stochK < stochK[1] and bbptUp) or isKShootingStar or (stochCrossDown and stochK > 60) or bull_touch_plus2
+
+//====================================================================================
+// FAST PIVOTS (Secondary)
+//====================================================================================
+isPeakPrice = high == ta.highest(high, L)
+isPeakRSI = rsi == ta.highest(rsi, L)
+isPeakOBV = obv_smooth == ta.highest(obv_smooth, L)
+isPeakVol = finVol == ta.highest(finVol, L)
+isPeakStoch = stochK == ta.highest(stochK, L)
+isTroughPrice = low == ta.lowest(low, L)
+isTroughRSI = rsi == ta.lowest(rsi, L)
+isTroughOBV = obv_smooth == ta.lowest(obv_smooth, L)
+isTroughVol = finVol == ta.lowest(finVol, L)
+isTroughStoch = stochK == ta.lowest(stochK, L)
+
+var float priceHigh1 = na
+var float priceHigh2 = na
+var int priceHBar1 = na
+var int priceHBar2 = na
+var float rsiHigh1 = na
+var float rsiHigh2 = na
+var int rsiHBar1 = na
+var int rsiHBar2 = na
+var float obvHigh1 = na
+var float obvHigh2 = na
+var int obvHBar1 = na
+var int obvHBar2 = na
+var float finVolHigh1 = na
+var float finVolHigh2 = na
+var int finVolHBar1 = na
+var int finVolHBar2 = na
+var float stochHigh1 = na
+var float stochHigh2 = na
+var int stochHBar1 = na
+var int stochHBar2 = na
+var float priceLow1 = na
+var float priceLow2 = na
+var int priceLBar1 = na
+var int priceLBar2 = na
+var float rsiLow1 = na
+var float rsiLow2 = na
+var int rsiLBar1 = na
+var int rsiLBar2 = na
+var float obvLow1 = na
+var float obvLow2 = na
+var int obvLBar1 = na
+var int obvLBar2 = na
+var float finVolLow1 = na
+var float finVolLow2 = na
+var int finVolLBar1 = na
+var int finVolLBar2 = na
+var float stochLow1 = na
+var float stochLow2 = na
+var int stochLBar1 = na
+var int stochLBar2 = na
+
+if isPeakPrice
+    priceHigh2 := priceHigh1
+    priceHBar2 := priceHBar1
+    priceHigh1 := high
+    priceHBar1 := bar_index
+if isPeakRSI
+    rsiHigh2 := rsiHigh1
+    rsiHBar2 := rsiHBar1
+    rsiHigh1 := rsi
+    rsiHBar1 := bar_index
+if isPeakOBV
+    obvHigh2 := obvHigh1
+    obvHBar2 := obvHBar1
+    obvHigh1 := obv_smooth
+    obvHBar1 := bar_index
+if isPeakVol
+    finVolHigh2 := finVolHigh1
+    finVolHBar2 := finVolHBar1
+    finVolHigh1 := finVol
+    finVolHBar1 := bar_index
+if isPeakStoch
+    stochHigh2 := stochHigh1
+    stochHBar2 := stochHBar1
+    stochHigh1 := stochK
+    stochHBar1 := bar_index
+if isTroughPrice
+    priceLow2 := priceLow1
+    priceLBar2 := priceLBar1
+    priceLow1 := low
+    priceLBar1 := bar_index
+if isTroughRSI
+    rsiLow2 := rsiLow1
+    rsiLBar2 := rsiLBar1
+    rsiLow1 := rsi
+    rsiLBar1 := bar_index
+if isTroughOBV
+    obvLow2 := obvLow1
+    obvLBar2 := obvLBar1
+    obvLow1 := obv_smooth
+    obvLBar1 := bar_index
+if isTroughVol
+    finVolLow2 := finVolLow1
+    finVolLBar2 := finVolLBar1
+    finVolLow1 := finVol
+    finVolLBar1 := bar_index
+if isTroughStoch
+    stochLow2 := stochLow1
+    stochLBar2 := stochLBar1
+    stochLow1 := stochK
+    stochLBar1 := bar_index
+
+statePriceTop = f_state(priceHigh1, priceHigh2)
+stateRSITop = f_state(rsiHigh1, rsiHigh2)
+stateOBVTop = f_state(obvHigh1, obvHigh2)
+stateVolTop = f_state(finVolHigh1, finVolHigh2)
+stateStochTop = f_state(stochHigh1, stochHigh2)
+distTopRSI = not na(priceHBar1) and not na(rsiHBar1) ? absI(priceHBar1 - rsiHBar1) : BIG
+distTopOBV = not na(priceHBar1) and not na(obvHBar1) ? absI(priceHBar1 - obvHBar1) : BIG
+distTopVol = not na(priceHBar1) and not na(finVolHBar1) ? absI(priceHBar1 - finVolHBar1) : BIG
+distTopStoch = not na(priceHBar1) and not na(stochHBar1) ? absI(priceHBar1 - stochHBar1) : BIG
+timeTopRSI = distTopRSI <= confirmBars
+timeTopOBV = distTopOBV <= confirmBars
+timeTopVol = distTopVol <= confirmBars
+timeTopStoch = distTopStoch <= confirmBars
+
+statePriceLow = f_state(priceLow1, priceLow2)
+stateRSILow = f_state(rsiLow1, rsiLow2)
+stateOBVLow = f_state(obvLow1, obvLow2)
+stateVolLow = f_state(finVolLow1, finVolLow2)
+stateStochLow = f_state(stochLow1, stochLow2)
+distLowRSI = not na(priceLBar1) and not na(rsiLBar1) ? absI(priceLBar1 - rsiLBar1) : BIG
+distLowOBV = not na(priceLBar1) and not na(obvLBar1) ? absI(priceLBar1 - obvLBar1) : BIG
+distLowVol = not na(priceLBar1) and not na(finVolLBar1) ? absI(priceLBar1 - finVolLBar1) : BIG
+distLowStoch = not na(priceLBar1) and not na(stochLBar1) ? absI(priceLBar1 - stochLBar1) : BIG
+timeLowRSI = distLowRSI <= confirmBars
+timeLowOBV = distLowOBV <= confirmBars
+timeLowVol = distLowVol <= confirmBars
+timeLowStoch = distLowStoch <= confirmBars
+
+//====================================================================================
+// SECONDARY SCORE + DRE BOOST
+//====================================================================================
+calcBearishScore() =>
+    f1 = (statePriceTop == 1 and stateRSITop <= 0) ? (stateRSITop == -1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceTop == 1 and stateOBVTop <= 0) ? (stateOBVTop == -1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeTopStoch
+        if stochK > stochOverbought and stateStochTop <= 0
+            f3 := 0.75
+        else if stochK > stochOverbought
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeTopVol
+        if stateVolTop <= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolTop <= 0
+            f4 := 0.55
+    f5 = isUptrend ? 0.35 : isDowntrend ? 0.75 : 0.50
+    f6 = 0.50
+    if timeTopRSI and timeTopOBV
+        f6 := 0.85
+    else if timeTopRSI or timeTopOBV
+        f6 := 0.65
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeTopRSI ? 1 : 0) + (timeTopOBV ? 1 : 0) + (timeTopVol and useFinVol ? 1 : 0) + (timeTopStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 1.2 * logit(clamp(f2, 0.1, 0.9)) + 1.0 * logit(clamp(f3, 0.1, 0.9)) + 0.8 * logit(clamp(f4, 0.1, 0.9)) + 1.1 * logit(clamp(f5, 0.1, 0.9)) + 1.4 * logit(clamp(f6, 0.1, 0.9)) + 0.9 * logit(clamp(f7, 0.1, 0.9)) + 1.0 * logit(clamp(f8, 0.1, 0.9))
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+    clamp(prob, 0.05, 0.92)
+
+calcBullishScore() =>
+    f1 = (statePriceLow == -1 and stateRSILow >= 0) ? (stateRSILow == 1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceLow == -1 and stateOBVLow >= 0) ? (stateOBVLow == 1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeLowStoch
+        if stochK < stochOversold and stateStochLow >= 0
+            f3 := 0.75
+        else if stochK < stochOversold
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeLowVol
+        if stateVolLow >= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolLow >= 0
+            f4 := 0.55
+    f5 = isDowntrend ? 0.35 : isUptrend ? 0.75 : 0.50
+    f6 = 0.50
+    if timeLowRSI and timeLowOBV
+        f6 := 0.85
+    else if timeLowRSI or timeLowOBV
+        f6 := 0.65
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeLowRSI ? 1 : 0) + (timeLowOBV ? 1 : 0) + (timeLowVol and useFinVol ? 1 : 0) + (timeLowStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 1.2 * logit(clamp(f2, 0.1, 0.9)) + 1.0 * logit(clamp(f3, 0.1, 0.9)) + 0.8 * logit(clamp(f4, 0.1, 0.9)) + 1.1 * logit(clamp(f5, 0.1, 0.9)) + 1.4 * logit(clamp(f6, 0.1, 0.9)) + 0.9 * logit(clamp(f7, 0.1, 0.9)) + 1.0 * logit(clamp(f8, 0.1, 0.9))
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+    clamp(prob, 0.05, 0.92)
+
+rawBearScore = modeTop ? calcBearishScore() : 0.0
+rawBullScore = modeBottom ? calcBullishScore() : 0.0
+
+float dreBullBoost = 0.0
+float dreBearBoost = 0.0
+if useDreBoost
+    dreBullBoost := (isKHammer or (isKDoji and stochK < 40) ? 0.04 : 0.0) + (stochCrossUp and stochK < 45 ? 0.03 : 0.0) + (bbptUp and stochK < 50 ? 0.03 : 0.0) + (not bearishContext ? 0.02 : 0.0) + (zero_touch_condition and bbpt_zero_boost ? 0.05 : 0.0)
+    dreBearBoost := (isKShootingStar or (isKDoji and stochK > 60) ? 0.04 : 0.0) + (stochCrossDown and stochK > 55 ? 0.03 : 0.0) + (bbptDown and stochK > 50 ? 0.03 : 0.0) + (not bullishContext ? 0.02 : 0.0) + (bull_touch_plus2 ? 0.04 : 0.0)
+
+bearishScore = clamp(rawBearScore + dreBearBoost, 0.05, 0.95)
+bullishScore = clamp(rawBullScore + dreBullBoost, 0.05, 0.95)
+
+getTier(score, isBearishSide) =>
+    highScore = score >= highProbCutoff
+    medScore = score >= medProbCutoff
+    hasMultipleConf = (timeTopRSI and timeTopOBV) or (timeLowRSI and timeLowOBV)
+    hasStochConf = useStoch ? (isBearishSide ? timeTopStoch : timeLowStoch) : false
+    hasVolConf = useFinVol ? (isBearishSide ? timeTopVol : timeLowVol) : false
+    dreOk = isBearishSide ? dreBearBoost >= 0.06 : dreBullBoost >= 0.06
+    bbptOk = isBearishSide ? bull_touch_plus2 : zero_touch_condition
+    if highScore and hasMultipleConf and (hasStochConf or hasVolConf) and dreOk and bbptOk
+        "FUSION"
+    else if highScore and hasMultipleConf and (hasStochConf or hasVolConf) and dreOk
+        "A+"
+    else if highScore and (hasMultipleConf or hasStochConf or hasVolConf)
+        "A"
+    else if medScore
+        "B"
+    else
+        "C"
+
+bearishValid = modeTop and bearishScore >= medProbCutoff and allowSellSignals
+bullishValid = modeBottom and bullishScore >= medProbCutoff and allowBuySignals
+bearishTier = modeTop ? getTier(bearishScore, true) : ""
+bullishTier = modeBottom ? getTier(bullishScore, false) : ""
+
+showBearish = bearishValid and barstate.isconfirmed and (not showAplusOnly or bearishTier == "A+" or bearishTier == "FUSION")
+showBullish = bullishValid and barstate.isconfirmed and (not showAplusOnly or bullishTier == "A+" or bullishTier == "FUSION")
+weakBull = showBullish and bearishContext
+weakBear = showBearish and bullishContext
+
+//====================================================================================
+// STATS500
+//====================================================================================
+int scorePtsBull = int(math.round(bullishScore * 100.0))
+int scorePtsBear = int(math.round(bearishScore * 100.0))
+int ctxCode = (bearishContext ? 1 : 0) + (bullishContext ? 2 : 0) + (volumeStrong ? 4 : 0)
+
+var array<int> memScore = array.new_int()
+var array<int> memDir = array.new_int()
+var array<int> memCtx = array.new_int()
+var array<int> memUp = array.new_int()
+var array<float> memMove = array.new_float()
+var array<int> memBar = array.new_int()
+
+if useStatSystem and barstate.isconfirmed and bar_index > statFwdBars
+    bool pastBull = showBullish[statFwdBars]
+    bool pastBear = showBearish[statFwdBars]
+    if pastBull or pastBear
+        int pastDir = pastBull ? 1 : -1
+        int pastScore = pastBull ? int(math.round(bullishScore[statFwdBars] * 100.0)) : int(math.round(bearishScore[statFwdBars] * 100.0))
+        int pastCtx = (overallTrend[statFwdBars] == -1 and trendStrengthValue[statFwdBars] >= 0.50 ? 1 : 0) + (overallTrend[statFwdBars] == 1 and trendStrengthValue[statFwdBars] >= 0.50 ? 2 : 0) + (volumeStrong[statFwdBars] ? 4 : 0)
+        float movePct = (close - close[statFwdBars]) / math.max(close[statFwdBars], syminfo.mintick) * 100.0
+        array.push(memScore, pastScore)
+        array.push(memDir, pastDir)
+        array.push(memCtx, pastCtx)
+        array.push(memUp, close > close[statFwdBars] ? 1 : 0)
+        array.push(memMove, movePct)
+        array.push(memBar, bar_index - statFwdBars)
+    if array.size(memBar) > 0
+        for j = 0 to 99
+            if array.size(memBar) == 0 or array.get(memBar, 0) >= bar_index - statLookback
+                break
+            array.shift(memScore)
+            array.shift(memDir)
+            array.shift(memCtx)
+            array.shift(memUp)
+            array.shift(memMove)
+            array.shift(memBar)
+
+int simCount = 0
+int simUp = 0
+int simDown = 0
+int simHits = 0
+float simAvgMove = 0.0
+float statProbExpected = na
+bool statSupports = true
+string statVerdict = "Waiting for signal"
+
+int activeDir = showBullish ? 1 : showBearish ? -1 : 0
+int activeScore = showBullish ? scorePtsBull : showBearish ? scorePtsBear : 0
+
+if useStatSystem and activeDir != 0 and array.size(memScore) > 0 and barstate.islast
+    for i = 0 to array.size(memScore) - 1
+        bool okDir = array.get(memDir, i) == activeDir
+        bool okScore = math.abs(array.get(memScore, i) - activeScore) <= simTolerance
+        bool okCtx = array.get(memCtx, i) == ctxCode
+        if okDir and okScore and okCtx
+            simCount += 1
+            int wentUp = array.get(memUp, i)
+            simAvgMove += array.get(memMove, i)
+            if wentUp == 1
+                simUp += 1
+            else
+                simDown += 1
+            if activeDir == 1 and wentUp == 1
+                simHits += 1
+            else if activeDir == -1 and wentUp == 0
+                simHits += 1
+    if simCount < minSamples
+        simCount := 0
+        simUp := 0
+        simDown := 0
+        simHits := 0
+        simAvgMove := 0.0
+        for i = 0 to array.size(memScore) - 1
+            bool okDir2 = array.get(memDir, i) == activeDir
+            bool okScore2 = math.abs(array.get(memScore, i) - activeScore) <= simTolerance
+            if okDir2 and okScore2
+                simCount += 1
+                int wentUp2 = array.get(memUp, i)
+                simAvgMove += array.get(memMove, i)
+                if wentUp2 == 1
+                    simUp += 1
+                else
+                    simDown += 1
+                if activeDir == 1 and wentUp2 == 1
+                    simHits += 1
+                else if activeDir == -1 and wentUp2 == 0
+                    simHits += 1
+    if simCount > 0
+        simAvgMove /= simCount
+        statProbExpected := simHits * 100.0 / simCount
+        if simCount >= minSamples
+            statSupports := statProbExpected >= minStatSuccess
+            statVerdict := statSupports ? (activeDir == 1 ? "Stats support UP" : "Stats support DOWN") : "Stats WEAK - caution"
+        else
+            statVerdict := "Few samples (" + str.tostring(simCount) + ")"
+else if activeDir == 0
+    statVerdict := "No active reversal"
+
+float fusionConfidence = 50.0
+if activeDir != 0
+    fusionConfidence := activeScore * 0.70
+    if not na(statProbExpected)
+        fusionConfidence := fusionConfidence * 0.65 + statProbExpected * 0.35
+    if (activeDir == 1 and weakBull) or (activeDir == -1 and weakBear)
+        fusionConfidence -= 12.0
+    if (activeDir == 1 and dreBullBoost >= 0.06) or (activeDir == -1 and dreBearBoost >= 0.06)
+        fusionConfidence += 8.0
+    if activeDir == 1 and zero_touch_condition
+        fusionConfidence += 6.0
+    fusionConfidence := clamp(fusionConfidence, 5.0, 95.0)
+
+string finalCall = "NEUTRAL"
+if showBullish
+    finalCall := weakBull or not statSupports ? "WEAK BULL" : bullishTier == "FUSION" ? "FUSION BULL" : "BULL " + bullishTier
+else if showBearish
+    finalCall := weakBear or not statSupports ? "WEAK BEAR" : bearishTier == "FUSION" ? "FUSION BEAR" : "BEAR " + bearishTier
+
+//====================================================================================
+// BBPT+ BACKGROUNDS & LABELS
+//====================================================================================
+bgcolor(show_touch_bg and bull_touch_plus2 ? touch_bg_bull : na, title="BBPT Bull +2 BG")
+bgcolor(show_touch_bg and bear_touch_minus2 ? touch_bg_bear : na, title="BBPT Bear -2 BG")
+bgcolor(zero_touch_condition ? zero_bg_color : na, title="BBPT Zero BG")
+
+var int lastZeroLabel = -9999
+var int lastTouchBull = -9999
+var int lastTouchBear = -9999
+
+if show_zero_label and zero_touch_condition and barstate.isconfirmed and bar_index - lastZeroLabel >= labelCooldown
+    label.new(bar_index, low, "انتباء ▲ " + str.tostring(BearTrend2, "#.00"), style=label.style_label_up, color=color.new(color.white, 0), textcolor=color.green, size=size.normal)
+    lastZeroLabel := bar_index
+
+if show_touch_labels and bull_touch_plus2 and barstate.isconfirmed and bar_index - lastTouchBull >= labelCooldown
+    label.new(bar_index, high, "تم التلامس ▲ +2", style=label.style_label_down, color=color.new(color.white, 0), textcolor=color.red, size=size.small)
+    lastTouchBull := bar_index
+
+if show_touch_labels and bear_touch_minus2 and barstate.isconfirmed and bar_index - lastTouchBear >= labelCooldown
+    label.new(bar_index, low, "تم التلامس ▼ -2", style=label.style_label_down, color=color.new(color.white, 0), textcolor=color.red, size=size.small)
+    lastTouchBear := bar_index
+
+//====================================================================================
+// VISUALS
+//====================================================================================
+var int lastBullLabel = -9999
+var int lastBearLabel = -9999
+var int lastDreBull = -9999
+var int lastDreBear = -9999
+float lblOff = atr * 0.4
+
+if showLabels and showBullish and not na(priceLow1) and not na(priceLBar1) and bar_index - lastBullLabel >= labelCooldown
+    string txt = finalCall + "\nScore " + str.tostring(math.round(bullishScore * 100)) + "% | Conf " + str.tostring(math.round(fusionConfidence)) + "%"
+    if not na(statProbExpected)
+        txt += "\nStats " + str.tostring(statProbExpected, "#.#") + "% (" + str.tostring(simCount) + ")"
+    if zero_touch_condition
+        txt += "\nBBPT Zero"
+    color lc = bullishTier == "FUSION" ? color.new(#00e676, 0) : weakBull or not statSupports ? color.new(#ff9800, 10) : bullishTier == "A+" ? color.new(#26a69a, 10) : color.new(#4caf50, 20)
+    label.new(bar_index, low - lblOff * 2, txt, style=label.style_label_up, color=lc, textcolor=color.white, size=size.normal)
+    lastBullLabel := bar_index
+
+if showLabels and showBearish and not na(priceHigh1) and not na(priceHBar1) and bar_index - lastBearLabel >= labelCooldown
+    string txt2 = finalCall + "\nScore " + str.tostring(math.round(bearishScore * 100)) + "% | Conf " + str.tostring(math.round(fusionConfidence)) + "%"
+    if not na(statProbExpected)
+        txt2 += "\nStats " + str.tostring(statProbExpected, "#.#") + "% (" + str.tostring(simCount) + ")"
+    color lc2 = bearishTier == "FUSION" ? color.new(#ff1744, 0) : weakBear or not statSupports ? color.new(#ff9800, 10) : bearishTier == "A+" ? color.new(#ff6d00, 10) : color.new(#ffa000, 20)
+    label.new(bar_index, high + lblOff * 2, txt2, style=label.style_label_down, color=lc2, textcolor=color.white, size=size.normal)
+    lastBearLabel := bar_index
+
+if showDreMarkers and dreBullEarly and barstate.isconfirmed and bar_index - lastDreBull >= labelCooldown
+    label.new(bar_index, low - lblOff, "DRE+", style=label.style_label_up, color=color.new(#827717, 30), textcolor=color.white, size=size.tiny)
+    lastDreBull := bar_index
+if showDreMarkers and dreBearEarly and barstate.isconfirmed and bar_index - lastDreBear >= labelCooldown
+    label.new(bar_index, high + lblOff, "DRE-", style=label.style_label_down, color=color.new(#4e342e, 30), textcolor=color.white, size=size.tiny)
+    lastDreBear := bar_index
+
+var float segTop = na
+var float segBottom = na
+if showLines
+    if not na(priceHigh1) and not na(priceHigh2)
+        segTop := f_seg(priceHigh1, priceHBar1, priceHigh2, priceHBar2)
+    if not na(priceLow1) and not na(priceLow2)
+        segBottom := f_seg(priceLow1, priceLBar1, priceLow2, priceLBar2)
+
+plot(showLines and modeTop ? segTop : na, "Top rail", color.new(#ff1744, 60), linewidth=1)
+plot(showLines and modeBottom ? segBottom : na, "Bottom rail", color.new(#00e676, 60), linewidth=1)
+
+plotshape(showBullish, title="Bull mark", style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny)
+plotshape(showBearish, title="Bear mark", style=shape.triangledown, location=location.abovebar, color=color.new(#ff1744, 0), size=size.tiny)
+
+//====================================================================================
+// COMMAND PANEL
+//====================================================================================
+var table t = table.new(position.top_right, 2, 16, bgcolor=color.new(#0d1117, 92), border_color=color.new(#58a6ff, 50), border_width=1)
+
+if showTable and barstate.islast
+    table.cell(t, 0, 0, "DRE x BBPT", text_color=color.rgb(255, 204, 0), bgcolor=color.new(#161b22, 0))
+    table.cell(t, 1, 0, "COMMAND", text_color=color.rgb(255, 204, 0), bgcolor=color.new(#161b22, 0))
+    table.cell(t, 0, 1, "Final Call", text_color=color.gray)
+    color callC = str.contains(finalCall, "BULL") ? color.lime : str.contains(finalCall, "BEAR") ? color.red : color.gray
+    table.cell(t, 1, 1, finalCall, text_color=callC)
+    table.cell(t, 0, 2, "Confidence", text_color=color.gray)
+    table.cell(t, 1, 2, str.tostring(math.round(fusionConfidence)) + "%", text_color=color.yellow)
+    table.cell(t, 0, 3, "Bull Score", text_color=color.gray)
+    table.cell(t, 1, 3, str.tostring(math.round(bullishScore * 100)) + "% | " + bullishTier, text_color=color.lime)
+    table.cell(t, 0, 4, "Bear Score", text_color=color.gray)
+    table.cell(t, 1, 4, str.tostring(math.round(bearishScore * 100)) + "% | " + bearishTier, text_color=color.red)
+    table.cell(t, 0, 5, "DRE Boost", text_color=color.gray)
+    table.cell(t, 1, 5, "B+" + str.tostring(dreBullBoost, "#.##") + " / S+" + str.tostring(dreBearBoost, "#.##"), text_color=color.aqua)
+    table.cell(t, 0, 6, "BearTrend2", text_color=color.gray)
+    table.cell(t, 1, 6, str.tostring(BearTrend2, "#.##"), text_color=color.red)
+    table.cell(t, 0, 7, "Zero Touch", text_color=color.gray)
+    table.cell(t, 1, 7, zero_touch_condition ? "✅ ACTIVE" : "—", text_color=zero_touch_condition ? color.green : color.gray)
+    table.cell(t, 0, 8, "Trend", text_color=color.gray)
+    string td = overallTrend == 1 ? "UP " + str.tostring(math.round(trendStrengthValue * 100)) + "%" : overallTrend == -1 ? "DOWN " + str.tostring(math.round(trendStrengthValue * 100)) + "%" : "SIDEWAYS"
+    table.cell(t, 1, 8, td, text_color=overallTrend == 1 ? color.lime : overallTrend == -1 ? color.red : color.gray)
+    table.cell(t, 0, 9, "Similar cases", text_color=color.gray)
+    table.cell(t, 1, 9, str.tostring(simCount), text_color=color.white)
+    table.cell(t, 0, 10, "Went UP / DOWN", text_color=color.gray)
+    table.cell(t, 1, 10, str.tostring(simUp) + " / " + str.tostring(simDown), text_color=color.white)
+    table.cell(t, 0, 11, "Stats hit %", text_color=color.gray)
+    table.cell(t, 1, 11, na(statProbExpected) ? "-" : str.tostring(statProbExpected, "#.#") + "%", text_color=statSupports ? color.lime : color.orange)
+    table.cell(t, 0, 12, "Avg move", text_color=color.gray)
+    table.cell(t, 1, 12, simCount > 0 ? str.tostring(simAvgMove, "#.##") + "% / " + str.tostring(statFwdBars) + "b" : "-", text_color=simAvgMove >= 0 ? color.lime : color.red)
+    table.cell(t, 0, 13, "Memory", text_color=color.gray)
+    table.cell(t, 1, 13, str.tostring(array.size(memScore)), text_color=color.aqua)
+    table.cell(t, 0, 14, "Verdict", text_color=color.gray)
+    table.cell(t, 1, 14, statVerdict, text_color=statSupports ? color.lime : color.orange)
+    table.cell(t, 0, 15, "Stoch / BBPT", text_color=color.gray)
+    table.cell(t, 1, 15, str.tostring(stochK, "#.#") + " / " + str.tostring(bbptTrend, "#.#"), text_color=color.silver)
+
+//====================================================================================
+// ALERTS
+//====================================================================================
+alertcondition(showBullish and (bullishTier == "A+" or bullishTier == "FUSION"), "Fusion/A+ BUY", "High quality bullish reversal")
+alertcondition(showBearish and (bearishTier == "A+" or bearishTier == "FUSION"), "Fusion/A+ SELL", "High quality bearish reversal")
+alertcondition(showBullish and statSupports, "Stats-backed BUY", "Bullish with supportive stats")
+alertcondition(showBearish and statSupports, "Stats-backed SELL", "Bearish with supportive stats")
+alertcondition(zero_touch_condition, "BBPT Zero Touch", "BearTrend2 near zero - potential reversal")
+alertcondition(bull_touch_plus2, "BBPT Bull +2 Touch", "BullTrend touched +2")
+alertcondition(bear_touch_minus2, "BBPT Bear -2 Touch", "BearTrend2 touched -2")
+
+plot(bullishScore, "Bull Score", display=display.none)
+plot(bearishScore, "Bear Score", display=display.none)
+plot(fusionConfidence, "Fusion Confidence", display=display.none)
+plot(bbptTrend, "BBPT Trend", display=display.none)
+plot(BearTrend2, "BearTrend2", display=display.none)
+plot(stochK, "Stoch K", display=display.none)
