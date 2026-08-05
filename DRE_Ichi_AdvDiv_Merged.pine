@@ -550,14 +550,8 @@ alertcondition(showBearish and bearishTier == "A+", "🔻 VENDA A+", "Venda de a
 alertcondition(showBullish and bullishTier == "A+", "🟢 COMPRA A+", "Compra de alta qualidade detectada")
 
 //====================================================================================
-// 📋 SECTION 10: PLOTS OBRIGATÓRIOS
+// 📋 SECTION 10: (hidden plots removed — plot-limit fix; signals unchanged)
 //====================================================================================
-
-plot(advShowLabels ? rsi : na, "RSI", color.new(#2962FF, 0), linewidth=1, display=display.none)
-plot(advShowLabels ? obv_smooth : na, "OBV Smooth", color.new(#FF9800, 0), linewidth=1, display=display.none)
-plot(useStoch and advShowLabels ? stochK : na, "Stoch K", color.new(#00E676, 0), linewidth=1, display=display.none)
-plot(advShowLabels ? bearishScore : na, "Bearish Score", display=display.none)
-plot(advShowLabels ? bullishScore : na, "Bullish Score", display=display.none)
 
 //====================================================================================
 // MODULE B: DRE Rise + Ichimoku S/R — exact original logic
@@ -968,13 +962,14 @@ chikouColor = input.color(color.teal,   "Chikou Color",   group=groupDisplay)
 bullCloud   = input.color(color.new(color.green, 82), "Bull Cloud", group=groupDisplay)
 bearCloud   = input.color(color.new(color.red,   82), "Bear Cloud", group=groupDisplay)
 
-plot(showTenkan ? tenkan : na, "Tenkan", color=tenkanColor, linewidth=1)
-plot(showKijun  ? kijun  : na, "Kijun",  color=kijunColor,  linewidth=1)
-plot(showChikou ? chikou : na, "Chikou", color=chikouColor, offset=-displacement)
+// const colors here reduce plot-count (input colors still used by labels/tables elsewhere)
+plot(showTenkan ? tenkan : na, "Tenkan", color=color.red, linewidth=1)
+plot(showKijun  ? kijun  : na, "Kijun",  color=color.blue,  linewidth=1)
+plot(showChikou ? chikou : na, "Chikou", color=color.teal, offset=-displacement)
 
-plotA = plot(showCloud ? senkouA : na, "Senkou A", color=color.new(color.green, 0), offset=displacement)
-plotB = plot(showCloud ? senkouB : na, "Senkou B", color=color.new(color.red,   0), offset=displacement)
-fill(plotA, plotB, color=showCloud ? (senkouA >= senkouB ? bullCloud : bearCloud) : na, title="Kumo")
+plotA = plot(showCloud ? senkouA : na, "Senkou A", color=color.green, offset=displacement)
+plotB = plot(showCloud ? senkouB : na, "Senkou B", color=color.red, offset=displacement)
+fill(plotA, plotB, color=showCloud ? (senkouA >= senkouB ? color.new(color.green, 82) : color.new(color.red, 82)) : na, title="Kumo")
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // DIVERGENCE SETTINGS
@@ -1885,38 +1880,39 @@ float roadmapS3 = supportCount > 2 and roadmapCount >= 3 ? array.get(supportLeve
 float roadmapS4 = supportCount > 3 and roadmapCount >= 4 ? array.get(supportLevels, 3) : na
 float roadmapS5 = supportCount > 4 and roadmapCount >= 5 ? array.get(supportLevels, 4) : na
 
+// const colors (not input colors) — each plot counts as 1 instead of 2 toward the 64 limit
 plot(
      showRoadmap and showRoadmapLines ? roadmapR1 : na,
      "Ichimoku Resistance R1",
-     color=color.new(roadmapResistanceColor, 0),
+     color=color.new(color.red, 0),
      linewidth=2,
      style=plot.style_circles
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapR2 : na,
      "Ichimoku Resistance R2",
-     color=color.new(roadmapResistanceColor, 15),
+     color=color.new(color.red, 15),
      linewidth=2,
      style=plot.style_circles
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapR3 : na,
      "Ichimoku Resistance R3",
-     color=color.new(roadmapResistanceColor, 30),
+     color=color.new(color.red, 30),
      linewidth=1,
      style=plot.style_circles
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapR4 : na,
      "Ichimoku Resistance R4",
-     color=color.new(roadmapResistanceColor, 45),
+     color=color.new(color.red, 45),
      linewidth=1,
      style=plot.style_circles
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapR5 : na,
      "Ichimoku Resistance R5",
-     color=color.new(roadmapResistanceColor, 60),
+     color=color.new(color.red, 60),
      linewidth=1,
      style=plot.style_circles
 )
@@ -1924,35 +1920,35 @@ plot(
 plot(
      showRoadmap and showRoadmapLines ? roadmapS1 : na,
      "Ichimoku Support S1",
-     color=color.new(roadmapSupportColor, 0),
+     color=color.new(color.green, 0),
      linewidth=2,
      style=plot.style_circles
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapS2 : na,
      "Ichimoku Support S2",
-     color=color.new(roadmapSupportColor, 15),
+     color=color.new(color.green, 15),
      linewidth=2,
      style=plot.style_circles
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapS3 : na,
      "Ichimoku Support S3",
-     color=color.new(roadmapSupportColor, 30),
+     color=color.new(color.green, 30),
      linewidth=1,
      style=plot.style_circles
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapS4 : na,
      "Ichimoku Support S4",
-     color=color.new(roadmapSupportColor, 45),
+     color=color.new(color.green, 45),
      linewidth=1,
      style=plot.style_circles
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapS5 : na,
      "Ichimoku Support S5",
-     color=color.new(roadmapSupportColor, 60),
+     color=color.new(color.green, 60),
      linewidth=1,
      style=plot.style_circles
 )
