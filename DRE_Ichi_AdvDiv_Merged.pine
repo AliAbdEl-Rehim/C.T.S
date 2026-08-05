@@ -2435,8 +2435,68 @@ if signal_type_adv != "محايد"
 hasSignalNow = signal_type_adv != "محايد"
 
 // ==========================================
-// 9. VISUALIZATION (pane oscillator removed — plot-limit safety)
+// 9. VISUALIZATION — PLOT (نافذة) + LEVEL (مقاومة/دعم)
 // ==========================================
+atr_v = ta.atr(14)
+osc_val = (close - hma) / (atr_v > 0 ? atr_v : syminfo.mintick)
+
+// PLOT: مؤشر الـ oscillator في نافذة منفصلة (من كود BSS الأصلي)
+hline(0, "BSS Zero", color=color.gray, linestyle=hline.style_dotted, display=display.pane)
+plot(osc_val, "BSS Osc Columns", color=color.gray, style=plot.style_columns, display=display.pane)
+plot(osc_val, "BSS Osc Line", color=color.white, linewidth=2, display=display.pane)
+
+// LEVEL: مقاومة/دعم BSS ظاهرة دائماً على الشارت (وليس فقط عند Pre-BO)
+plot(bssShowLines ? resistanceLevel : na, "BSS Resistance LEVEL", color=color.orange, linewidth=2, style=plot.style_linebr)
+plot(bssShowLines ? supportLevel : na, "BSS Support LEVEL", color=color.aqua, linewidth=2, style=plot.style_linebr)
+
+// خطوط LEVEL أفقية ممتدة لليمين (أوضح من الـ plot وحده)
+var line bssResLevelLine = na
+var line bssSupLevelLine = na
+if barstate.islast and bssShowLines
+    if na(bssResLevelLine)
+        bssResLevelLine := line.new(bar_index - 40, resistanceLevel, bar_index + 10, resistanceLevel, xloc=xloc.bar_index, extend=extend.right, color=color.orange, width=2, style=line.style_dashed)
+    else
+        line.set_xy1(bssResLevelLine, bar_index - 40, resistanceLevel)
+        line.set_xy2(bssResLevelLine, bar_index + 10, resistanceLevel)
+        line.set_color(bssResLevelLine, color.orange)
+        line.set_extend(bssResLevelLine, extend.right)
+    if na(bssSupLevelLine)
+        bssSupLevelLine := line.new(bar_index - 40, supportLevel, bar_index + 10, supportLevel, xloc=xloc.bar_index, extend=extend.right, color=color.aqua, width=2, style=line.style_dashed)
+    else
+        line.set_xy1(bssSupLevelLine, bar_index - 40, supportLevel)
+        line.set_xy2(bssSupLevelLine, bar_index + 10, supportLevel)
+        line.set_color(bssSupLevelLine, color.aqua)
+        line.set_extend(bssSupLevelLine, extend.right)
+else if barstate.islast and not bssShowLines
+    if not na(bssResLevelLine)
+        line.delete(bssResLevelLine)
+        bssResLevelLine := na
+    if not na(bssSupLevelLine)
+        line.delete(bssSupLevelLine)
+        bssSupLevelLine := na
+
+// لابل تعريف المستويات على آخر شمعة (تحديث وليس إنشاء متكرر)
+var label bssResLbl = na
+var label bssSupLbl = na
+if barstate.islast
+    if bssShowLines
+        if na(bssResLbl)
+            bssResLbl := label.new(bar_index, resistanceLevel, "BSS RES", style=label.style_label_left, color=color.orange, textcolor=color.white, size=size.small)
+        else
+            label.set_xy(bssResLbl, bar_index, resistanceLevel)
+            label.set_text(bssResLbl, "BSS RES")
+        if na(bssSupLbl)
+            bssSupLbl := label.new(bar_index, supportLevel, "BSS SUP", style=label.style_label_left, color=color.aqua, textcolor=color.white, size=size.small)
+        else
+            label.set_xy(bssSupLbl, bar_index, supportLevel)
+            label.set_text(bssSupLbl, "BSS SUP")
+    else
+        if not na(bssResLbl)
+            label.delete(bssResLbl)
+            bssResLbl := na
+        if not na(bssSupLbl)
+            label.delete(bssSupLbl)
+            bssSupLbl := na
 
 // ==========================================
 // 10. عرض الإشارات على الشارت
