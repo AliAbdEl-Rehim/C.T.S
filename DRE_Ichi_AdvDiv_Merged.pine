@@ -851,9 +851,9 @@ bgcolor(showBg and fire ? color.new(color.lime, 85) : na)
 plotshape(showShapes and fire, title="Rise Case", style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.normal, text="صعود")
 
 if showLabels and fire
-    // وضع اللابل فوق الشمعة لتجنب تداخل مع الإشارات الأخرى
-    label.new(bar_index, high + atr * 0.5, "⚡ " + caseName() + "\nTrend=" + str.tostring(Trend, "#.##"), 
-              style=label.style_label_down, color=color.new(#1b5e20, 10), textcolor=color.white, size=size.small)
+    // أقرب للشمعة من طبقة BO/R حتى تبقى الطبقات مفصولة
+    label.new(bar_index, high + atr * 0.55, "⚡ " + caseName() + "\nTrend=" + str.tostring(Trend, "#.##"), 
+              style=label.style_label_down, color=color.new(#1b5e20, 10), textcolor=color.white, size=size.normal)
 
 //====================================================================================
 // Alerts DRE
@@ -1118,12 +1118,14 @@ f_signalLabel(bool bullish, string shortText, string signalName, string explanat
          style=bullish ? label.style_label_up : label.style_label_down,
          color=bullish ? color.new(color.green, 0) : color.new(color.red, 0),
          textcolor=color.white,
-         size=size.tiny,
+         size=size.normal,
          tooltip=signalName + "\n" + explanation
     )
 
-float lowY  = low[rightBars]  - ta.atr(14)[rightBars] * 0.20
-float highY = high[rightBars] + ta.atr(14)[rightBars] * 0.20
+// إزاحة أكبر + تباعد أوضح حتى لا تتغطى لابلز B/HB/S/HS على بعضها
+float lowY  = low[rightBars]  - ta.atr(14)[rightBars] * 0.55
+float highY = high[rightBars] + ta.atr(14)[rightBars] * 0.55
+float stackStep = ta.atr(14)[rightBars] * 0.65
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // PRINT SIGNALS
@@ -1132,52 +1134,52 @@ if stackSignals
     int bullStack = 0
     if bullMidReg
         f_signalLabel(true, "B", "BUY — Regular Cloud Midpoint Divergence",
-             "Price made a lower low while the Ichimoku cloud midpoint made a higher low. Bearish pressure is weakening.", lowY - bullStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a lower low while the Ichimoku cloud midpoint made a higher low. Bearish pressure is weakening.", lowY - bullStack * stackStep)
         bullStack += 1
     if bullTKReg
         f_signalLabel(true, "B", "BUY — Regular Tenkan–Kijun Divergence",
-             "Price made a lower low while the Tenkan–Kijun spread made a higher low. Ichimoku momentum improved.", lowY - bullStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a lower low while the Tenkan–Kijun spread made a higher low. Ichimoku momentum improved.", lowY - bullStack * stackStep)
         bullStack += 1
     if bullThickReg
         f_signalLabel(true, "B", "BUY — Regular Cloud Thickness Divergence",
-             "Price made a lower low while cloud thickness made a higher low. The cloud structure strengthened against the price decline.", lowY - bullStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a lower low while cloud thickness made a higher low. The cloud structure strengthened against the price decline.", lowY - bullStack * stackStep)
         bullStack += 1
     if bullMidHidden
         f_signalLabel(true, "HB", "BUY — Hidden Cloud Midpoint Divergence",
-             "Price made a higher low while the cloud midpoint made a lower low. This can support bullish trend continuation.", lowY - bullStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a higher low while the cloud midpoint made a lower low. This can support bullish trend continuation.", lowY - bullStack * stackStep)
         bullStack += 1
     if bullTKHidden
         f_signalLabel(true, "HB", "BUY — Hidden Tenkan–Kijun Divergence",
-             "Price made a higher low while the Tenkan–Kijun spread made a lower low. This can indicate bullish continuation after an internal reset.", lowY - bullStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a higher low while the Tenkan–Kijun spread made a lower low. This can indicate bullish continuation after an internal reset.", lowY - bullStack * stackStep)
         bullStack += 1
     if bullThickHidden
         f_signalLabel(true, "HB", "BUY — Hidden Cloud Thickness Divergence",
-             "Price made a higher low while cloud thickness made a lower low. This can precede bullish trend continuation.", lowY - bullStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a higher low while cloud thickness made a lower low. This can precede bullish trend continuation.", lowY - bullStack * stackStep)
 
     int bearStack = 0
     if bearMidReg
         f_signalLabel(false, "S", "SELL — Regular Cloud Midpoint Divergence",
-             "Price made a higher high while the Ichimoku cloud midpoint made a lower high. Bullish pressure is weakening.", highY + bearStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a higher high while the Ichimoku cloud midpoint made a lower high. Bullish pressure is weakening.", highY + bearStack * stackStep)
         bearStack += 1
     if bearTKReg
         f_signalLabel(false, "S", "SELL — Regular Tenkan–Kijun Divergence",
-             "Price made a higher high while the Tenkan–Kijun spread made a lower high. Ichimoku momentum deteriorated.", highY + bearStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a higher high while the Tenkan–Kijun spread made a lower high. Ichimoku momentum deteriorated.", highY + bearStack * stackStep)
         bearStack += 1
     if bearThickReg
         f_signalLabel(false, "S", "SELL — Regular Cloud Thickness Divergence",
-             "Price made a higher high while cloud thickness made a lower high. The cloud structure weakened against the price rise.", highY + bearStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a higher high while cloud thickness made a lower high. The cloud structure weakened against the price rise.", highY + bearStack * stackStep)
         bearStack += 1
     if bearMidHidden
         f_signalLabel(false, "HS", "SELL — Hidden Cloud Midpoint Divergence",
-             "Price made a lower high while the cloud midpoint made a higher high. This can support bearish trend continuation.", highY + bearStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a lower high while the cloud midpoint made a higher high. This can support bearish trend continuation.", highY + bearStack * stackStep)
         bearStack += 1
     if bearTKHidden
         f_signalLabel(false, "HS", "SELL — Hidden Tenkan–Kijun Divergence",
-             "Price made a lower high while the Tenkan–Kijun spread made a higher high. This can indicate bearish continuation after an internal reset.", highY + bearStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a lower high while the Tenkan–Kijun spread made a higher high. This can indicate bearish continuation after an internal reset.", highY + bearStack * stackStep)
         bearStack += 1
     if bearThickHidden
         f_signalLabel(false, "HS", "SELL — Hidden Cloud Thickness Divergence",
-             "Price made a lower high while cloud thickness made a higher high. This can precede bearish trend continuation.", highY + bearStack * ta.atr(14)[rightBars] * 0.25)
+             "Price made a lower high while cloud thickness made a higher high. This can precede bearish trend continuation.", highY + bearStack * stackStep)
 else
     if bullAny
         f_signalLabel(true, "BUY", "BUY — Ichimoku Bullish Divergence",
@@ -1332,31 +1334,31 @@ if array.size(supportLines) > 0
                 array.remove(supportPrices, i)
                 array.remove(supportBroken, i)
 
-// Break labels with hover explanations (تم تعديل الموضع لتجنب التداخل)
+// Break labels — حجم أكبر + إزاحة أعلى/أسفل لتجنب التداخل مع DRE و Rejection
 if showBreakSignals and breakoutSignal
     label.new(
          bar_index,
-         high + atr * 0.3,      // فوق الشمعة بإزاحة
+         high + atr * 1.4,
          "BO",
          xloc=xloc.bar_index,
          yloc=yloc.price,
          style=label.style_label_down,
          color=color.new(color.green, 0),
          textcolor=color.white,
-         size=size.tiny,
+         size=size.normal,
          tooltip="BREAKOUT\nPrice moved above confirmed swing resistance at " + str.tostring(brokenResistancePrice, format.mintick) + ". The broken resistance may become support on a retest.")
 
 if showBreakSignals and breakdownSignal
     label.new(
          bar_index,
-         low - atr * 0.3,      // تحت الشمعة بإزاحة
+         low - atr * 1.4,
          "BD",
          xloc=xloc.bar_index,
          yloc=yloc.price,
          style=label.style_label_up,
          color=color.new(color.red, 0),
          textcolor=color.white,
-         size=size.tiny,
+         size=size.normal,
          tooltip="BREAKDOWN\nPrice moved below confirmed swing support at " + str.tostring(brokenSupportPrice, format.mintick) + ". The broken support may become resistance on a retest.")
 
 // Optional nearest-level dashboard (تم نقل الموضع إلى أعلى يسار)
@@ -1605,18 +1607,18 @@ bullDisplayColor = isProvisionalLiveSignal ? color.new(bullSignalColor, 45) : bu
 bearDisplayColor = isProvisionalLiveSignal ? color.new(bearSignalColor, 45) : bearSignalColor
 timingText = isProvisionalLiveSignal ? "Live intrabar — provisional" : "Confirmed"
 
-// تعديل مواقع لابلز الـ Rejection لتجنب التداخل مع DRE و BO
+// Rejection R1–R3 — حجم أكبر + طبقة أبعد من BO/BD حتى لا تتغطى
 if bullRejectionSignal
     label.new(
          bar_index,
-         low - atrReject * 0.5,   // أسفل الشمعة بإزاحة أكبر
+         low - atrReject * 2.2,
          bullRText,
          xloc=xloc.bar_index,
          yloc=yloc.price,
          style=label.style_label_up,
          color=bullDisplayColor,
          textcolor=color.white,
-         size=size.tiny,
+         size=size.normal,
          tooltip="Bullish Rejection " + bullRText +
              "\n" + timingText +
              "\nPrice tested " + bullRejectSource + " and buyers rejected lower prices." +
@@ -1626,14 +1628,14 @@ if bullRejectionSignal
 if bearRejectionSignal
     label.new(
          bar_index,
-         high + atrReject * 0.5,  // فوق الشمعة بإزاحة أكبر
+         high + atrReject * 2.2,
          bearRText,
          xloc=xloc.bar_index,
          yloc=yloc.price,
          style=label.style_label_down,
          color=bearDisplayColor,
          textcolor=color.white,
-         size=size.tiny,
+         size=size.normal,
          tooltip="Bearish Rejection " + bearRText +
              "\n" + timingText +
              "\nPrice tested " + bearRejectSource + " and sellers rejected higher prices." +
