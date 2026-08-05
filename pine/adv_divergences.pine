@@ -1,0 +1,557 @@
+//@version=6
+indicator("🎯 Divergências Avançadas • Modo Rápido • v6", overlay=true, max_labels_count=500, max_lines_count=200)
+
+//====================================================================================
+// 📋 HELPER FUNCTIONS (GLOBAL SCOPE)
+//====================================================================================
+
+logit(p) =>
+    float denom = 1.0 - p + 0.0001
+    math.log(p / denom)
+
+clamp(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+absI(x) =>
+    x >= 0 ? x : -x
+
+f_state(float cur, float prev) =>
+    na(cur) or na(prev) ? 0 : cur > prev ? 1 : cur < prev ? -1 : 0
+
+f_seg(float y1, int x1, float y2, int x2) =>
+    int a = x1
+    int b = x2
+    float ya = y1
+    float yb = y2
+    float slope = a != b ? (ya - yb) / (a - b) : na
+    bool inRange = bar_index >= b and bar_index <= a
+    inRange and not na(slope) ? (yb + slope * (bar_index - b)) : na
+
+f_stateTxt(int s) =>
+    s == 1 ? "HH/HL" : s == -1 ? "LH/LL" : "EQ"
+
+//====================================================================================
+// 📋 SECTION 1: CONSTANTES E INPUTS
+//====================================================================================
+
+const int BIG = 10000000
+
+groupMode    = "🎛️ Modo de Detecção"
+modeTop      = input.bool(true,  "Analisar TOPO (bearish)", group=groupMode)
+modeBottom   = input.bool(true,  "Analisar FUNDO (bullish)", group=groupMode)
+
+groupTrend   = "🔄 فلتر الاتجاه الرئيسي (TREND FILTER)"
+useTrendFilter = input.bool(true, "تفعيل فلتر الاتجاه (يمنع الإشارات المعاكسة)", group=groupTrend)
+trendLength    = input.int(50, "فترة الاتجاه الرئيسي", minval=20, maxval=200, group=groupTrend)
+trendThreshold = input.float(0.6, "قوة الاتجاه المطلوبة (0-1)", minval=0.3, maxval=0.9, step=0.05, group=groupTrend)
+
+groupPivot   = "📍 Detecção Rápida (Sem Atraso)"
+L            = input.int(3,  "Left bars (lookback)", minval=1, group=groupPivot)
+
+groupRSI     = "📊 RSI"
+rsiLen       = input.int(14, "Período RSI", minval=2, group=groupRSI)
+
+groupStoch   = "📊 Stochastic (Filtro Adicional)"
+useStoch     = input.bool(true, "Usar Stochastic para confirmar", group=groupStoch)
+stochLen     = input.int(14, "Stochastic Length", minval=5, group=groupStoch)
+stochOverbought = input.int(80, "Stoch Overbought", minval=70, maxval=90, group=groupStoch)
+stochOversold   = input.int(20, "Stoch Oversold", minval=10, maxval=30, group=groupStoch)
+
+groupConfirm = "⏱️ Confirmação Temporal"
+confirmBars  = input.int(5, "Janela máx. entre pivots (barras)", minval=1, group=groupConfirm)
+needBoth     = input.bool(true, "Exigir RSI E OBV dentro da janela", group=groupConfirm)
+
+groupVol     = "📈 Volume Financeiro"
+useFinVol    = input.bool(true, "Usar Volume Financeiro para validação", group=groupVol)
+minVolumeRatio = input.float(1.2, "Volume mínimo (média móvel x)", minval=0.8, maxval=2.0, step=0.1, group=groupVol)
+
+groupScore   = "🎯 Sistema de Score Estatístico"
+highProbCutoff = input.float(0.70, "Corte Alta Probabilidade", minval=0.60, maxval=0.85, step=0.01, group=groupScore)
+medProbCutoff  = input.float(0.50, "Corte Média Probabilidade", minval=0.35, maxval=0.65, step=0.01, group=groupScore)
+useVolatilityFilter = input.bool(true, "Filtrar por Volatilidade (ATR)", group=groupScore)
+
+groupStyle   = "🎨 Exibição"
+showTable    = input.bool(true, "Mostrar painel de estados", group=groupStyle)
+showLines    = input.bool(true, "Desenhar retas do PREÇO", group=groupStyle)
+showLabels   = input.bool(true, "Marcar divergências", group=groupStyle)
+showAplusOnly = input.bool(false, "Mostrar apenas sinais A+ (alta qualidade)", group=groupStyle)
+
+//====================================================================================
+// 📋 SECTION 2: CÁLCULOS BASE + فلتر الاتجاه المتقدم
+//====================================================================================
+
+atr          = ta.atr(14)
+atrSmooth    = ta.ema(atr, 20)
+volatilityRegime = atr / atrSmooth
+isVolatile   = volatilityRegime > 1.2
+isCalm       = volatilityRegime < 0.8
+
+rsi = ta.rsi(close, rsiLen)
+
+var float obv = 0.0
+float delta = close > close[1] ? volume : close < close[1] ? -volume : 0
+obv := nz(obv[1], 0) + delta
+obv_smooth = ta.ema(obv, 5)
+
+stochK = ta.sma(ta.stoch(close, high, low, stochLen), 3)
+stochD = ta.sma(stochK, 3)
+
+float finVol = close * volume
+finVolMA = ta.sma(finVol, 20)
+volumeStrong = finVol > finVolMA * minVolumeRatio
+
+// ========== فلتر الاتجاه الرئيسي المتقدم (Trend Strength Filter) ==========
+// حساب ADX يدوياً لأن بعض الإصدارات لا تدعمه مباشرة
+calcADX(len) =>
+    float up = ta.change(high)
+    float down = -ta.change(low)
+    float plusDM = na(up) ? na : (up > down and up > 0 ? up : 0)
+    float minusDM = na(down) ? na : (down > up and down > 0 ? down : 0)
+    float tr = ta.tr(true)
+    float plusDI = 100 * ta.rma(plusDM, len) / ta.rma(tr, len)
+    float minusDI = 100 * ta.rma(minusDM, len) / ta.rma(tr, len)
+    float adx = 100 * ta.rma(math.abs(plusDI - minusDI) / (plusDI + minusDI), len)
+    [plusDI, minusDI, adx]
+
+[diPlus, diMinus, adxValue] = calcADX(14)
+adxStrength = adxValue > 25 ? 0.7 : adxValue > 20 ? 0.5 : 0.3
+adxDirection = diPlus > diMinus ? 1 : -1
+
+// 1. المتوسطات المتحركة (Moving Averages)
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+maTrend = (ema20 > ema50 ? 1 : -1) + (ema20 > ema100 ? 1 : -1) + (ema50 > ema100 ? 1 : -1)
+maTrendStrength = maTrend / 3  // من -1 إلى 1
+
+// 2. MACD للاتجاه
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+macdTrend = macdLine > signalLine ? 1 : -1
+macdHistogramStrength = math.abs(macdLine - signalLine) / ta.atr(14) * 10
+macdStrength = math.min(0.8, macdHistogramStrength)
+
+// 3. القنوات (Bollinger Bands position)
+bbMiddle = ta.sma(close, 20)
+bbUpper = bbMiddle + ta.stdev(close, 20) * 2
+bbLower = bbMiddle - ta.stdev(close, 20) * 2
+bbPosition = (close - bbLower) / (bbUpper - bbLower)  // 0=أسفل, 1=أعلى
+bbTrend = bbPosition > 0.7 ? 1 : bbPosition < 0.3 ? -1 : 0
+
+// حساب قوة الاتجاه الإجمالية (نظام تصويت)
+var float trendStrengthValue = 0.0
+var int overallTrend = 0  // 1 = صاعد, -1 = هابط, 0 = جانبي
+
+if useTrendFilter
+    // جمع الأصوات من جميع المؤشرات
+    float uptrendVotes = 0.0
+    float downtrendVotes = 0.0
+    
+    // صوت MA
+    if maTrendStrength > 0.2
+        uptrendVotes := uptrendVotes + math.abs(maTrendStrength)
+    else if maTrendStrength < -0.2
+        downtrendVotes := downtrendVotes + math.abs(maTrendStrength)
+    
+    // صوت ADX (يحتاج قوة)
+    if adxDirection == 1 and adxStrength > 0.4
+        uptrendVotes := uptrendVotes + adxStrength
+    else if adxDirection == -1 and adxStrength > 0.4
+        downtrendVotes := downtrendVotes + adxStrength
+    
+    // صوت MACD
+    if macdTrend == 1 and macdStrength > 0.3
+        uptrendVotes := uptrendVotes + macdStrength
+    else if macdTrend == -1 and macdStrength > 0.3
+        downtrendVotes := downtrendVotes + macdStrength
+    
+    // صوت BB
+    if bbTrend == 1
+        uptrendVotes := uptrendVotes + 0.5
+    else if bbTrend == -1
+        downtrendVotes := downtrendVotes + 0.5
+    
+    // تحديد الاتجاه وقوته
+    float totalVotes = uptrendVotes + downtrendVotes
+    if totalVotes > 0
+        if uptrendVotes > downtrendVotes
+            overallTrend := 1
+            trendStrengthValue := uptrendVotes / totalVotes
+        else if downtrendVotes > uptrendVotes
+            overallTrend := -1
+            trendStrengthValue := downtrendVotes / totalVotes
+        else
+            overallTrend := 0
+            trendStrengthValue := 0.5
+    else
+        overallTrend := 0
+        trendStrengthValue := 0.5
+    
+    // تنعيم قوة الاتجاه
+    trendStrengthValue := ta.ema(trendStrengthValue, 5)
+else
+    overallTrend := 0
+    trendStrengthValue := 0.5
+
+// فلتر السماح بالإشارات
+isStrongUptrend = overallTrend == 1 and trendStrengthValue >= trendThreshold
+isStrongDowntrend = overallTrend == -1 and trendStrengthValue >= trendThreshold
+isSideways = overallTrend == 0 or trendStrengthValue < trendThreshold
+
+allowBuySignals = not useTrendFilter or not isStrongDowntrend
+allowSellSignals = not useTrendFilter or not isStrongUptrend
+
+// المؤشرات الأساسية للاتجاه (للاستخدام في الـ Score)
+isUptrend   = ema20 > ema50
+isDowntrend = ema20 < ema50
+
+//====================================================================================
+// 📋 SECTION 3: DETECÇÃO DE PIVOTS EM TEMPO REAL (SEM ATRASO)
+//====================================================================================
+
+isPeakPrice = high == ta.highest(high, L)
+isPeakRSI   = rsi == ta.highest(rsi, L)
+isPeakOBV   = obv_smooth == ta.highest(obv_smooth, L)
+isPeakVol   = finVol == ta.highest(finVol, L)
+isPeakStoch = stochK == ta.highest(stochK, L)
+
+isTroughPrice = low == ta.lowest(low, L)
+isTroughRSI   = rsi == ta.lowest(rsi, L)
+isTroughOBV   = obv_smooth == ta.lowest(obv_smooth, L)
+isTroughVol   = finVol == ta.lowest(finVol, L)
+isTroughStoch = stochK == ta.lowest(stochK, L)
+
+var float priceHigh1 = na
+var float priceHigh2 = na
+var int   priceHBar1 = na
+var int   priceHBar2 = na
+
+var float rsiHigh1 = na
+var float rsiHigh2 = na
+var int   rsiHBar1 = na
+var int   rsiHBar2 = na
+
+var float obvHigh1 = na
+var float obvHigh2 = na
+var int   obvHBar1 = na
+var int   obvHBar2 = na
+
+var float finVolHigh1 = na
+var float finVolHigh2 = na
+var int   finVolHBar1 = na
+var int   finVolHBar2 = na
+
+var float stochHigh1 = na
+var float stochHigh2 = na
+var int   stochHBar1 = na
+var int   stochHBar2 = na
+
+var float priceLow1 = na
+var float priceLow2 = na
+var int   priceLBar1 = na
+var int   priceLBar2 = na
+
+var float rsiLow1 = na
+var float rsiLow2 = na
+var int   rsiLBar1 = na
+var int   rsiLBar2 = na
+
+var float obvLow1 = na
+var float obvLow2 = na
+var int   obvLBar1 = na
+var int   obvLBar2 = na
+
+var float finVolLow1 = na
+var float finVolLow2 = na
+var int   finVolLBar1 = na
+var int   finVolLBar2 = na
+
+var float stochLow1 = na
+var float stochLow2 = na
+var int   stochLBar1 = na
+var int   stochLBar2 = na
+
+if isPeakPrice
+    priceHigh2 := priceHigh1
+    priceHBar2 := priceHBar1
+    priceHigh1 := high
+    priceHBar1 := bar_index
+
+if isPeakRSI
+    rsiHigh2 := rsiHigh1
+    rsiHBar2 := rsiHBar1
+    rsiHigh1 := rsi
+    rsiHBar1 := bar_index
+
+if isPeakOBV
+    obvHigh2 := obvHigh1
+    obvHBar2 := obvHBar1
+    obvHigh1 := obv_smooth
+    obvHBar1 := bar_index
+
+if isPeakVol
+    finVolHigh2 := finVolHigh1
+    finVolHBar2 := finVolHBar1
+    finVolHigh1 := finVol
+    finVolHBar1 := bar_index
+
+if isPeakStoch
+    stochHigh2 := stochHigh1
+    stochHBar2 := stochHBar1
+    stochHigh1 := stochK
+    stochHBar1 := bar_index
+
+if isTroughPrice
+    priceLow2 := priceLow1
+    priceLBar2 := priceLBar1
+    priceLow1 := low
+    priceLBar1 := bar_index
+
+if isTroughRSI
+    rsiLow2 := rsiLow1
+    rsiLBar2 := rsiLBar1
+    rsiLow1 := rsi
+    rsiLBar1 := bar_index
+
+if isTroughOBV
+    obvLow2 := obvLow1
+    obvLBar2 := obvLBar1
+    obvLow1 := obv_smooth
+    obvLBar1 := bar_index
+
+if isTroughVol
+    finVolLow2 := finVolLow1
+    finVolLBar2 := finVolLBar1
+    finVolLow1 := finVol
+    finVolLBar1 := bar_index
+
+if isTroughStoch
+    stochLow2 := stochLow1
+    stochLBar2 := stochLBar1
+    stochLow1 := stochK
+    stochLBar1 := bar_index
+
+//====================================================================================
+// 📋 SECTION 4: ESTADOS E DISTÂNCIAS
+//====================================================================================
+
+statePriceTop = f_state(priceHigh1, priceHigh2)
+stateRSITop   = f_state(rsiHigh1,   rsiHigh2)
+stateOBVTop   = f_state(obvHigh1,   obvHigh2)
+stateVolTop   = f_state(finVolHigh1, finVolHigh2)
+stateStochTop = f_state(stochHigh1, stochHigh2)
+
+distTopRSI  = not na(priceHBar1) and not na(rsiHBar1) ? absI(priceHBar1 - rsiHBar1) : BIG
+distTopOBV  = not na(priceHBar1) and not na(obvHBar1) ? absI(priceHBar1 - obvHBar1) : BIG
+distTopVol  = not na(priceHBar1) and not na(finVolHBar1) ? absI(priceHBar1 - finVolHBar1) : BIG
+distTopStoch = not na(priceHBar1) and not na(stochHBar1) ? absI(priceHBar1 - stochHBar1) : BIG
+
+timeTopRSI   = distTopRSI <= confirmBars
+timeTopOBV   = distTopOBV <= confirmBars
+timeTopVol   = distTopVol <= confirmBars
+timeTopStoch = distTopStoch <= confirmBars
+
+statePriceLow = f_state(priceLow1, priceLow2)
+stateRSILow   = f_state(rsiLow1,   rsiLow2)
+stateOBVLow   = f_state(obvLow1,   obvLow2)
+stateVolLow   = f_state(finVolLow1, finVolLow2)
+stateStochLow = f_state(stochLow1, stochLow2)
+
+distLowRSI   = not na(priceLBar1) and not na(rsiLBar1) ? absI(priceLBar1 - rsiLBar1) : BIG
+distLowOBV   = not na(priceLBar1) and not na(obvLBar1) ? absI(priceLBar1 - obvLBar1) : BIG
+distLowVol   = not na(priceLBar1) and not na(finVolLBar1) ? absI(priceLBar1 - finVolLBar1) : BIG
+distLowStoch = not na(priceLBar1) and not na(stochLBar1) ? absI(priceLBar1 - stochLBar1) : BIG
+
+timeLowRSI   = distLowRSI <= confirmBars
+timeLowOBV   = distLowOBV <= confirmBars
+timeLowVol   = distLowVol <= confirmBars
+timeLowStoch = distLowStoch <= confirmBars
+
+//====================================================================================
+// 📋 SECTION 5: SISTEMA DE SCORE ESTATÍSTICO
+//====================================================================================
+
+calcBearishScore() =>
+    f1 = (statePriceTop == 1 and stateRSITop <= 0) ? (stateRSITop == -1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceTop == 1 and stateOBVTop <= 0) ? (stateOBVTop == -1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeTopStoch
+        if stochK > stochOverbought and stateStochTop <= 0
+            f3 := 0.75
+        else if stochK > stochOverbought
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeTopVol
+        if stateVolTop <= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolTop <= 0
+            f4 := 0.55
+    f5 = isUptrend ? 0.35 : isDowntrend ? 0.75 : 0.50
+    f6 = 0.50
+    if timeTopRSI and timeTopOBV
+        f6 := 0.85
+    else if timeTopRSI or timeTopOBV
+        f6 := 0.65
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeTopRSI ? 1 : 0) + (timeTopOBV ? 1 : 0) + (timeTopVol and useFinVol ? 1 : 0) + (timeTopStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 1.2 * logit(clamp(f2, 0.1, 0.9)) + 1.0 * logit(clamp(f3, 0.1, 0.9)) + 0.8 * logit(clamp(f4, 0.1, 0.9)) + 1.1 * logit(clamp(f5, 0.1, 0.9)) + 1.4 * logit(clamp(f6, 0.1, 0.9)) + 0.9 * logit(clamp(f7, 0.1, 0.9)) + 1.0 * logit(clamp(f8, 0.1, 0.9))
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+    clamp(prob, 0.05, 0.92)
+
+calcBullishScore() =>
+    f1 = (statePriceLow == -1 and stateRSILow >= 0) ? (stateRSILow == 1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceLow == -1 and stateOBVLow >= 0) ? (stateOBVLow == 1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeLowStoch
+        if stochK < stochOversold and stateStochLow >= 0
+            f3 := 0.75
+        else if stochK < stochOversold
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeLowVol
+        if stateVolLow >= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolLow >= 0
+            f4 := 0.55
+    f5 = isDowntrend ? 0.35 : isUptrend ? 0.75 : 0.50
+    f6 = 0.50
+    if timeLowRSI and timeLowOBV
+        f6 := 0.85
+    else if timeLowRSI or timeLowOBV
+        f6 := 0.65
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeLowRSI ? 1 : 0) + (timeLowOBV ? 1 : 0) + (timeLowVol and useFinVol ? 1 : 0) + (timeLowStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 1.2 * logit(clamp(f2, 0.1, 0.9)) + 1.0 * logit(clamp(f3, 0.1, 0.9)) + 0.8 * logit(clamp(f4, 0.1, 0.9)) + 1.1 * logit(clamp(f5, 0.1, 0.9)) + 1.4 * logit(clamp(f6, 0.1, 0.9)) + 0.9 * logit(clamp(f7, 0.1, 0.9)) + 1.0 * logit(clamp(f8, 0.1, 0.9))
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+    clamp(prob, 0.05, 0.92)
+
+getTier(score, isBearish) =>
+    highScore = score >= highProbCutoff
+    medScore  = score >= medProbCutoff
+    hasMultipleConf = (timeTopRSI and timeTopOBV) or (timeLowRSI and timeLowOBV)
+    hasStochConf = useStoch ? (isBearish ? timeTopStoch : timeLowStoch) : false
+    hasVolConf   = useFinVol ? (isBearish ? timeTopVol : timeLowVol) : false
+    if highScore and hasMultipleConf and (hasStochConf or hasVolConf)
+        "A+"
+    else if highScore and (hasMultipleConf or hasStochConf or hasVolConf)
+        "A"
+    else if medScore
+        "B"
+    else
+        "C"
+
+//====================================================================================
+// 📋 SECTION 6: VALIDAÇÃO DAS DIVERGÊNCIAS COM SCORE
+//====================================================================================
+
+bearishScore = modeTop ? calcBearishScore() : 0.0
+bearishValid = modeTop and bearishScore >= medProbCutoff and allowSellSignals
+bearishTier  = modeTop ? getTier(bearishScore, true) : ""
+
+bullishScore = modeBottom ? calcBullishScore() : 0.0
+bullishValid = modeBottom and bullishScore >= medProbCutoff and allowBuySignals
+bullishTier  = modeBottom ? getTier(bullishScore, false) : ""
+
+showBearish = bearishValid and (not showAplusOnly or bearishTier == "A+")
+showBullish = bullishValid and (not showAplusOnly or bullishTier == "A+")
+
+//====================================================================================
+// 📋 SECTION 7: VISUALIZAÇÃO
+//====================================================================================
+
+if showLabels and showBearish and not na(priceHigh1) and not na(priceHBar1)
+    labelText = "🔻 SELL " + bearishTier + " | Score: " + str.tostring(math.round(bearishScore * 100)) + "%"
+    labelColor = bearishTier == "A+" ? color.new(#ff1744, 20) : bearishTier == "A" ? color.new(#ff6d00, 20) : color.new(#ffa000, 20)
+    label.new(x=priceHBar1, y=priceHigh1, text=labelText, style=label.style_label_down, color=labelColor, textcolor=color.white, size=size.small)
+
+if showLabels and showBullish and not na(priceLow1) and not na(priceLBar1)
+    labelText = "🟢 BUY " + bullishTier + " | Score: " + str.tostring(math.round(bullishScore * 100)) + "%"
+    labelColor = bullishTier == "A+" ? color.new(#00e676, 20) : bullishTier == "A" ? color.new(#26a69a, 20) : color.new(#4caf50, 20)
+    label.new(x=priceLBar1, y=priceLow1, text=labelText, style=label.style_label_up, color=labelColor, textcolor=color.white, size=size.small)
+
+var float segTop = na
+var float segBottom = na
+
+if showLines
+    if not na(priceHigh1) and not na(priceHigh2)
+        segTop := f_seg(priceHigh1, priceHBar1, priceHigh2, priceHBar2)
+    if not na(priceLow1) and not na(priceLow2)
+        segBottom := f_seg(priceLow1, priceLBar1, priceLow2, priceLBar2)
+
+plot(showLines and modeTop ? segTop : na, "Reta Topos", color.new(#ff1744, 60), linewidth=1, style=plot.style_line)
+plot(showLines and modeBottom ? segBottom : na, "Reta Fundos", color.new(#00e676, 60), linewidth=1, style=plot.style_line)
+
+//====================================================================================
+// 📋 SECTION 8: PAINEL DE ESTADOS
+//====================================================================================
+
+if showTable and barstate.islast
+    var table t = table.new(position.top_right, 5, 12, bgcolor=color.new(#0d1117, 95), border_color=color.new(#58a6ff, 40))
+    
+    table.cell(t, 0, 0, "Série", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(t, 1, 0, "Topo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(t, 2, 0, "Δ Topo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(t, 3, 0, "Fundo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(t, 4, 0, "Δ Fundo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    
+    table.cell(t, 0, 1, "Preço", text_color=color.gray)
+    table.cell(t, 1, 1, f_stateTxt(statePriceTop), text_color=statePriceTop==1?color.new(#ff1744,0):color.gray)
+    table.cell(t, 2, 1, "", text_color=color.gray)
+    table.cell(t, 3, 1, f_stateTxt(statePriceLow), text_color=statePriceLow==-1?color.new(#00e676,0):color.gray)
+    table.cell(t, 4, 1, "", text_color=color.gray)
+    
+    table.cell(t, 0, 2, "RSI", text_color=color.gray)
+    table.cell(t, 1, 2, f_stateTxt(stateRSITop), text_color=stateRSITop<=0?color.new(#ff6d00,0):color.gray)
+    table.cell(t, 2, 2, str.tostring(distTopRSI), text_color=distTopRSI<=confirmBars?color.new(#00e676,0):color.gray)
+    table.cell(t, 3, 2, f_stateTxt(stateRSILow), text_color=stateRSILow>=0?color.new(#00e676,0):color.gray)
+    table.cell(t, 4, 2, str.tostring(distLowRSI), text_color=distLowRSI<=confirmBars?color.new(#00e676,0):color.gray)
+    
+    table.cell(t, 0, 3, "OBV", text_color=color.gray)
+    table.cell(t, 1, 3, f_stateTxt(stateOBVTop), text_color=stateOBVTop<=0?color.new(#ff6d00,0):color.gray)
+    table.cell(t, 2, 3, str.tostring(distTopOBV), text_color=distTopOBV<=confirmBars?color.new(#00e676,0):color.gray)
+    table.cell(t, 3, 3, f_stateTxt(stateOBVLow), text_color=stateOBVLow>=0?color.new(#00e676,0):color.gray)
+    table.cell(t, 4, 3, str.tostring(distLowOBV), text_color=distLowOBV<=confirmBars?color.new(#00e676,0):color.gray)
+    
+    if useStoch
+        table.cell(t, 0, 4, "Stoch", text_color=color.gray)
+        table.cell(t, 1, 4, f_stateTxt(stateStochTop), text_color=stateStochTop<=0?color.new(#ff6d00,0):color.gray)
+        table.cell(t, 2, 4, str.tostring(distTopStoch), text_color=distTopStoch<=confirmBars?color.new(#00e676,0):color.gray)
+        table.cell(t, 3, 4, f_stateTxt(stateStochLow), text_color=stateStochLow>=0?color.new(#00e676,0):color.gray)
+        table.cell(t, 4, 4, str.tostring(distLowStoch), text_color=distLowStoch<=confirmBars?color.new(#00e676,0):color.gray)
+    
+    table.cell(t, 0, 6, "SINAL TOPO", text_color=color.new(#ff1744,0))
+    sellText = showBearish ? bearishTier + " " + str.tostring(math.round(bearishScore*100)) + "%" : (allowSellSignals ? "---" : "🚫 BLOQ")
+    table.cell(t, 1, 6, sellText, text_color=color.new(#ff1744,0))
+    
+    table.cell(t, 0, 7, "SINAL FUNDO", text_color=color.new(#00e676,0))
+    buyText = showBullish ? bullishTier + " " + str.tostring(math.round(bullishScore*100)) + "%" : (allowBuySignals ? "---" : "🚫 BLOQ")
+    table.cell(t, 1, 7, buyText, text_color=color.new(#00e676,0))
+    
+    // عرض قوة الاتجاه
+    table.cell(t, 0, 9, "TREND", text_color=color.gray)
+    string trendDisplay = useTrendFilter ? (overallTrend == 1 ? "▲ " + str.tostring(math.round(trendStrengthValue*100)) + "%" : overallTrend == -1 ? "▼ " + str.tostring(math.round(trendStrengthValue*100)) + "%" : "● SIDEWAYS") : "FILTER OFF"
+    color trendDisplayColor = overallTrend == 1 ? color.new(#00e676,0) : overallTrend == -1 ? color.new(#ff1744,0) : color.gray
+    table.cell(t, 1, 9, trendDisplay, text_color=trendDisplayColor)
+    
+    table.cell(t, 0, 10, "Config", text_color=color.gray)
+    table.cell(t, 1, 10, "L" + str.tostring(L), text_color=color.gray)
+    table.cell(t, 2, 10, "Jan:" + str.tostring(confirmBars), text_color=color.gray)
+    table.cell(t, 3, 10, "Threshold:" + str.tostring(math.round(trendThreshold*100)) + "%", text_color=color.gray)
+
+//====================================================================================
+// 📋 SECTION 9: ALERTAS
+//====================================================================================
+
+alertcondition(showBearish and bearishTier == "A+", "🔻 VENDA A+", "Venda de alta qualidade detectada")
+alertcondition(showBullish and bullishTier == "A+", "🟢 COMPRA A+", "Compra de alta qualidade detectada")
+
+//====================================================================================
+// 📋 SECTION 10: PLOTS OBRIGATÓRIOS
+//====================================================================================
+
+plot(showLabels ? rsi : na, "RSI", color.new(#2962FF, 0), linewidth=1, display=display.none)
+plot(showLabels ? obv_smooth : na, "OBV Smooth", color.new(#FF9800, 0), linewidth=1, display=display.none)
+plot(useStoch and showLabels ? stochK : na, "Stoch K", color.new(#00E676, 0), linewidth=1, display=display.none)
+plot(showLabels ? bearishScore : na, "Bearish Score", display=display.none)
+plot(showLabels ? bullishScore : na, "Bullish Score", display=display.none)
