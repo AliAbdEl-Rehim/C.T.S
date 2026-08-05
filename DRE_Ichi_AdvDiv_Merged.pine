@@ -2435,62 +2435,82 @@ if signal_type_adv != "محايد"
 hasSignalNow = signal_type_adv != "محايد"
 
 // ==========================================
-// 9. VISUALIZATION — PLOT (نافذة) + LEVEL (مقاومة/دعم)
+// 9. VISUALIZATION — PLOT + LEVEL (إجباري على الشارت)
+// ملاحظة: كود BSS الأصلي كان يحسب Supertrend/HMA/Levels بدون رسمها؛ هنا نرسمها بوضوح
 // ==========================================
+grp_bss_vis = "👁 BSS PLOT + LEVEL"
+showBssPlots  = input.bool(true, "إظهار PLOT (Supertrend + HMA + Osc)", group=grp_bss_vis)
+showBssLevels = input.bool(true, "إظهار LEVEL (مقاومة/دعم)", group=grp_bss_vis)
+
 atr_v = ta.atr(14)
 osc_val = (close - hma) / (atr_v > 0 ? atr_v : syminfo.mintick)
 
-// PLOT: مؤشر الـ oscillator في نافذة منفصلة (من كود BSS الأصلي)
-hline(0, "BSS Zero", color=color.gray, linestyle=hline.style_dotted, display=display.pane)
-plot(osc_val, "BSS Osc Columns", color=color.gray, style=plot.style_columns, display=display.pane)
-plot(osc_val, "BSS Osc Line", color=color.white, linewidth=2, display=display.pane)
+// ===== PLOT على الشارت الرئيسي (Supertrend + HMA) =====
+plot(showBssPlots ? st1 : na, "BSS ST Fast", color=color.lime, linewidth=2, force_overlay=true)
+plot(showBssPlots ? st2 : na, "BSS ST Med", color=color.yellow, linewidth=2, force_overlay=true)
+plot(showBssPlots ? st3 : na, "BSS ST Slow", color=color.fuchsia, linewidth=2, force_overlay=true)
+plot(showBssPlots ? hma : na, "BSS HMA", color=color.white, linewidth=2, force_overlay=true)
+plot(showBssPlots ? ema_high : na, "BSS EMA High", color=color.teal, linewidth=1, force_overlay=true)
+plot(showBssPlots ? ema_low : na, "BSS EMA Low", color=color.maroon, linewidth=1, force_overlay=true)
 
-// LEVEL: مقاومة/دعم BSS ظاهرة دائماً على الشارت (وليس فقط عند Pre-BO)
-plot(bssShowLines ? resistanceLevel : na, "BSS Resistance LEVEL", color=color.orange, linewidth=2, style=plot.style_linebr)
-plot(bssShowLines ? supportLevel : na, "BSS Support LEVEL", color=color.aqua, linewidth=2, style=plot.style_linebr)
+// ===== PLOT نافذة Oscillator (من كود BSS) =====
+plot(showBssPlots ? 0 : na, "BSS Zero Line", color=color.gray, linewidth=1, style=plot.style_line, display=display.pane)
+plot(showBssPlots ? osc_val : na, "BSS Osc Columns", color=color.gray, style=plot.style_columns, display=display.pane)
+plot(showBssPlots ? osc_val : na, "BSS Osc Line", color=color.white, linewidth=2, display=display.pane)
 
-// خطوط LEVEL أفقية ممتدة لليمين (أوضح من الـ plot وحده)
+// ===== LEVEL مقاومة/دعم — دائماً على الشارت =====
+plot(showBssLevels ? resistanceLevel : na, "BSS Resistance LEVEL", color=color.orange, linewidth=3, style=plot.style_linebr, force_overlay=true)
+plot(showBssLevels ? supportLevel : na, "BSS Support LEVEL", color=color.aqua, linewidth=3, style=plot.style_linebr, force_overlay=true)
+
+// تلوين خفيف عند الاقتراب من المقاومة
+bgcolor(showBssLevels and nearResistance ? color.new(color.orange, 92) : na, force_overlay=true, title="BSS Near Resistance Zone")
+
+// خطوط LEVEL أفقية ممتدة + لابل
 var line bssResLevelLine = na
 var line bssSupLevelLine = na
-if barstate.islast and bssShowLines
-    if na(bssResLevelLine)
-        bssResLevelLine := line.new(bar_index - 40, resistanceLevel, bar_index + 10, resistanceLevel, xloc=xloc.bar_index, extend=extend.right, color=color.orange, width=2, style=line.style_dashed)
-    else
-        line.set_xy1(bssResLevelLine, bar_index - 40, resistanceLevel)
-        line.set_xy2(bssResLevelLine, bar_index + 10, resistanceLevel)
-        line.set_color(bssResLevelLine, color.orange)
-        line.set_extend(bssResLevelLine, extend.right)
-    if na(bssSupLevelLine)
-        bssSupLevelLine := line.new(bar_index - 40, supportLevel, bar_index + 10, supportLevel, xloc=xloc.bar_index, extend=extend.right, color=color.aqua, width=2, style=line.style_dashed)
-    else
-        line.set_xy1(bssSupLevelLine, bar_index - 40, supportLevel)
-        line.set_xy2(bssSupLevelLine, bar_index + 10, supportLevel)
-        line.set_color(bssSupLevelLine, color.aqua)
-        line.set_extend(bssSupLevelLine, extend.right)
-else if barstate.islast and not bssShowLines
-    if not na(bssResLevelLine)
-        line.delete(bssResLevelLine)
-        bssResLevelLine := na
-    if not na(bssSupLevelLine)
-        line.delete(bssSupLevelLine)
-        bssSupLevelLine := na
-
-// لابل تعريف المستويات على آخر شمعة (تحديث وليس إنشاء متكرر)
 var label bssResLbl = na
 var label bssSupLbl = na
+
 if barstate.islast
-    if bssShowLines
+    if showBssLevels
+        if na(bssResLevelLine)
+            bssResLevelLine := line.new(bar_index - 50, resistanceLevel, bar_index + 15, resistanceLevel, xloc=xloc.bar_index, extend=extend.right, color=color.orange, width=3, style=line.style_solid)
+        else
+            line.set_xy1(bssResLevelLine, bar_index - 50, resistanceLevel)
+            line.set_xy2(bssResLevelLine, bar_index + 15, resistanceLevel)
+            line.set_color(bssResLevelLine, color.orange)
+            line.set_style(bssResLevelLine, line.style_solid)
+            line.set_width(bssResLevelLine, 3)
+            line.set_extend(bssResLevelLine, extend.right)
+
+        if na(bssSupLevelLine)
+            bssSupLevelLine := line.new(bar_index - 50, supportLevel, bar_index + 15, supportLevel, xloc=xloc.bar_index, extend=extend.right, color=color.aqua, width=3, style=line.style_solid)
+        else
+            line.set_xy1(bssSupLevelLine, bar_index - 50, supportLevel)
+            line.set_xy2(bssSupLevelLine, bar_index + 15, supportLevel)
+            line.set_color(bssSupLevelLine, color.aqua)
+            line.set_style(bssSupLevelLine, line.style_solid)
+            line.set_width(bssSupLevelLine, 3)
+            line.set_extend(bssSupLevelLine, extend.right)
+
         if na(bssResLbl)
-            bssResLbl := label.new(bar_index, resistanceLevel, "BSS RES", style=label.style_label_left, color=color.orange, textcolor=color.white, size=size.small)
+            bssResLbl := label.new(bar_index + 2, resistanceLevel, "LEVEL RES " + str.tostring(resistanceLevel, format.mintick), style=label.style_label_left, color=color.orange, textcolor=color.white, size=size.normal)
         else
-            label.set_xy(bssResLbl, bar_index, resistanceLevel)
-            label.set_text(bssResLbl, "BSS RES")
+            label.set_xy(bssResLbl, bar_index + 2, resistanceLevel)
+            label.set_text(bssResLbl, "LEVEL RES " + str.tostring(resistanceLevel, format.mintick))
+
         if na(bssSupLbl)
-            bssSupLbl := label.new(bar_index, supportLevel, "BSS SUP", style=label.style_label_left, color=color.aqua, textcolor=color.white, size=size.small)
+            bssSupLbl := label.new(bar_index + 2, supportLevel, "LEVEL SUP " + str.tostring(supportLevel, format.mintick), style=label.style_label_left, color=color.aqua, textcolor=color.white, size=size.normal)
         else
-            label.set_xy(bssSupLbl, bar_index, supportLevel)
-            label.set_text(bssSupLbl, "BSS SUP")
+            label.set_xy(bssSupLbl, bar_index + 2, supportLevel)
+            label.set_text(bssSupLbl, "LEVEL SUP " + str.tostring(supportLevel, format.mintick))
     else
+        if not na(bssResLevelLine)
+            line.delete(bssResLevelLine)
+            bssResLevelLine := na
+        if not na(bssSupLevelLine)
+            line.delete(bssSupLevelLine)
+            bssSupLevelLine := na
         if not na(bssResLbl)
             label.delete(bssResLbl)
             bssResLbl := na
