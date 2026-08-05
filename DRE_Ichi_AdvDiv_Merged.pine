@@ -948,12 +948,12 @@ bullCloud   = input.color(color.new(color.green, 82), "Bull Cloud", group=groupD
 bearCloud   = input.color(color.new(color.red,   82), "Bear Cloud", group=groupDisplay)
 
 // const colors here reduce plot-count (input colors still used by labels/tables elsewhere)
-plot(showTenkan ? tenkan : na, "Tenkan", color=color.red, linewidth=1)
-plot(showKijun  ? kijun  : na, "Kijun",  color=color.blue,  linewidth=1)
-plot(showChikou ? chikou : na, "Chikou", color=color.teal, offset=-displacement)
+plot(showTenkan ? tenkan : na, "Tenkan", color=color.red, linewidth=2)
+plot(showKijun  ? kijun  : na, "Kijun",  color=color.blue,  linewidth=2)
+plot(showChikou ? chikou : na, "Chikou", color=color.teal, linewidth=2, offset=-displacement)
 
-plotA = plot(showCloud ? senkouA : na, "Senkou A", color=color.green, offset=displacement)
-plotB = plot(showCloud ? senkouB : na, "Senkou B", color=color.red, offset=displacement)
+plotA = plot(showCloud ? senkouA : na, "Senkou A", color=color.green, linewidth=2, offset=displacement)
+plotB = plot(showCloud ? senkouB : na, "Senkou B", color=color.red, linewidth=2, offset=displacement)
 fill(plotA, plotB, color=showCloud ? (senkouA >= senkouB ? color.new(color.green, 82) : color.new(color.red, 82)) : na, title="Kumo")
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1202,14 +1202,14 @@ resistanceColor = input.color(color.new(color.red, 10), "Resistance Color", grou
 supportColor    = input.color(color.new(color.green, 10), "Support Color", group=groupLevels)
 brokenColor     = input.color(color.new(color.gray, 45), "Broken Level Color", group=groupLevels)
 
-// Current dynamic Ichimoku reference levels
-plot(showKijunLevel ? kijun : na, "Current Kijun S/R", color=color.new(color.blue, 20), linewidth=2, style=plot.style_linebr)
+// Current dynamic Ichimoku reference levels (أوضح على الشارت)
+plot(showKijunLevel ? kijun : na, "Current Kijun S/R", color=color.blue, linewidth=3, style=plot.style_linebr)
 
 futureCloudTop    = math.max(senkouA, senkouB)
 futureCloudBottom = math.min(senkouA, senkouB)
 
-plot(showCloudLevels ? futureCloudTop : na, "Projected Cloud Resistance", color=color.new(color.red, 35), linewidth=1, offset=displacement, style=plot.style_linebr)
-plot(showCloudLevels ? futureCloudBottom : na, "Projected Cloud Support", color=color.new(color.green, 35), linewidth=1, offset=displacement, style=plot.style_linebr)
+plot(showCloudLevels ? futureCloudTop : na, "Projected Cloud Resistance", color=color.red, linewidth=2, offset=displacement, style=plot.style_linebr)
+plot(showCloudLevels ? futureCloudBottom : na, "Projected Cloud Support", color=color.green, linewidth=2, offset=displacement, style=plot.style_linebr)
 
 // Store active horizontal swing levels
 var line[] resistanceLines = array.new_line()
@@ -1233,8 +1233,8 @@ if showSwingLevels and not na(levelPivotHigh)
          newResistance,
          xloc=xloc.bar_index,
          extend=extend.right,
-         color=resistanceColor,
-         width=1,
+         color=color.red,
+         width=2,
          style=line.style_solid)
     array.push(resistanceLines, newLine)
     array.push(resistancePrices, newResistance)
@@ -1256,8 +1256,8 @@ if showSwingLevels and not na(levelPivotLow)
          newSupport,
          xloc=xloc.bar_index,
          extend=extend.right,
-         color=supportColor,
-         width=1,
+         color=color.green,
+         width=2,
          style=line.style_solid)
     array.push(supportLines, newLine)
     array.push(supportPrices, newSupport)
@@ -1867,78 +1867,110 @@ float roadmapS3 = supportCount > 2 and roadmapCount >= 3 ? array.get(supportLeve
 float roadmapS4 = supportCount > 3 and roadmapCount >= 4 ? array.get(supportLevels, 3) : na
 float roadmapS5 = supportCount > 4 and roadmapCount >= 5 ? array.get(supportLevels, 4) : na
 
-// const colors (not input colors) — each plot counts as 1 instead of 2 toward the 64 limit
+// خطوط مستويات Roadmap ظاهرة كـ linebr (أوضح من الدوائر)
 plot(
      showRoadmap and showRoadmapLines ? roadmapR1 : na,
      "Ichimoku Resistance R1",
-     color=color.new(color.red, 0),
-     linewidth=2,
-     style=plot.style_circles
+     color=color.red,
+     linewidth=3,
+     style=plot.style_linebr
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapR2 : na,
      "Ichimoku Resistance R2",
-     color=color.new(color.red, 15),
+     color=color.new(color.red, 20),
      linewidth=2,
-     style=plot.style_circles
+     style=plot.style_linebr
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapR3 : na,
      "Ichimoku Resistance R3",
-     color=color.new(color.red, 30),
-     linewidth=1,
-     style=plot.style_circles
+     color=color.new(color.red, 35),
+     linewidth=2,
+     style=plot.style_linebr
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapR4 : na,
      "Ichimoku Resistance R4",
-     color=color.new(color.red, 45),
+     color=color.new(color.red, 50),
      linewidth=1,
-     style=plot.style_circles
+     style=plot.style_linebr
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapR5 : na,
      "Ichimoku Resistance R5",
      color=color.new(color.red, 60),
      linewidth=1,
-     style=plot.style_circles
+     style=plot.style_linebr
 )
 
 plot(
      showRoadmap and showRoadmapLines ? roadmapS1 : na,
      "Ichimoku Support S1",
-     color=color.new(color.green, 0),
-     linewidth=2,
-     style=plot.style_circles
+     color=color.green,
+     linewidth=3,
+     style=plot.style_linebr
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapS2 : na,
      "Ichimoku Support S2",
-     color=color.new(color.green, 15),
+     color=color.new(color.green, 20),
      linewidth=2,
-     style=plot.style_circles
+     style=plot.style_linebr
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapS3 : na,
      "Ichimoku Support S3",
-     color=color.new(color.green, 30),
-     linewidth=1,
-     style=plot.style_circles
+     color=color.new(color.green, 35),
+     linewidth=2,
+     style=plot.style_linebr
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapS4 : na,
      "Ichimoku Support S4",
-     color=color.new(color.green, 45),
+     color=color.new(color.green, 50),
      linewidth=1,
-     style=plot.style_circles
+     style=plot.style_linebr
 )
 plot(
      showRoadmap and showRoadmapLines ? roadmapS5 : na,
      "Ichimoku Support S5",
      color=color.new(color.green, 60),
      linewidth=1,
-     style=plot.style_circles
+     style=plot.style_linebr
 )
+
+// خطوط أفقية ثابتة للمستويات الحالية (R1–R3 / S1–S3) — تظهر دائماً كـ LEVEL
+var line lvlR1 = na
+var line lvlR2 = na
+var line lvlR3 = na
+var line lvlS1 = na
+var line lvlS2 = na
+var line lvlS3 = na
+
+f_updLevelLine(line ln, float price, color col, bool on) =>
+    line out = ln
+    if on and not na(price)
+        if na(out)
+            out := line.new(bar_index - 30, price, bar_index + 5, price, xloc=xloc.bar_index, extend=extend.right, color=col, width=2, style=line.style_solid)
+        else
+            line.set_xy1(out, bar_index - 30, price)
+            line.set_xy2(out, bar_index + 5, price)
+            line.set_color(out, col)
+            line.set_extend(out, extend.right)
+    else if not na(out)
+        line.delete(out)
+        out := na
+    out
+
+if barstate.islast
+    bool levelsOn = showRoadmap and showRoadmapLines
+    lvlR1 := f_updLevelLine(lvlR1, roadmapR1, color.red, levelsOn)
+    lvlR2 := f_updLevelLine(lvlR2, roadmapR2, color.new(color.red, 25), levelsOn)
+    lvlR3 := f_updLevelLine(lvlR3, roadmapR3, color.new(color.red, 40), levelsOn)
+    lvlS1 := f_updLevelLine(lvlS1, roadmapS1, color.green, levelsOn)
+    lvlS2 := f_updLevelLine(lvlS2, roadmapS2, color.new(color.green, 25), levelsOn)
+    lvlS3 := f_updLevelLine(lvlS3, roadmapS3, color.new(color.green, 40), levelsOn)
 
 // Current endpoint labels only. They sit on the latest candle, not far to the right.
 var label[] roadmapResistanceLabels = array.new_label()
@@ -2412,6 +2444,14 @@ hasSignalNow = signal_type_adv != "محايد"
 
 atrOffset = ta.atr(14) * 0.4
 
+// تدوير خطوط BSS حتى لا تستهلك max_lines وتخفي مستويات Swing/Roadmap
+var line[] bssHelperLines = array.new_line()
+f_bssKeepLine(line ln) =>
+    array.push(bssHelperLines, ln)
+    if array.size(bssHelperLines) > 15
+        line oldLn = array.shift(bssHelperLines)
+        line.delete(oldLn)
+
 // ⚡⚡⚡ PRE-BREAKOUT ALERT (الجديد!)
 if showPreBreakout and preBreakoutAlert and not preBreakoutAlert[1]
     preboText = "⚡ PRE-BREAKOUT\n" + preboStrength + "\nالنقاط: " + str.tostring(preboScore) + "/6\n" + preboReasons
@@ -2424,10 +2464,11 @@ if showPreBreakout and preBreakoutAlert and not preBreakoutAlert[1]
               textcolor=color.white, 
               size=size.large)
     
-    // خط عند مستوى المقاومة المتوقع
+    // خط مقاومة محدود (بدون extend.right الدائم) حتى تبقى مستويات LEVEL ظاهرة
     if bssShowLines
-        line.new(x1=bar_index, y1=resistanceLevel, x2=bar_index + 20, y2=resistanceLevel, 
-                 color=color.orange, width=2, style=line.style_dashed, extend=extend.right)
+        line preboLn = line.new(x1=bar_index, y1=resistanceLevel, x2=bar_index + 25, y2=resistanceLevel, 
+                 color=color.orange, width=2, style=line.style_dashed, extend=extend.none)
+        f_bssKeepLine(preboLn)
 
 // 🚀 EARLY BUY
 if showEarlyBuy and earlyBuySignal and not earlyBuySignal[1]
@@ -2439,7 +2480,8 @@ if showEarlyBuy and earlyBuySignal and not earlyBuySignal[1]
               size=size.large)
     
     if bssShowLines
-        line.new(x1=bar_index, y1=low, x2=bar_index, y2=low - atrOffset * 12, color=color.purple, width=2, style=line.style_dashed)
+        line earlyLn = line.new(x1=bar_index, y1=low, x2=bar_index, y2=low - atrOffset * 12, color=color.purple, width=2, style=line.style_dashed)
+        f_bssKeepLine(earlyLn)
 
 // 🔥 BREAKOUT
 if showBreakout and isBreakout and volumeSpike and not isBreakout[1]
