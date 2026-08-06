@@ -1141,42 +1141,9 @@ activeRulesText() =>
 
 plotshape(showBuyShapes and buyFire, title="BUY", style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.normal, text="BUY")
 
-int buyStack = 0
-f_buyLabel(bool fire, string tag) =>
-    int stack = buyStack
-    if showBuyLabels and fire
-        label.new(bar_index, low - atr14 * (0.6 + stack * 0.55), "🟢 BUY " + tag, style=label.style_label_up, color=color.new(#1b5e20, 10), textcolor=color.white, size=size.small)
-        stack += 1
-    stack
-
-buyStack := f_buyLabel(fire1, "R1")
-buyStack := f_buyLabel(fire2, "R2")
-buyStack := f_buyLabel(fire3, "R3")
-buyStack := f_buyLabel(fire4, "R4")
-buyStack := f_buyLabel(fire5, "R5")
-buyStack := f_buyLabel(fire6, "R6")
-buyStack := f_buyLabel(fire7, "R7")
-buyStack := f_buyLabel(fire8, "R8")
-buyStack := f_buyLabel(fire9, "R9")
-buyStack := f_buyLabel(fire10, "R10")
-buyStack := f_buyLabel(fire11, "R11")
-buyStack := f_buyLabel(fire12, "R12")
-buyStack := f_buyLabel(fire13, "R13")
-buyStack := f_buyLabel(fire14, "R14")
-buyStack := f_buyLabel(fire15, "R15")
-buyStack := f_buyLabel(fire16, "R16")
-buyStack := f_buyLabel(fire19, "R19")
-buyStack := f_buyLabel(fire20, "R20")
-buyStack := f_buyLabel(fire21, "R21")
-buyStack := f_buyLabel(fire22, "R22")
-buyStack := f_buyLabel(fire23, "R23")
-buyStack := f_buyLabel(fire25, "R25")
-buyStack := f_buyLabel(fire27, "R27")
-buyStack := f_buyLabel(fire28, "R28")
-buyStack := f_buyLabel(fire29, "R29")
-buyStack := f_buyLabel(fire30, "R30")
-buyStack := f_buyLabel(fire31, "R31")
-buyStack := f_buyLabel(fire32, "R32")
+// لابل شراء مستقل لكل قاعدة تتحقق
+if showBuyLabels and buyFire
+    label.new(bar_index, low - atr14 * 0.7, "🟢 BUY\n" + activeRulesText(), style=label.style_label_up, color=color.new(#1b5e20, 10), textcolor=color.white, size=size.normal)
 
 bgcolor(buyFire ? color.new(#00e676, 88) : na, title="Buy Flash")
 
