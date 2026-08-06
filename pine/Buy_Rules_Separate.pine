@@ -1,21 +1,22 @@
 //@version=6
-indicator("Buy Confluence Rules • C1+C2", shorttitle="Buy Confluence", overlay=true, max_labels_count=500, max_lines_count=200, max_bars_back=500)
+indicator("Buy Rules Separate • C1+C2", shorttitle="Buy Rules", overlay=true, max_labels_count=500, max_lines_count=200, max_bars_back=500)
 
 //====================================================================================
-// BUY: كل قاعدة تتحقق → إشارة شراء مستقلة
+// كل قاعدة منفصلة تماماً: شرطها + سهم BUY + لابل + تنبيه خاص بها
 // Rules: 1–16, 19–23, 25, 27–32  |  reserved: 17, 18, 24, 26
-// C1 = All-in-One PreBO | C2 = Buy/Sell Div Pro + EGX Boost
 //====================================================================================
 
 grpWin = "⏱ Confluence Window"
-lookbackBars = input.int(8, "نافذة التقاء الإشارات (شموع)", minval=1, maxval=50, group=grpWin)
+lookbackBars = input.int(8, "نافذة التقاء مكوّنات القاعدة (شموع)", minval=1, maxval=50, group=grpWin)
 cooldownBars = input.int(3, "تبريد لكل قاعدة (شموع)", minval=0, maxval=50, group=grpWin)
 requireConfirmed = input.bool(true, "تأكيد على إغلاق الشمعة", group=grpWin)
+singleRuleMode = input.bool(false, "تشغيل قاعدة واحدة فقط", group=grpWin, tooltip="فعّلها ثم اختر رقم القاعدة بالأسفل")
+singleRuleNum = input.int(1, "رقم القاعدة المنفردة", minval=1, maxval=32, group=grpWin)
 
 grpShow = "👁 Display"
-showBuyLabels = input.bool(true, "عرض لابل الشراء", group=grpShow)
-showBuyShapes = input.bool(true, "عرض سهم شراء", group=grpShow)
-showRuleTable = input.bool(true, "لوحة القواعد النشطة", group=grpShow)
+showBuyLabels = input.bool(true, "عرض لابل لكل قاعدة", group=grpShow)
+showBuyShapes = input.bool(true, "عرض سهم لكل قاعدة", group=grpShow)
+showRuleTable = input.bool(true, "لوحة القواعد", group=grpShow)
 
 grpRules = "✅ تفعيل القواعد"
 enR1  = input.bool(true, "R1  C1: BUY A+ + HB", group=grpRules)
@@ -892,69 +893,73 @@ wC2EarlySell = recentTrue(c2EarlySell, w)
 wC2ScalpSell = recentTrue(c2_scalp_sell, w)
 
 //====================================================================================
-// RULES → BUY (كل قاعدة مستقلة)
+// RULES — كل قاعدة على حِدة (مستقلة تماماً)
 //====================================================================================
 
-// R1  C1: BUY A+ + HB
-rule1  = enR1  and wC1BuyAplus and wC1Hb
-// R2  C1: BO + R3 + BREAKOUT | C2: BUY A++ + LIMIT + BURST + TREND BUY
-rule2  = enR2  and wC1Bo and wC1R3 and wC1Breakout and wC2BuyApp and wC2Limit and wC2Burst and wC2TrendBuy
-// R3  C1: PRE-BREAKOUT + R2
-rule3  = enR3  and wC1Prebo and wC1R2
-// R4  C1: TREND SELL + SCALP + BUY A+ + B green + BD red | C2: LIMIT
-rule4  = enR4  and wC1TrendSell and wC1ScalpAny and wC1BuyAplus and wC1B and wC1Bd and wC2Limit
-// R5  C1: BREAKOUT | C2: BUY B
-rule5  = enR5  and wC1Breakout and wC2BuyB
-// R6  C1: BO + SCALP GREEN + BREAKOUT + TREND BUY + EARLY BUY | C2: A++ + LIMIT + BURST + TREND BUY
-rule6  = enR6  and wC1Bo and wC1ScalpG and wC1Breakout and wC1TrendBuy and wC1Early and wC2BuyApp and wC2Limit and wC2Burst and wC2TrendBuy
-// R7  C1: BO + TREND BUY + EARLY BUY | C2: EARLY SELL + LIMIT + BUY B
-rule7  = enR7  and wC1Bo and wC1TrendBuy and wC1Early and wC2EarlySell and wC2Limit and wC2BuyB
-// R8  C1: BREAKOUT | C2: BUY B
-rule8  = enR8  and wC1Breakout and wC2BuyB
-// R9  C1: R2 RED + R2 GREEN + BUY A+ | C2: TREND BUY
-rule9  = enR9  and wC1R2r and wC1R2g and wC1BuyAplus and wC2TrendBuy
-// R10 C1: BO + BREAKOUT | C2: BUY B
-rule10 = enR10 and wC1Bo and wC1Breakout and wC2BuyB
-// R11 C1: SCALP RED + BUY A+
-rule11 = enR11 and wC1ScalpR and wC1BuyAplus
-// R12 C1: SCALP GREEN + EARLY BUY
-rule12 = enR12 and wC1ScalpG and wC1Early
-// R13 C2: EARLY BUY + BUY A+
-rule13 = enR13 and wC2EarlyBuy and wC2BuyAplus
-// R14 C1: B green ×2 + R2 | C2: TREND SELL
-rule14 = enR14 and wC1B2 and wC1R2 and wC2TrendSell
-// R15 C1 TREND SELL + C2 TREND SELL
-rule15 = enR15 and wC1TrendSell and wC2TrendSell
-// R16 C1: BO GREEN + SCALP GREEN + PREBO | C2: TREND BUY
-rule16 = enR16 and wC1Bo and wC1ScalpG and wC1Prebo and wC2TrendBuy
-// R19 C1: TREND SELL + SCALP RED + R3 + BUY A+ + HB | C2: EARLY BUY
-rule19 = enR19 and wC1TrendSell and wC1ScalpR and wC1R3 and wC1BuyAplus and wC1Hb and wC2EarlyBuy
-// R20 C1: BO + SCALP GREEN + BREAKOUT + TREND BUY | C2: A++ + BURST + TREND BUY
-rule20 = enR20 and wC1Bo and wC1ScalpG and wC1Breakout and wC1TrendBuy and wC2BuyApp and wC2Burst and wC2TrendBuy
-// R21 C1: BUY A+
-rule21 = enR21 and wC1BuyAplus
-// R22 C1: BUY A+ + R2 GREEN
-rule22 = enR22 and wC1BuyAplus and wC1R2g
-// R23 C1: BO + R2 + EARLY BUY | C2: EARLY SELL + LIMIT + BURST + A++
-rule23 = enR23 and wC1Bo and wC1R2 and wC1Early and wC2EarlySell and wC2Limit and wC2Burst and wC2BuyApp
-// R25 C1: R1 + BUY A+ + HB | C2: SCALP ▼
-rule25 = enR25 and wC1R1 and wC1BuyAplus and wC1Hb and wC2ScalpSell
-// R27 C1: B green ×2 + BD red + R2
-rule27 = enR27 and wC1B2 and wC1Bd and wC1R2
-// R28 C1: BUY A+ + EARLY BUY
-rule28 = enR28 and wC1BuyAplus and wC1Early
-// R29 C1: BUY A+ + R1 + BD
-rule29 = enR29 and wC1BuyAplus and wC1R1 and wC1Bd
-// R30 C1: BO + BREAKOUT + EARLY BUY | C2: LIMIT + BURST + A++
-rule30 = enR30 and wC1Bo and wC1Breakout and wC1Early and wC2Limit and wC2Burst and wC2BuyApp
-// R31 C1: R3 GREEN + R2 RED + SCALP GREEN + EARLY BUY | C2: BURST + A++
-rule31 = enR31 and wC1R3g and wC1R2r and wC1ScalpG and wC1Early and wC2Burst and wC2BuyApp
-// R32 C1: BO + R3 GREEN + TREND BUY | C2: TREND BUY + A++
-rule32 = enR32 and wC1Bo and wC1R3g and wC1TrendBuy and wC2TrendBuy and wC2BuyApp
+f_use(int num, bool en) =>
+    en and (not singleRuleMode or singleRuleNum == num)
+
+// ——— قاعدة 1: C1 BUY A+ + HB ———
+rule1 = f_use(1, enR1) and wC1BuyAplus and wC1Hb
+// ——— قاعدة 2: C1 BO+R3+BREAKOUT | C2 A+++LIMIT+BURST+TREND BUY ———
+rule2 = f_use(2, enR2) and wC1Bo and wC1R3 and wC1Breakout and wC2BuyApp and wC2Limit and wC2Burst and wC2TrendBuy
+// ——— قاعدة 3: C1 PREBO + R2 ———
+rule3 = f_use(3, enR3) and wC1Prebo and wC1R2
+// ——— قاعدة 4: C1 TREND SELL+SCALP+BUY A++B+BD | C2 LIMIT ———
+rule4 = f_use(4, enR4) and wC1TrendSell and wC1ScalpAny and wC1BuyAplus and wC1B and wC1Bd and wC2Limit
+// ——— قاعدة 5: C1 BREAKOUT | C2 BUY B ———
+rule5 = f_use(5, enR5) and wC1Breakout and wC2BuyB
+// ——— قاعدة 6: C1 BO+SCALP G+BREAKOUT+TREND+EARLY | C2 A+++LIMIT+BURST+TREND ———
+rule6 = f_use(6, enR6) and wC1Bo and wC1ScalpG and wC1Breakout and wC1TrendBuy and wC1Early and wC2BuyApp and wC2Limit and wC2Burst and wC2TrendBuy
+// ——— قاعدة 7: C1 BO+TREND+EARLY | C2 EARLY SELL+LIMIT+BUY B ———
+rule7 = f_use(7, enR7) and wC1Bo and wC1TrendBuy and wC1Early and wC2EarlySell and wC2Limit and wC2BuyB
+// ——— قاعدة 8: C1 BREAKOUT | C2 BUY B ———
+rule8 = f_use(8, enR8) and wC1Breakout and wC2BuyB
+// ——— قاعدة 9: C1 R2RED+R2GREEN+BUY A+ | C2 TREND BUY ———
+rule9 = f_use(9, enR9) and wC1R2r and wC1R2g and wC1BuyAplus and wC2TrendBuy
+// ——— قاعدة 10: C1 BO+BREAKOUT | C2 BUY B ———
+rule10 = f_use(10, enR10) and wC1Bo and wC1Breakout and wC2BuyB
+// ——— قاعدة 11: C1 SCALP RED + BUY A+ ———
+rule11 = f_use(11, enR11) and wC1ScalpR and wC1BuyAplus
+// ——— قاعدة 12: C1 SCALP GREEN + EARLY BUY ———
+rule12 = f_use(12, enR12) and wC1ScalpG and wC1Early
+// ——— قاعدة 13: C2 EARLY BUY + BUY A+ ———
+rule13 = f_use(13, enR13) and wC2EarlyBuy and wC2BuyAplus
+// ——— قاعدة 14: C1 B×2 + R2 | C2 TREND SELL ———
+rule14 = f_use(14, enR14) and wC1B2 and wC1R2 and wC2TrendSell
+// ——— قاعدة 15: C1 TREND SELL + C2 TREND SELL ———
+rule15 = f_use(15, enR15) and wC1TrendSell and wC2TrendSell
+// ——— قاعدة 16: C1 BO+SCALP G+PREBO | C2 TREND BUY ———
+rule16 = f_use(16, enR16) and wC1Bo and wC1ScalpG and wC1Prebo and wC2TrendBuy
+// ——— قاعدة 19: C1 TREND SELL+SCALP RED+R3+BUY A++HB | C2 EARLY BUY ———
+rule19 = f_use(19, enR19) and wC1TrendSell and wC1ScalpR and wC1R3 and wC1BuyAplus and wC1Hb and wC2EarlyBuy
+// ——— قاعدة 20: C1 BO+SCALP G+BREAKOUT+TREND | C2 A+++BURST+TREND ———
+rule20 = f_use(20, enR20) and wC1Bo and wC1ScalpG and wC1Breakout and wC1TrendBuy and wC2BuyApp and wC2Burst and wC2TrendBuy
+// ——— قاعدة 21: C1 BUY A+ ———
+rule21 = f_use(21, enR21) and wC1BuyAplus
+// ——— قاعدة 22: C1 BUY A+ + R2 GREEN ———
+rule22 = f_use(22, enR22) and wC1BuyAplus and wC1R2g
+// ——— قاعدة 23: C1 BO+R2+EARLY | C2 EARLY SELL+LIMIT+BURST+A++ ———
+rule23 = f_use(23, enR23) and wC1Bo and wC1R2 and wC1Early and wC2EarlySell and wC2Limit and wC2Burst and wC2BuyApp
+// ——— قاعدة 25: C1 R1+BUY A++HB | C2 SCALP ▼ ———
+rule25 = f_use(25, enR25) and wC1R1 and wC1BuyAplus and wC1Hb and wC2ScalpSell
+// ——— قاعدة 27: C1 B×2 + BD + R2 ———
+rule27 = f_use(27, enR27) and wC1B2 and wC1Bd and wC1R2
+// ——— قاعدة 28: C1 BUY A+ + EARLY BUY ———
+rule28 = f_use(28, enR28) and wC1BuyAplus and wC1Early
+// ——— قاعدة 29: C1 BUY A+ + R1 + BD ———
+rule29 = f_use(29, enR29) and wC1BuyAplus and wC1R1 and wC1Bd
+// ——— قاعدة 30: C1 BO+BREAKOUT+EARLY | C2 LIMIT+BURST+A++ ———
+rule30 = f_use(30, enR30) and wC1Bo and wC1Breakout and wC1Early and wC2Limit and wC2Burst and wC2BuyApp
+// ——— قاعدة 31: C1 R3G+R2R+SCALP G+EARLY | C2 BURST+A++ ———
+rule31 = f_use(31, enR31) and wC1R3g and wC1R2r and wC1ScalpG and wC1Early and wC2Burst and wC2BuyApp
+// ——— قاعدة 32: C1 BO+R3G+TREND BUY | C2 TREND BUY+A++ ———
+rule32 = f_use(32, enR32) and wC1Bo and wC1R3g and wC1TrendBuy and wC2TrendBuy and wC2BuyApp
 
 timingOk = not requireConfirmed or barstate.isconfirmed
+f_can(int lastBar) =>
+    (bar_index - lastBar) > cooldownBars
 
-// إطلاق شراء عند تحوّل القاعدة من false → true (مع تبريد مستقل لكل قاعدة)
 var int lastR1 = -9999
 var int lastR2 = -9999
 var int lastR3 = -9999
@@ -983,9 +988,6 @@ var int lastR29 = -9999
 var int lastR30 = -9999
 var int lastR31 = -9999
 var int lastR32 = -9999
-
-f_can(int lastBar) =>
-    (bar_index - lastBar) > cooldownBars
 
 fire1  = rule1  and timingOk and f_can(lastR1)  and not rule1[1]
 fire2  = rule2  and timingOk and f_can(lastR2)  and not rule2[1]
@@ -1073,79 +1075,96 @@ if fire31
 if fire32
     lastR32 := bar_index
 
-buyFire = fire1 or fire2 or fire3 or fire4 or fire5 or fire6 or fire7 or fire8 or fire9 or fire10 or fire11 or fire12 or fire13 or fire14 or fire15 or fire16 or fire19 or fire20 or fire21 or fire22 or fire23 or fire25 or fire27 or fire28 or fire29 or fire30 or fire31 or fire32
+//====================================================================================
+// عرض مستقل + تنبيه مستقل لكل قاعدة
+//====================================================================================
 
-activeRulesText() =>
-    string n = ""
+plotshape(showBuyShapes and fire1,  title="BUY R1",  style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny, text="R1")
+plotshape(showBuyShapes and fire2,  title="BUY R2",  style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny, text="R2")
+plotshape(showBuyShapes and fire3,  title="BUY R3",  style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny, text="R3")
+plotshape(showBuyShapes and fire4,  title="BUY R4",  style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny, text="R4")
+plotshape(showBuyShapes and fire5,  title="BUY R5",  style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny, text="R5")
+plotshape(showBuyShapes and fire6,  title="BUY R6",  style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny, text="R6")
+plotshape(showBuyShapes and fire7,  title="BUY R7",  style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny, text="R7")
+plotshape(showBuyShapes and fire8,  title="BUY R8",  style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny, text="R8")
+plotshape(showBuyShapes and fire9,  title="BUY R9",  style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.tiny, text="R9")
+plotshape(showBuyShapes and fire10, title="BUY R10", style=shape.triangleup, location=location.belowbar, color=color.new(#00c853, 0), size=size.tiny, text="R10")
+plotshape(showBuyShapes and fire11, title="BUY R11", style=shape.triangleup, location=location.belowbar, color=color.new(#00c853, 0), size=size.tiny, text="R11")
+plotshape(showBuyShapes and fire12, title="BUY R12", style=shape.triangleup, location=location.belowbar, color=color.new(#00c853, 0), size=size.tiny, text="R12")
+plotshape(showBuyShapes and fire13, title="BUY R13", style=shape.triangleup, location=location.belowbar, color=color.new(#00c853, 0), size=size.tiny, text="R13")
+plotshape(showBuyShapes and fire14, title="BUY R14", style=shape.triangleup, location=location.belowbar, color=color.new(#00c853, 0), size=size.tiny, text="R14")
+plotshape(showBuyShapes and fire15, title="BUY R15", style=shape.triangleup, location=location.belowbar, color=color.new(#00c853, 0), size=size.tiny, text="R15")
+plotshape(showBuyShapes and fire16, title="BUY R16", style=shape.triangleup, location=location.belowbar, color=color.new(#00c853, 0), size=size.tiny, text="R16")
+plotshape(showBuyShapes and fire19, title="BUY R19", style=shape.triangleup, location=location.belowbar, color=color.new(#69f0ae, 0), size=size.tiny, text="R19")
+plotshape(showBuyShapes and fire20, title="BUY R20", style=shape.triangleup, location=location.belowbar, color=color.new(#69f0ae, 0), size=size.tiny, text="R20")
+plotshape(showBuyShapes and fire21, title="BUY R21", style=shape.triangleup, location=location.belowbar, color=color.new(#69f0ae, 0), size=size.tiny, text="R21")
+plotshape(showBuyShapes and fire22, title="BUY R22", style=shape.triangleup, location=location.belowbar, color=color.new(#69f0ae, 0), size=size.tiny, text="R22")
+plotshape(showBuyShapes and fire23, title="BUY R23", style=shape.triangleup, location=location.belowbar, color=color.new(#69f0ae, 0), size=size.tiny, text="R23")
+plotshape(showBuyShapes and fire25, title="BUY R25", style=shape.triangleup, location=location.belowbar, color=color.new(#b9f6ca, 0), size=size.tiny, text="R25")
+plotshape(showBuyShapes and fire27, title="BUY R27", style=shape.triangleup, location=location.belowbar, color=color.new(#b9f6ca, 0), size=size.tiny, text="R27")
+plotshape(showBuyShapes and fire28, title="BUY R28", style=shape.triangleup, location=location.belowbar, color=color.new(#b9f6ca, 0), size=size.tiny, text="R28")
+plotshape(showBuyShapes and fire29, title="BUY R29", style=shape.triangleup, location=location.belowbar, color=color.new(#b9f6ca, 0), size=size.tiny, text="R29")
+plotshape(showBuyShapes and fire30, title="BUY R30", style=shape.triangleup, location=location.belowbar, color=color.new(#b9f6ca, 0), size=size.tiny, text="R30")
+plotshape(showBuyShapes and fire31, title="BUY R31", style=shape.triangleup, location=location.belowbar, color=color.new(#b9f6ca, 0), size=size.tiny, text="R31")
+plotshape(showBuyShapes and fire32, title="BUY R32", style=shape.triangleup, location=location.belowbar, color=color.new(#b9f6ca, 0), size=size.tiny, text="R32")
+
+if showBuyLabels
     if fire1
-        n += "R1 "
+        label.new(bar_index, low, "🟢 BUY R1", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire2
-        n += "R2 "
+        label.new(bar_index, low, "🟢 BUY R2", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire3
-        n += "R3 "
+        label.new(bar_index, low, "🟢 BUY R3", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire4
-        n += "R4 "
+        label.new(bar_index, low, "🟢 BUY R4", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire5
-        n += "R5 "
+        label.new(bar_index, low, "🟢 BUY R5", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire6
-        n += "R6 "
+        label.new(bar_index, low, "🟢 BUY R6", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire7
-        n += "R7 "
+        label.new(bar_index, low, "🟢 BUY R7", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire8
-        n += "R8 "
+        label.new(bar_index, low, "🟢 BUY R8", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire9
-        n += "R9 "
+        label.new(bar_index, low, "🟢 BUY R9", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire10
-        n += "R10 "
+        label.new(bar_index, low, "🟢 BUY R10", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire11
-        n += "R11 "
+        label.new(bar_index, low, "🟢 BUY R11", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire12
-        n += "R12 "
+        label.new(bar_index, low, "🟢 BUY R12", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire13
-        n += "R13 "
+        label.new(bar_index, low, "🟢 BUY R13", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire14
-        n += "R14 "
+        label.new(bar_index, low, "🟢 BUY R14", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire15
-        n += "R15 "
+        label.new(bar_index, low, "🟢 BUY R15", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire16
-        n += "R16 "
+        label.new(bar_index, low, "🟢 BUY R16", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire19
-        n += "R19 "
+        label.new(bar_index, low, "🟢 BUY R19", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire20
-        n += "R20 "
+        label.new(bar_index, low, "🟢 BUY R20", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire21
-        n += "R21 "
+        label.new(bar_index, low, "🟢 BUY R21", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire22
-        n += "R22 "
+        label.new(bar_index, low, "🟢 BUY R22", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire23
-        n += "R23 "
+        label.new(bar_index, low, "🟢 BUY R23", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire25
-        n += "R25 "
+        label.new(bar_index, low, "🟢 BUY R25", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire27
-        n += "R27 "
+        label.new(bar_index, low, "🟢 BUY R27", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire28
-        n += "R28 "
+        label.new(bar_index, low, "🟢 BUY R28", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire29
-        n += "R29 "
+        label.new(bar_index, low, "🟢 BUY R29", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire30
-        n += "R30 "
+        label.new(bar_index, low, "🟢 BUY R30", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire31
-        n += "R31 "
+        label.new(bar_index, low, "🟢 BUY R31", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
     if fire32
-        n += "R32 "
-    n
-
-//====================================================================================
-// Visuals — BUY
-//====================================================================================
-
-plotshape(showBuyShapes and buyFire, title="BUY", style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.normal, text="BUY")
-
-// لابل شراء مستقل لكل قاعدة تتحقق
-if showBuyLabels and buyFire
-    label.new(bar_index, low - atr14 * 0.7, "🟢 BUY\n" + activeRulesText(), style=label.style_label_up, color=color.new(#1b5e20, 10), textcolor=color.white, size=size.normal)
-
-bgcolor(buyFire ? color.new(#00e676, 88) : na, title="Buy Flash")
+        label.new(bar_index, low, "🟢 BUY R32", style=label.style_label_up, color=color.new(#1b5e20, 15), textcolor=color.white, size=size.small)
 
 f_ruleRow(table tbl, int row, string name, bool on) =>
     table.cell(tbl, 0, row, name, text_color=color.gray, text_size=size.tiny)
@@ -1182,16 +1201,93 @@ if showRuleTable and barstate.islast
     f_ruleRow(t, 25, "R29", rule29)
     f_ruleRow(t, 26, "R30", rule30)
     f_ruleRow(t, 27, "R31", rule31)
-    table.cell(t, 0, 28, "R32 / BUY", text_color=color.silver, text_size=size.tiny)
-    table.cell(t, 1, 28, (rule32 ? "✅ " : "· ") + (buyFire ? "🟢" : ""), text_color=buyFire ? color.lime : color.gray, text_size=size.tiny)
-    table.cell(t, 0, 29, "Win", text_color=color.gray, text_size=size.tiny)
-    table.cell(t, 1, 29, str.tostring(lookbackBars), text_color=color.gray, text_size=size.tiny)
+    f_ruleRow(t, 28, "R32", rule32)
+    table.cell(t, 0, 29, singleRuleMode ? "MODE:1" : "MODE:ALL", text_color=color.silver, text_size=size.tiny)
+    table.cell(t, 1, 29, singleRuleMode ? str.tostring(singleRuleNum) : "ALL", text_color=color.gray, text_size=size.tiny)
 
-//====================================================================================
-// Alerts — BUY
-//====================================================================================
+// تنبيه مستقل لكل قاعدة
+alertcondition(fire1,  "🟢 BUY R1",  "BUY Rule 1")
+alertcondition(fire2,  "🟢 BUY R2",  "BUY Rule 2")
+alertcondition(fire3,  "🟢 BUY R3",  "BUY Rule 3")
+alertcondition(fire4,  "🟢 BUY R4",  "BUY Rule 4")
+alertcondition(fire5,  "🟢 BUY R5",  "BUY Rule 5")
+alertcondition(fire6,  "🟢 BUY R6",  "BUY Rule 6")
+alertcondition(fire7,  "🟢 BUY R7",  "BUY Rule 7")
+alertcondition(fire8,  "🟢 BUY R8",  "BUY Rule 8")
+alertcondition(fire9,  "🟢 BUY R9",  "BUY Rule 9")
+alertcondition(fire10, "🟢 BUY R10", "BUY Rule 10")
+alertcondition(fire11, "🟢 BUY R11", "BUY Rule 11")
+alertcondition(fire12, "🟢 BUY R12", "BUY Rule 12")
+alertcondition(fire13, "🟢 BUY R13", "BUY Rule 13")
+alertcondition(fire14, "🟢 BUY R14", "BUY Rule 14")
+alertcondition(fire15, "🟢 BUY R15", "BUY Rule 15")
+alertcondition(fire16, "🟢 BUY R16", "BUY Rule 16")
+alertcondition(fire19, "🟢 BUY R19", "BUY Rule 19")
+alertcondition(fire20, "🟢 BUY R20", "BUY Rule 20")
+alertcondition(fire21, "🟢 BUY R21", "BUY Rule 21")
+alertcondition(fire22, "🟢 BUY R22", "BUY Rule 22")
+alertcondition(fire23, "🟢 BUY R23", "BUY Rule 23")
+alertcondition(fire25, "🟢 BUY R25", "BUY Rule 25")
+alertcondition(fire27, "🟢 BUY R27", "BUY Rule 27")
+alertcondition(fire28, "🟢 BUY R28", "BUY Rule 28")
+alertcondition(fire29, "🟢 BUY R29", "BUY Rule 29")
+alertcondition(fire30, "🟢 BUY R30", "BUY Rule 30")
+alertcondition(fire31, "🟢 BUY R31", "BUY Rule 31")
+alertcondition(fire32, "🟢 BUY R32", "BUY Rule 32")
 
-alertcondition(buyFire, title="🟢 BUY Confluence", message="Buy Confluence rule fired on {{ticker}} {{interval}}")
-
-if buyFire
-    alert("🟢 BUY: " + activeRulesText() + "| " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire1
+    alert("🟢 BUY R1 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire2
+    alert("🟢 BUY R2 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire3
+    alert("🟢 BUY R3 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire4
+    alert("🟢 BUY R4 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire5
+    alert("🟢 BUY R5 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire6
+    alert("🟢 BUY R6 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire7
+    alert("🟢 BUY R7 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire8
+    alert("🟢 BUY R8 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire9
+    alert("🟢 BUY R9 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire10
+    alert("🟢 BUY R10 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire11
+    alert("🟢 BUY R11 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire12
+    alert("🟢 BUY R12 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire13
+    alert("🟢 BUY R13 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire14
+    alert("🟢 BUY R14 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire15
+    alert("🟢 BUY R15 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire16
+    alert("🟢 BUY R16 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire19
+    alert("🟢 BUY R19 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire20
+    alert("🟢 BUY R20 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire21
+    alert("🟢 BUY R21 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire22
+    alert("🟢 BUY R22 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire23
+    alert("🟢 BUY R23 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire25
+    alert("🟢 BUY R25 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire27
+    alert("🟢 BUY R27 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire28
+    alert("🟢 BUY R28 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire29
+    alert("🟢 BUY R29 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire30
+    alert("🟢 BUY R30 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire31
+    alert("🟢 BUY R31 | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if fire32
+    alert("🟢 BUY R32 | " + syminfo.ticker, alert.freq_once_per_bar_close)
