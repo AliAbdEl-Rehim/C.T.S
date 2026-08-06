@@ -1,0 +1,1053 @@
+//@version=6
+indicator("Sell Confluence Rules • C1+C2", shorttitle="Sell Confluence", overlay=true, max_labels_count=500, max_lines_count=200, max_bars_back=500)
+
+//====================================================================================
+// SELL when ANY registered rule's components are true within a lookback window.
+// Rules collected: 1–16, 19–23, 25, 27–32 (17/18/24/26 reserved for later).
+// C1 = All-in-One PreBO signals | C2 = Buy/Sell Div Pro + EGX Boost signals
+//====================================================================================
+
+grpWin = "⏱ Confluence Window"
+lookbackBars = input.int(8, "نافذة التقاء الإشارات (شموع)", minval=1, maxval=50, group=grpWin)
+cooldownBars = input.int(3, "تبريد بين إشارات البيع", minval=0, maxval=50, group=grpWin)
+requireConfirmed = input.bool(true, "تأكيد على إغلاق الشمعة", group=grpWin)
+
+grpShow = "👁 Display"
+showSellLabels = input.bool(true, "عرض لابل البيع", group=grpShow)
+showSellShapes = input.bool(true, "عرض سهم بيع", group=grpShow)
+showRuleTable = input.bool(true, "لوحة القواعد النشطة", group=grpShow)
+showComponents = input.bool(false, "عرض مكوّنات الإشارة (تشخيص)", group=grpShow)
+
+grpRules = "✅ تفعيل القواعد"
+enR1  = input.bool(true, "R1  C1: BUY A+ + HB", group=grpRules)
+enR2  = input.bool(true, "R2  C1: BO+R3+BREAKOUT | C2: A+++LIMIT+BURST+TREND BUY", group=grpRules)
+enR3  = input.bool(true, "R3  C1: PREBO + R2", group=grpRules)
+enR4  = input.bool(true, "R4  C1: TREND SELL+SCALP+BUY A++B+BD | C2: LIMIT", group=grpRules)
+enR5  = input.bool(true, "R5  C1: BREAKOUT | C2: BUY B", group=grpRules)
+enR6  = input.bool(true, "R6  C1: BO+SCALP+BOUT+TREND+EARLY | C2: A+++LIMIT+BURST+TREND", group=grpRules)
+enR7  = input.bool(true, "R7  C1: BO+TREND BUY+EARLY | C2: EARLY SELL+LIMIT+BUY B", group=grpRules)
+enR8  = input.bool(true, "R8  BREAKOUT + BUY B", group=grpRules)
+enR9  = input.bool(true, "R9  C1: R2RED+R2GREEN+BUY A+ | C2: TREND BUY", group=grpRules)
+enR10 = input.bool(true, "R10 C1: BO+BREAKOUT | C2: BUY B", group=grpRules)
+enR11 = input.bool(true, "R11 C1: SCALP RED + BUY A+", group=grpRules)
+enR12 = input.bool(true, "R12 C1: SCALP GREEN + EARLY BUY", group=grpRules)
+enR13 = input.bool(true, "R13 C2: EARLY BUY + BUY A+", group=grpRules)
+enR14 = input.bool(true, "R14 C1: B×2 + R2 | C2: TREND SELL", group=grpRules)
+enR15 = input.bool(true, "R15 C1 TREND SELL + C2 TREND SELL", group=grpRules)
+enR16 = input.bool(true, "R16 C1: BO+SCALP GREEN+PREBO | C2: TREND BUY", group=grpRules)
+enR19 = input.bool(true, "R19 C1: TREND SELL+SCALP RED+R3+BUY A++HB | C2: EARLY BUY", group=grpRules)
+enR20 = input.bool(true, "R20 C1: BO+SCALP+BOUT+TREND | C2: A+++BURST+TREND", group=grpRules)
+enR21 = input.bool(true, "R21 C1: BUY A+", group=grpRules)
+enR22 = input.bool(true, "R22 C1: BUY A+ + R2 GREEN", group=grpRules)
+enR23 = input.bool(true, "R23 C1: BO+R2+EARLY | C2: EARLY SELL+LIMIT+BURST+A++", group=grpRules)
+enR25 = input.bool(true, "R25 C1: R1+BUY A++HB | C2: SCALP ▼", group=grpRules)
+enR27 = input.bool(true, "R27 C1: B×2 + BD + R2", group=grpRules)
+enR28 = input.bool(true, "R28 C1: BUY A+ + EARLY BUY", group=grpRules)
+enR29 = input.bool(true, "R29 C1: BUY A+ + R1 + BD", group=grpRules)
+enR30 = input.bool(true, "R30 C1: BO+BOUT+EARLY | C2: LIMIT+BURST+A++", group=grpRules)
+enR31 = input.bool(true, "R31 C1: R3G+R2R+SCALP G+EARLY | C2: BURST+A++", group=grpRules)
+enR32 = input.bool(true, "R32 C1: BO+R3G+TREND BUY | C2: TREND BUY+A++", group=grpRules)
+
+//====================================================================================
+// Shared inputs — Adv Div / EGX / Ichimoku / BSS / C2 Predictor (key params)
+//====================================================================================
+
+groupPivot = "📍 Div Pivot"
+L = input.int(3, "Left bars", minval=1, group=groupPivot)
+rsiLen = input.int(14, "RSI Length", minval=2, group=groupPivot)
+confirmBars = input.int(5, "Confirm window", minval=1, group=groupPivot)
+useStoch = input.bool(true, "Use Stochastic", group=groupPivot)
+stochLen = input.int(14, "Stoch Length", minval=5, group=groupPivot)
+stochOverbought = input.int(80, "Stoch OB", group=groupPivot)
+stochOversold = input.int(20, "Stoch OS", group=groupPivot)
+useFinVol = input.bool(true, "Use Fin Volume", group=groupPivot)
+minVolumeRatio = input.float(1.2, "Min Vol Ratio", group=groupPivot)
+highProbCutoff = input.float(0.70, "High Prob", group=groupPivot)
+medProbCutoff = input.float(0.50, "Med Prob", group=groupPivot)
+useVolatilityFilter = input.bool(true, "ATR Vol Filter", group=groupPivot)
+useTrendFilter = input.bool(true, "Trend Filter", group=groupPivot)
+trendThreshold = input.float(0.6, "Trend Strength", group=groupPivot)
+
+groupBurst = "🚀 EGX (C2)"
+useBurstFilter = input.bool(true, "Burst Filter", group=groupBurst)
+burstLookback = input.int(5, "Burst Lookback", group=groupBurst)
+burstThreshold = input.float(2.5, "Burst Body x", group=groupBurst)
+volumeBurstMult = input.float(2.0, "Burst Vol x", group=groupBurst)
+useLimitFilter = input.bool(true, "Limit Filter", group=groupBurst)
+limitProximity = input.float(0.7, "Limit Proximity", group=groupBurst)
+useAccum = input.bool(true, "Accumulation", group=groupBurst)
+accumPeriod = input.int(10, "Accum Period", group=groupBurst)
+accumThreshold = input.float(1.5, "Accum Threshold", group=groupBurst)
+egxBurstWeight = input.float(1.5, "Burst Weight", group=groupBurst)
+egxLimitWeight = input.float(1.3, "Limit Weight", group=groupBurst)
+egxAccumWeight = input.float(1.2, "Accum Weight", group=groupBurst)
+
+groupEarly = "🌱 Early (C2)"
+useEarlySignal = input.bool(true, "Enable Early", group=groupEarly)
+earlyMinConf = input.int(2, "Early Min Conf", minval=1, maxval=3, group=groupEarly)
+earlyStochMax = input.int(45, "Early Stoch Max", group=groupEarly)
+earlyAccumMin = input.float(1.0, "Early Accum Min", group=groupEarly)
+earlyIgnoreTrend = input.bool(true, "Early Ignore Trend", group=groupEarly)
+earlyCooldown = input.int(5, "Early Cooldown", group=groupEarly)
+earlyConfirmMode = input.bool(false, "Early Confirm Candle", group=groupEarly)
+
+groupIchi = "☁ Ichimoku (C1)"
+conversionPeriods = input.int(9, "Tenkan", group=groupIchi)
+basePeriods = input.int(26, "Kijun", group=groupIchi)
+spanBPeriods = input.int(52, "Senkou B", group=groupIchi)
+displacement = input.int(26, "Displacement", group=groupIchi)
+leftBars = input.int(5, "Div Left", group=groupIchi)
+rightBars = input.int(2, "Div Right", group=groupIchi)
+minBars = input.int(5, "Min Bars Between", group=groupIchi)
+maxBars = input.int(100, "Max Bars Between", group=groupIchi)
+levelPivotLeft = input.int(5, "Level Pivot Left", group=groupIchi)
+levelPivotRight = input.int(2, "Level Pivot Right", group=groupIchi)
+breakBufferATR = input.float(0.05, "Break Buffer ATR", group=groupIchi)
+rejectionToleranceATR = input.float(0.15, "Reject Touch ATR", group=groupIchi)
+minWickATR = input.float(0.10, "Min Reject Wick ATR", group=groupIchi)
+
+grp_st1 = "⚙️ C1 BSS Supertrend"
+c1_atrP1 = input.int(7, "C1 Fast ATR", group=grp_st1)
+c1_fac1 = input.float(1.5, "C1 Fast Factor", group=grp_st1)
+c1_atrP2 = input.int(14, "C1 Med ATR", group=grp_st1)
+c1_fac2 = input.float(2.5, "C1 Med Factor", group=grp_st1)
+c1_atrP3 = input.int(21, "C1 Slow ATR", group=grp_st1)
+c1_fac3 = input.float(3.5, "C1 Slow Factor", group=grp_st1)
+c1_h_len = input.int(30, "C1 HMA", group=grp_st1)
+c1_ema_len = input.int(14, "C1 Scalp EMA", group=grp_st1)
+
+grp_bo = "🔥 C1 Breakout / PreBO"
+lookback = input.int(20, "Breakout Lookback", group=grp_bo)
+breakoutThreshold = input.float(1.5, "Breakout Threshold", group=grp_bo)
+volumeMult = input.float(1.5, "Breakout Vol x", group=grp_bo)
+preboProximity = input.float(85.0, "PreBO Proximity %", group=grp_bo)
+preboSqueezeBars = input.int(5, "PreBO Squeeze Bars", group=grp_bo)
+preboVolAccumMult = input.float(1.2, "PreBO Vol Accum", group=grp_bo)
+preboRSIMin = input.float(45.0, "PreBO RSI Min", group=grp_bo)
+preboRSIMax = input.float(75.0, "PreBO RSI Max", group=grp_bo)
+preboMinScore = input.int(3, "PreBO Min Score", group=grp_bo)
+preboRequireTrend = input.bool(true, "PreBO Require Trend", group=grp_bo)
+preboMaxAtrSqueeze = input.float(0.8, "PreBO Squeeze", group=grp_bo)
+
+grp_st2 = "🏷️ C2 Predictor Supertrend"
+c2_atrP1 = input.int(1, "C2 Fast ATR", group=grp_st2)
+c2_fac1 = input.float(1.0, "C2 Fast Factor", group=grp_st2)
+c2_atrP2 = input.int(2, "C2 Med ATR", group=grp_st2)
+c2_fac2 = input.float(2.0, "C2 Med Factor", group=grp_st2)
+c2_atrP3 = input.int(3, "C2 Slow ATR", group=grp_st2)
+c2_fac3 = input.float(3.0, "C2 Slow Factor", group=grp_st2)
+c2_h_len = input.int(50, "C2 HMA", group=grp_st2)
+c2_ema_len = input.int(20, "C2 Scalp EMA", group=grp_st2)
+c2_min_signals = input.int(2, "C2 Min Signals", group=grp_st2)
+
+//====================================================================================
+// Helpers
+//====================================================================================
+
+logit(p) =>
+    float denom = 1.0 - p + 0.0001
+    math.log(p / denom)
+
+clamp(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+absI(x) =>
+    x >= 0 ? x : -x
+
+f_state(float cur, float prev) =>
+    na(cur) or na(prev) ? 0 : cur > prev ? 1 : cur < prev ? -1 : 0
+
+recentTrue(bool cond, int n) =>
+    bool ok = cond
+    if n > 0
+        for i = 1 to n
+            ok := ok or cond[i]
+    ok
+
+countTrue(bool cond, int n) =>
+    int c = cond ? 1 : 0
+    if n > 0
+        for i = 1 to n
+            c += cond[i] ? 1 : 0
+    c
+
+edge(bool cond) =>
+    cond and not cond[1]
+
+//====================================================================================
+// EGX helpers (C2)
+//====================================================================================
+
+f_burstFilter() =>
+    realBody = math.abs(close - open)
+    avgBody = ta.sma(realBody, burstLookback)
+    bodyRatio = realBody / (avgBody > 0 ? avgBody : syminfo.mintick)
+    volumeRatio = volume / ta.sma(volume, 20)
+    isStrongBullish = close > open and bodyRatio >= burstThreshold and volumeRatio >= volumeBurstMult
+    isStrongBearish = close < open and bodyRatio >= burstThreshold and volumeRatio >= volumeBurstMult
+    [isStrongBullish, isStrongBearish, bodyRatio, volumeRatio]
+
+f_limitFilter() =>
+    prevClose = close[1]
+    limitUpPrice = prevClose * 1.10
+    limitDownPrice = prevClose * 0.90
+    upProgress = (close - prevClose) / (limitUpPrice - prevClose + 0.0001)
+    downProgress = (prevClose - close) / (prevClose - limitDownPrice + 0.0001)
+    nearLimitUp = upProgress >= limitProximity
+    nearLimitDown = downProgress >= limitProximity
+    [nearLimitUp, nearLimitDown, upProgress, downProgress]
+
+f_smartAccumulation() =>
+    buyingPressure = (close - low) / (high - low + 0.0001)
+    sellingPressure = (high - close) / (high - low + 0.0001)
+    accumulationIndex = ta.ema(buyingPressure * volume, accumPeriod)
+    distributionIndex = ta.ema(sellingPressure * volume, accumPeriod)
+    accumRatio = accumulationIndex / (distributionIndex + 0.0001)
+    isAccumulating = accumRatio >= accumThreshold
+    [isAccumulating, accumRatio]
+
+[isStrongBullish, isStrongBearish, bodyRatio, volumeRatio] = f_burstFilter()
+[nearLimitUp, nearLimitDown, upProgress, downProgress] = f_limitFilter()
+[isAccumulating, accumRatio] = f_smartAccumulation()
+
+//====================================================================================
+// Base series + trend filter (shared for divergences)
+//====================================================================================
+
+const int BIG = 10000000
+atr14 = ta.atr(14)
+atrSmooth = ta.ema(atr14, 20)
+volatilityRegime = atr14 / atrSmooth
+isVolatile = volatilityRegime > 1.2
+isCalm = volatilityRegime < 0.8
+
+rsi_div = ta.rsi(close, rsiLen)
+var float obv = 0.0
+float delta = close > close[1] ? volume : close < close[1] ? -volume : 0.0
+obv := nz(obv[1], 0) + delta
+obv_smooth = ta.ema(obv, 5)
+stochK = ta.sma(ta.stoch(close, high, low, stochLen), 3)
+float finVol = close * volume
+finVolMA = ta.sma(finVol, 20)
+volumeStrong = finVol > finVolMA * minVolumeRatio
+
+calcADX(len) =>
+    float up = ta.change(high)
+    float down = -ta.change(low)
+    float plusDM = na(up) ? na : (up > down and up > 0 ? up : 0.0)
+    float minusDM = na(down) ? na : (down > up and down > 0 ? down : 0.0)
+    float tr = ta.tr(true)
+    float plusDI = 100 * ta.rma(plusDM, len) / ta.rma(tr, len)
+    float minusDI = 100 * ta.rma(minusDM, len) / ta.rma(tr, len)
+    float adx = 100 * ta.rma(math.abs(plusDI - minusDI) / (plusDI + minusDI), len)
+    [plusDI, minusDI, adx]
+
+[diPlus, diMinus, adxValue] = calcADX(14)
+adxStrength = adxValue > 25 ? 0.7 : adxValue > 20 ? 0.5 : 0.3
+adxDirection = diPlus > diMinus ? 1 : -1
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+maTrend = (ema20 > ema50 ? 1 : -1) + (ema20 > ema100 ? 1 : -1) + (ema50 > ema100 ? 1 : -1)
+maTrendStrength = maTrend / 3.0
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+macdTrend = macdLine > signalLine ? 1 : -1
+macdHistogramStrength = math.abs(macdLine - signalLine) / atr14 * 10
+macdStrength = math.min(0.8, macdHistogramStrength)
+bbMiddle = ta.sma(close, 20)
+bbUpper = bbMiddle + ta.stdev(close, 20) * 2
+bbLower = bbMiddle - ta.stdev(close, 20) * 2
+bbPosition = (close - bbLower) / (bbUpper - bbLower)
+bbTrend = bbPosition > 0.7 ? 1 : bbPosition < 0.3 ? -1 : 0
+
+var float trendStrengthValue = 0.0
+var int overallTrend = 0
+if useTrendFilter
+    float uptrendVotes = 0.0
+    float downtrendVotes = 0.0
+    if maTrendStrength > 0.2
+        uptrendVotes += math.abs(maTrendStrength)
+    else if maTrendStrength < -0.2
+        downtrendVotes += math.abs(maTrendStrength)
+    if adxDirection == 1 and adxStrength > 0.4
+        uptrendVotes += adxStrength
+    else if adxDirection == -1 and adxStrength > 0.4
+        downtrendVotes += adxStrength
+    if macdTrend == 1 and macdStrength > 0.3
+        uptrendVotes += macdStrength
+    else if macdTrend == -1 and macdStrength > 0.3
+        downtrendVotes += macdStrength
+    if bbTrend == 1
+        uptrendVotes += 0.5
+    else if bbTrend == -1
+        downtrendVotes += 0.5
+    float totalVotes = uptrendVotes + downtrendVotes
+    if totalVotes > 0
+        if uptrendVotes > downtrendVotes
+            overallTrend := 1
+            trendStrengthValue := uptrendVotes / totalVotes
+        else if downtrendVotes > uptrendVotes
+            overallTrend := -1
+            trendStrengthValue := downtrendVotes / totalVotes
+        else
+            overallTrend := 0
+            trendStrengthValue := 0.5
+    else
+        overallTrend := 0
+        trendStrengthValue := 0.5
+    trendStrengthValue := ta.ema(trendStrengthValue, 5)
+else
+    overallTrend := 0
+    trendStrengthValue := 0.5
+
+isStrongUptrend = overallTrend == 1 and trendStrengthValue >= trendThreshold
+isStrongDowntrend = overallTrend == -1 and trendStrengthValue >= trendThreshold
+allowBuySignals = not useTrendFilter or not isStrongDowntrend
+allowSellSignals = not useTrendFilter or not isStrongUptrend
+isUptrend = ema20 > ema50
+isDowntrend = ema20 < ema50
+
+//====================================================================================
+// Fast pivots (shared)
+//====================================================================================
+
+isPeakPrice = high == ta.highest(high, L)
+isPeakRSI = rsi_div == ta.highest(rsi_div, L)
+isPeakOBV = obv_smooth == ta.highest(obv_smooth, L)
+isPeakVol = finVol == ta.highest(finVol, L)
+isPeakStoch = stochK == ta.highest(stochK, L)
+isTroughPrice = low == ta.lowest(low, L)
+isTroughRSI = rsi_div == ta.lowest(rsi_div, L)
+isTroughOBV = obv_smooth == ta.lowest(obv_smooth, L)
+isTroughVol = finVol == ta.lowest(finVol, L)
+isTroughStoch = stochK == ta.lowest(stochK, L)
+
+var float priceHigh1 = na
+var float priceHigh2 = na
+var int priceHBar1 = na
+var int priceHBar2 = na
+var float rsiHigh1 = na
+var float rsiHigh2 = na
+var int rsiHBar1 = na
+var int rsiHBar2 = na
+var float obvHigh1 = na
+var float obvHigh2 = na
+var int obvHBar1 = na
+var int obvHBar2 = na
+var float finVolHigh1 = na
+var float finVolHigh2 = na
+var int finVolHBar1 = na
+var int finVolHBar2 = na
+var float stochHigh1 = na
+var float stochHigh2 = na
+var int stochHBar1 = na
+var int stochHBar2 = na
+var float priceLow1 = na
+var float priceLow2 = na
+var int priceLBar1 = na
+var int priceLBar2 = na
+var float rsiLow1 = na
+var float rsiLow2 = na
+var int rsiLBar1 = na
+var int rsiLBar2 = na
+var float obvLow1 = na
+var float obvLow2 = na
+var int obvLBar1 = na
+var int obvLBar2 = na
+var float finVolLow1 = na
+var float finVolLow2 = na
+var int finVolLBar1 = na
+var int finVolLBar2 = na
+var float stochLow1 = na
+var float stochLow2 = na
+var int stochLBar1 = na
+var int stochLBar2 = na
+
+if isPeakPrice
+    priceHigh2 := priceHigh1
+    priceHBar2 := priceHBar1
+    priceHigh1 := high
+    priceHBar1 := bar_index
+if isPeakRSI
+    rsiHigh2 := rsiHigh1
+    rsiHBar2 := rsiHBar1
+    rsiHigh1 := rsi_div
+    rsiHBar1 := bar_index
+if isPeakOBV
+    obvHigh2 := obvHigh1
+    obvHBar2 := obvHBar1
+    obvHigh1 := obv_smooth
+    obvHBar1 := bar_index
+if isPeakVol
+    finVolHigh2 := finVolHigh1
+    finVolHBar2 := finVolHBar1
+    finVolHigh1 := finVol
+    finVolHBar1 := bar_index
+if isPeakStoch
+    stochHigh2 := stochHigh1
+    stochHBar2 := stochHBar1
+    stochHigh1 := stochK
+    stochHBar1 := bar_index
+if isTroughPrice
+    priceLow2 := priceLow1
+    priceLBar2 := priceLBar1
+    priceLow1 := low
+    priceLBar1 := bar_index
+if isTroughRSI
+    rsiLow2 := rsiLow1
+    rsiLBar2 := rsiLBar1
+    rsiLow1 := rsi_div
+    rsiLBar1 := bar_index
+if isTroughOBV
+    obvLow2 := obvLow1
+    obvLBar2 := obvLBar1
+    obvLow1 := obv_smooth
+    obvLBar1 := bar_index
+if isTroughVol
+    finVolLow2 := finVolLow1
+    finVolLBar2 := finVolLBar1
+    finVolLow1 := finVol
+    finVolLBar1 := bar_index
+if isTroughStoch
+    stochLow2 := stochLow1
+    stochLBar2 := stochLBar1
+    stochLow1 := stochK
+    stochLBar1 := bar_index
+
+statePriceTop = f_state(priceHigh1, priceHigh2)
+stateRSITop = f_state(rsiHigh1, rsiHigh2)
+stateOBVTop = f_state(obvHigh1, obvHigh2)
+stateVolTop = f_state(finVolHigh1, finVolHigh2)
+stateStochTop = f_state(stochHigh1, stochHigh2)
+distTopRSI = not na(priceHBar1) and not na(rsiHBar1) ? absI(priceHBar1 - rsiHBar1) : BIG
+distTopOBV = not na(priceHBar1) and not na(obvHBar1) ? absI(priceHBar1 - obvHBar1) : BIG
+distTopVol = not na(priceHBar1) and not na(finVolHBar1) ? absI(priceHBar1 - finVolHBar1) : BIG
+distTopStoch = not na(priceHBar1) and not na(stochHBar1) ? absI(priceHBar1 - stochHBar1) : BIG
+timeTopRSI = distTopRSI <= confirmBars
+timeTopOBV = distTopOBV <= confirmBars
+timeTopVol = distTopVol <= confirmBars
+timeTopStoch = distTopStoch <= confirmBars
+
+statePriceLow = f_state(priceLow1, priceLow2)
+stateRSILow = f_state(rsiLow1, rsiLow2)
+stateOBVLow = f_state(obvLow1, obvLow2)
+stateVolLow = f_state(finVolLow1, finVolLow2)
+stateStochLow = f_state(stochLow1, stochLow2)
+distLowRSI = not na(priceLBar1) and not na(rsiLBar1) ? absI(priceLBar1 - rsiLBar1) : BIG
+distLowOBV = not na(priceLBar1) and not na(obvLBar1) ? absI(priceLBar1 - obvLBar1) : BIG
+distLowVol = not na(priceLBar1) and not na(finVolLBar1) ? absI(priceLBar1 - finVolLBar1) : BIG
+distLowStoch = not na(priceLBar1) and not na(stochLBar1) ? absI(priceLBar1 - stochLBar1) : BIG
+timeLowRSI = distLowRSI <= confirmBars
+timeLowOBV = distLowOBV <= confirmBars
+timeLowVol = distLowVol <= confirmBars
+timeLowStoch = distLowStoch <= confirmBars
+
+//====================================================================================
+// C1 AdvDiv score (no EGX) + C2 EGX score
+//====================================================================================
+
+getTierC1(score, isBearish) =>
+    highScore = score >= highProbCutoff
+    medScore = score >= medProbCutoff
+    hasMultipleConf = (timeTopRSI and timeTopOBV) or (timeLowRSI and timeLowOBV)
+    hasStochConf = useStoch ? (isBearish ? timeTopStoch : timeLowStoch) : false
+    hasVolConf = useFinVol ? (isBearish ? timeTopVol : timeLowVol) : false
+    if highScore and hasMultipleConf and (hasStochConf or hasVolConf)
+        "A+"
+    else if highScore and (hasMultipleConf or hasStochConf or hasVolConf)
+        "A"
+    else if medScore
+        "B"
+    else
+        "C"
+
+getTierC2(score, isBearish) =>
+    highScore = score >= highProbCutoff
+    medScore = score >= medProbCutoff
+    hasMultipleConf = (timeTopRSI and timeTopOBV) or (timeLowRSI and timeLowOBV)
+    hasStochConf = useStoch ? (isBearish ? timeTopStoch : timeLowStoch) : false
+    hasVolConf = useFinVol ? (isBearish ? timeTopVol : timeLowVol) : false
+    hasBurst = useBurstFilter ? (isBearish ? isStrongBearish : isStrongBullish) : false
+    hasLimit = useLimitFilter ? (isBearish ? nearLimitDown : nearLimitUp) : false
+    hasAccumEGX = useAccum ? (isBearish ? false : isAccumulating) : false
+    if score >= 0.85 and hasMultipleConf and hasBurst and (hasLimit or hasAccumEGX)
+        "A++"
+    else if highScore and hasMultipleConf and (hasStochConf or hasVolConf or hasBurst)
+        "A+"
+    else if highScore and (hasMultipleConf or hasStochConf or hasVolConf or hasBurst)
+        "A"
+    else if medScore
+        "B"
+    else
+        "C"
+
+calcBullishScoreC1() =>
+    f1 = (statePriceLow == -1 and stateRSILow >= 0) ? (stateRSILow == 1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceLow == -1 and stateOBVLow >= 0) ? (stateOBVLow == 1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeLowStoch
+        if stochK < stochOversold and stateStochLow >= 0
+            f3 := 0.75
+        else if stochK < stochOversold
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeLowVol
+        if stateVolLow >= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolLow >= 0
+            f4 := 0.55
+    f5 = isDowntrend ? 0.35 : isUptrend ? 0.75 : 0.50
+    f6 = timeLowRSI and timeLowOBV ? 0.85 : timeLowRSI or timeLowOBV ? 0.65 : 0.50
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeLowRSI ? 1 : 0) + (timeLowOBV ? 1 : 0) + (timeLowVol and useFinVol ? 1 : 0) + (timeLowStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 1.2 * logit(clamp(f2, 0.1, 0.9)) + 1.0 * logit(clamp(f3, 0.1, 0.9)) + 0.8 * logit(clamp(f4, 0.1, 0.9)) + 1.1 * logit(clamp(f5, 0.1, 0.9)) + 1.4 * logit(clamp(f6, 0.1, 0.9)) + 0.9 * logit(clamp(f7, 0.1, 0.9)) + 1.0 * logit(clamp(f8, 0.1, 0.9))
+    clamp(1.0 / (1.0 + math.exp(-(-0.50 + ll))), 0.05, 0.92)
+
+calcBullishScoreC2() =>
+    f1 = (statePriceLow == -1 and stateRSILow >= 0) ? (stateRSILow == 1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceLow == -1 and stateOBVLow >= 0) ? (stateOBVLow == 1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeLowStoch
+        if stochK < stochOversold and stateStochLow >= 0
+            f3 := 0.75
+        else if stochK < stochOversold
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeLowVol
+        if stateVolLow >= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolLow >= 0
+            f4 := 0.55
+    f5 = isDowntrend ? 0.35 : isUptrend ? 0.75 : 0.50
+    f6 = timeLowRSI and timeLowOBV ? 0.85 : timeLowRSI or timeLowOBV ? 0.65 : 0.50
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeLowRSI ? 1 : 0) + (timeLowOBV ? 1 : 0) + (timeLowVol and useFinVol ? 1 : 0) + (timeLowStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+    f_egx1 = useBurstFilter and isStrongBullish ? 0.90 : 0.25
+    f_egx2 = useLimitFilter and nearLimitUp ? 0.85 : 0.25
+    f_egx3 = useAccum and isAccumulating ? 0.80 : 0.25
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 1.2 * logit(clamp(f2, 0.1, 0.9)) + 1.0 * logit(clamp(f3, 0.1, 0.9)) + 0.8 * logit(clamp(f4, 0.1, 0.9)) + 1.1 * logit(clamp(f5, 0.1, 0.9)) + 1.4 * logit(clamp(f6, 0.1, 0.9)) + 0.9 * logit(clamp(f7, 0.1, 0.9)) + 1.0 * logit(clamp(f8, 0.1, 0.9)) + egxBurstWeight * logit(clamp(f_egx1, 0.1, 0.9)) + egxLimitWeight * logit(clamp(f_egx2, 0.1, 0.9)) + egxAccumWeight * logit(clamp(f_egx3, 0.1, 0.9))
+    clamp(1.0 / (1.0 + math.exp(-(-0.50 + ll))), 0.05, 0.95)
+
+c1BullScore = calcBullishScoreC1()
+c1BullValid = c1BullScore >= medProbCutoff and allowBuySignals
+c1BullTier = getTierC1(c1BullScore, false)
+c1BuyAplus = c1BullValid and c1BullTier == "A+" and (not requireConfirmed or barstate.isconfirmed)
+
+c2BullScore = calcBullishScoreC2()
+c2BullValid = c2BullScore >= medProbCutoff and allowBuySignals
+c2BullTier = getTierC2(c2BullScore, false)
+c2BuyApp = c2BullValid and c2BullTier == "A++" and (not requireConfirmed or barstate.isconfirmed)
+c2BuyAplus = c2BullValid and (c2BullTier == "A+" or c2BullTier == "A++") and (not requireConfirmed or barstate.isconfirmed)
+c2BuyB = c2BullValid and c2BullTier == "B" and (not requireConfirmed or barstate.isconfirmed)
+
+//====================================================================================
+// C2 Early Buy / Early Sell
+//====================================================================================
+
+bool earlyDiverge = statePriceLow == -1 and (stateRSILow >= 0 or stateOBVLow >= 0)
+bool earlyWindow = timeLowRSI and timeLowOBV
+bool earlyOversold = not useStoch or stochK <= earlyStochMax
+bool earlyAccumOK = accumRatio >= earlyAccumMin
+int earlyConfCount = (earlyWindow ? 1 : 0) + (earlyOversold ? 1 : 0) + (earlyAccumOK ? 1 : 0)
+bool earlyTrendOK = earlyIgnoreTrend or allowBuySignals
+bool earlyRaw = useEarlySignal and earlyDiverge and earlyConfCount >= earlyMinConf and earlyTrendOK and not isStrongBullish
+var int lastEarlyBar = -9999
+bool earlyBuyCandidate = earlyRaw and barstate.isconfirmed and (bar_index - lastEarlyBar) > earlyCooldown
+if earlyBuyCandidate
+    lastEarlyBar := bar_index
+bool c2EarlyBuy = earlyConfirmMode ? (earlyBuyCandidate[1] and barstate.isconfirmed and close > close[1]) : earlyBuyCandidate
+
+bool earlySellDiverge = statePriceTop == 1 and (stateRSITop <= 0 or stateOBVTop <= 0)
+bool earlySellWindow = timeTopRSI and timeTopOBV
+bool earlyOverbought = not useStoch or stochK >= (100 - earlyStochMax)
+bool earlyDistOK = accumRatio <= 1.0 / earlyAccumMin
+int earlySellConfCount = (earlySellWindow ? 1 : 0) + (earlyOverbought ? 1 : 0) + (earlyDistOK ? 1 : 0)
+bool earlySellTrendOK = earlyIgnoreTrend or allowSellSignals
+bool earlySellRaw = useEarlySignal and earlySellDiverge and earlySellConfCount >= earlyMinConf and earlySellTrendOK and not isStrongBearish
+var int lastEarlySellBar = -9999
+bool earlySellCandidate = earlySellRaw and barstate.isconfirmed and (bar_index - lastEarlySellBar) > earlyCooldown
+if earlySellCandidate
+    lastEarlySellBar := bar_index
+bool c2EarlySell = earlyConfirmMode ? (earlySellCandidate[1] and barstate.isconfirmed and close < close[1]) : earlySellCandidate
+
+c2Limit = useLimitFilter and (nearLimitUp or nearLimitDown)
+c2Burst = useBurstFilter and (isStrongBullish or isStrongBearish)
+c2BurstBull = useBurstFilter and isStrongBullish
+
+//====================================================================================
+// C2 Predictor (separate ST/HMA defaults)
+//====================================================================================
+
+[c2st1, c2dir1] = ta.supertrend(c2_fac1, c2_atrP1)
+[c2st2, c2dir2] = ta.supertrend(c2_fac2, c2_atrP2)
+[c2st3, c2dir3] = ta.supertrend(c2_fac3, c2_atrP3)
+c2_hybrid_green = c2dir1 < 0 and c2dir2 < 0 and c2dir3 < 0
+c2_hybrid_red = c2dir1 > 0 and c2dir2 > 0 and c2dir3 > 0
+c2_hma = ta.hma(close, c2_h_len)
+c2_ema_high = ta.ema(high, c2_ema_len)
+c2_ema_low = ta.ema(low, c2_ema_len)
+c2_hma_green = c2_hma > c2_hma[1]
+c2_hma_red = c2_hma < c2_hma[1]
+c2_trend_buy = c2_hybrid_green and c2_hma_green
+c2_trend_sell = c2_hybrid_red and c2_hma_red
+c2_scalp_buy = ta.crossover(close, c2_ema_high)
+c2_scalp_sell = ta.crossunder(close, c2_ema_low)
+
+//====================================================================================
+// C1 BSS Supertrend / Breakout / PreBO / Early
+//====================================================================================
+
+[c1st1, c1dir1] = ta.supertrend(c1_fac1, c1_atrP1)
+[c1st2, c1dir2] = ta.supertrend(c1_fac2, c1_atrP2)
+[c1st3, c1dir3] = ta.supertrend(c1_fac3, c1_atrP3)
+c1_hybrid_green = c1dir1 < 0 and c1dir2 < 0 and c1dir3 < 0
+c1_hybrid_red = c1dir1 > 0 and c1dir2 > 0 and c1dir3 > 0
+c1_hma = ta.hma(close, c1_h_len)
+c1_ema_high = ta.ema(high, c1_ema_len)
+c1_ema_low = ta.ema(low, c1_ema_len)
+c1_hma_green = c1_hma > c1_hma[1]
+c1_hma_red = c1_hma < c1_hma[1]
+c1_trend_buy = c1_hybrid_green and c1_hma_green
+c1_trend_sell = c1_hybrid_red and c1_hma_red
+c1_scalp_buy = ta.crossover(close, c1_ema_high)
+c1_scalp_sell = ta.crossunder(close, c1_ema_low)
+
+highestHigh = ta.highest(high, lookback)
+lowestLow = ta.lowest(low, lookback)
+breakoutSize = close - highestHigh[1]
+breakdownSize = lowestLow[1] - close
+breakoutRatio = breakoutSize / atr14
+isBreakout = close > highestHigh[1] and breakoutRatio >= breakoutThreshold
+volumeMa = ta.sma(volume, 20)
+volumeSpike = volume > volumeMa * volumeMult
+c1_breakout = isBreakout and volumeSpike
+
+resistanceLevel = highestHigh[1]
+supportLevel = lowestLow[1]
+pricePosition = (close - supportLevel) / (resistanceLevel - supportLevel + syminfo.mintick) * 100
+nearResistance = pricePosition >= preboProximity and pricePosition < 100
+recentRange = ta.highest(high, preboSqueezeBars) - ta.lowest(low, preboSqueezeBars)
+avgRange = ta.sma(high - low, preboSqueezeBars)
+isSqueezed = recentRange <= avgRange * preboMaxAtrSqueeze
+volumeAccumulating = volume > volumeMa * preboVolAccumMult
+volumeRising = volume > volume[1] and volume[1] > volume[2]
+rsiVal = ta.rsi(close, 14)
+rsiRising = rsiVal > rsiVal[1]
+rsiInSetupZone = rsiVal >= preboRSIMin and rsiVal <= preboRSIMax and rsiRising
+[bssMacdLine, bssSignalLine, bssHistLine] = ta.macd(close, 12, 26, 9)
+macdImproving = bssHistLine > bssHistLine[1] and bssHistLine[1] > bssHistLine[2]
+candleBody = math.abs(close - open)
+candleRange = high - low
+bodyToRange = candleRange > 0 ? candleBody / candleRange : 0.0
+isSetupCandle = bodyToRange < 0.6 or (close > open and low < open)
+preboScore = 0
+if nearResistance
+    preboScore += 1
+if isSqueezed
+    preboScore += 1
+if volumeAccumulating and volumeRising
+    preboScore += 1
+if rsiInSetupZone
+    preboScore += 1
+if macdImproving
+    preboScore += 1
+if isSetupCandle and nearResistance
+    preboScore += 1
+bssEma50 = ta.ema(close, 50)
+trendOk = not preboRequireTrend or c1_hybrid_green or bssEma50 > bssEma50[1]
+c1_prebo = nearResistance and preboScore >= preboMinScore and trendOk and not isBreakout
+
+rsiOversold = rsiVal < 30
+macdBullish = bssMacdLine > bssSignalLine and bssHistLine > bssHistLine[1]
+bullishReversalCandle = close > open and (close - open) > atr14 * 0.8 and close > close[1] * 1.02
+c1_early_buy =
+     (close < lowestLow[5] and rsiOversold and rsiRising) or
+     (isBreakout and volumeSpike) or
+     (close > close[1] and rsiRising and macdBullish) or
+     (bullishReversalCandle and rsiOversold) or
+     (close > bssEma50 and close[1] <= bssEma50[1] and volumeSpike)
+
+//====================================================================================
+// C1 Ichimoku: B / HB / R1-R3 / BO / BD
+//====================================================================================
+
+middleDonchian(int length) =>
+    (ta.lowest(low, length) + ta.highest(high, length)) / 2.0
+
+tenkan = middleDonchian(conversionPeriods)
+kijun = middleDonchian(basePeriods)
+senkouA = (tenkan + kijun) / 2.0
+senkouB = middleDonchian(spanBPeriods)
+chikou = close
+cloudMid = (senkouA + senkouB) / 2.0
+tkSpread = tenkan - kijun
+cloudThickness = math.abs(senkouA - senkouB)
+
+pivotLow = ta.pivotlow(low, leftBars, rightBars)
+pivotHigh = ta.pivothigh(high, leftBars, rightBars)
+newLowPivot = not na(pivotLow)
+newHighPivot = not na(pivotHigh)
+pivotLowBar = bar_index - rightBars
+pivotHighBar = bar_index - rightBars
+confirmed = not requireConfirmed or barstate.isconfirmed
+
+var float prevLowPrice = na
+var int prevLowBar = na
+var float prevLowMid = na
+var float prevLowTK = na
+var float prevLowThick = na
+var float prevHighPrice = na
+var int prevHighBar = na
+var float prevHighMid = na
+var float prevHighTK = na
+var float prevHighThick = na
+
+bool bullMidReg = false
+bool bullTKReg = false
+bool bullThickReg = false
+bool bullMidHidden = false
+bool bullTKHidden = false
+bool bullThickHidden = false
+
+if newLowPivot and confirmed
+    float currPrice = pivotLow
+    float currMid = cloudMid[rightBars]
+    float currTK = tkSpread[rightBars]
+    float currThick = cloudThickness[rightBars]
+    bool validDistance = not na(prevLowBar) and (pivotLowBar - prevLowBar >= minBars) and (pivotLowBar - prevLowBar <= maxBars)
+    if validDistance
+        bullMidReg := currPrice < prevLowPrice and currMid > prevLowMid
+        bullTKReg := currPrice < prevLowPrice and currTK > prevLowTK
+        bullThickReg := currPrice < prevLowPrice and currThick > prevLowThick
+        bullMidHidden := currPrice > prevLowPrice and currMid < prevLowMid
+        bullTKHidden := currPrice > prevLowPrice and currTK < prevLowTK
+        bullThickHidden := currPrice > prevLowPrice and currThick < prevLowThick
+    prevLowPrice := currPrice
+    prevLowBar := pivotLowBar
+    prevLowMid := currMid
+    prevLowTK := currTK
+    prevLowThick := currThick
+
+c1_b_green = bullMidReg or bullTKReg or bullThickReg
+c1_hb = bullMidHidden or bullTKHidden or bullThickHidden
+
+// Swing BO / BD
+var line[] resistanceLines = array.new_line()
+var float[] resistancePrices = array.new_float()
+var bool[] resistanceBroken = array.new_bool()
+var line[] supportLines = array.new_line()
+var float[] supportPrices = array.new_float()
+var bool[] supportBroken = array.new_bool()
+
+levelPivotHigh = ta.pivothigh(high, levelPivotLeft, levelPivotRight)
+levelPivotLow = ta.pivotlow(low, levelPivotLeft, levelPivotRight)
+
+if not na(levelPivotHigh)
+    array.push(resistanceLines, line.new(bar_index - levelPivotRight, levelPivotHigh, bar_index, levelPivotHigh, xloc=xloc.bar_index, extend=extend.right, color=color.new(color.red, 100), width=1))
+    array.push(resistancePrices, levelPivotHigh)
+    array.push(resistanceBroken, false)
+    if array.size(resistanceLines) > 6
+        line.delete(array.shift(resistanceLines))
+        array.shift(resistancePrices)
+        array.shift(resistanceBroken)
+
+if not na(levelPivotLow)
+    array.push(supportLines, line.new(bar_index - levelPivotRight, levelPivotLow, bar_index, levelPivotLow, xloc=xloc.bar_index, extend=extend.right, color=color.new(color.green, 100), width=1))
+    array.push(supportPrices, levelPivotLow)
+    array.push(supportBroken, false)
+    if array.size(supportLines) > 6
+        line.delete(array.shift(supportLines))
+        array.shift(supportPrices)
+        array.shift(supportBroken)
+
+atrBreakBuffer = atr14 * breakBufferATR
+bool c1_bo = false
+bool c1_bd = false
+if array.size(resistanceLines) > 0
+    for i = array.size(resistanceLines) - 1 to 0
+        bool wasBroken = array.get(resistanceBroken, i)
+        float levelPrice = array.get(resistancePrices, i)
+        bool crossedNow = not wasBroken and close > levelPrice + atrBreakBuffer and close[1] <= levelPrice + atrBreakBuffer
+        if crossedNow
+            c1_bo := true
+            array.set(resistanceBroken, i, true)
+            line.set_color(array.get(resistanceLines, i), color.new(color.gray, 100))
+if array.size(supportLines) > 0
+    for i = array.size(supportLines) - 1 to 0
+        bool wasBroken = array.get(supportBroken, i)
+        float levelPrice = array.get(supportPrices, i)
+        bool crossedNow = not wasBroken and close < levelPrice - atrBreakBuffer and close[1] >= levelPrice - atrBreakBuffer
+        if crossedNow
+            c1_bd := true
+            array.set(supportBroken, i, true)
+            line.set_color(array.get(supportLines, i), color.new(color.gray, 100))
+
+// Rejections R1-R3
+alignedCloudA = senkouA[displacement]
+alignedCloudB = senkouB[displacement]
+cloudTopSR = math.max(alignedCloudA, alignedCloudB)
+cloudBottomSR = math.min(alignedCloudA, alignedCloudB)
+touchTol = atr14 * rejectionToleranceATR
+minWick = atr14 * minWickATR
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+priceAboveCloud = close > cloudTopSR
+priceBelowCloud = close < cloudBottomSR
+priceInsideCloud = close <= cloudTopSR and close >= cloudBottomSR
+
+f_bullReject(float level) =>
+    bool touched = low <= level + touchTol
+    bool wickOk = lowerWick >= minWick
+    bool closeOk = close > level
+    touched and wickOk and closeOk
+
+f_bearReject(float level) =>
+    bool touched = high >= level - touchTol
+    bool wickOk = upperWick >= minWick
+    bool closeOk = close < level
+    touched and wickOk and closeOk
+
+bullRejectCloudTop = priceAboveCloud and f_bullReject(cloudTopSR)
+bullRejectCloudBottom = priceAboveCloud and f_bullReject(cloudBottomSR)
+bullRejectInsideBottom = priceInsideCloud and f_bullReject(cloudBottomSR)
+bearRejectCloudBottom = priceBelowCloud and f_bearReject(cloudBottomSR)
+bearRejectCloudTop = priceBelowCloud and f_bearReject(cloudTopSR)
+bearRejectInsideTop = priceInsideCloud and f_bearReject(cloudTopSR)
+bullRejectKijun = close >= kijun and f_bullReject(kijun)
+bearRejectKijun = close <= kijun and f_bearReject(kijun)
+
+bullCloudRejectAny = bullRejectCloudTop or bullRejectCloudBottom or bullRejectInsideBottom
+bearCloudRejectAny = bearRejectCloudBottom or bearRejectCloudTop or bearRejectInsideTop
+bullRejectionSignal = (bullCloudRejectAny or bullRejectKijun) and (not requireConfirmed or barstate.isconfirmed)
+bearRejectionSignal = (bearCloudRejectAny or bearRejectKijun) and (not requireConfirmed or barstate.isconfirmed)
+
+bullScore = 0
+bearScore = 0
+bullScore += bullRejectCloudTop ? 2 : 0
+bullScore += bullRejectCloudBottom ? 3 : 0
+bullScore += bullRejectInsideBottom ? 2 : 0
+bullScore += bullRejectKijun ? 1 : 0
+bearScore += bearRejectCloudBottom ? 2 : 0
+bearScore += bearRejectCloudTop ? 3 : 0
+bearScore += bearRejectInsideTop ? 2 : 0
+bearScore += bearRejectKijun ? 1 : 0
+bullScore += tenkan > kijun ? 1 : 0
+bearScore += tenkan < kijun ? 1 : 0
+bullScore += senkouA > senkouB ? 2 : 0
+bearScore += senkouA < senkouB ? 2 : 0
+bullScore += chikou > close[displacement] ? 2 : 0
+bearScore += chikou < close[displacement] ? 2 : 0
+bullRLevel = bullScore >= 6 ? 3 : bullScore >= 3 ? 2 : 1
+bearRLevel = bearScore >= 6 ? 3 : bearScore >= 3 ? 2 : 1
+
+c1_r1_green = bullRejectionSignal and bullRLevel == 1
+c1_r2_green = bullRejectionSignal and bullRLevel == 2
+c1_r3_green = bullRejectionSignal and bullRLevel == 3
+c1_r1_red = bearRejectionSignal and bearRLevel == 1
+c1_r2_red = bearRejectionSignal and bearRLevel == 2
+c1_r3_red = bearRejectionSignal and bearRLevel == 3
+c1_r1_any = c1_r1_green or c1_r1_red
+c1_r2_any = c1_r2_green or c1_r2_red
+c1_r3_any = c1_r3_green or c1_r3_red
+c1_scalp_any = c1_scalp_buy or c1_scalp_sell
+
+//====================================================================================
+// Windowed components
+//====================================================================================
+
+w = lookbackBars
+wC1BuyAplus = recentTrue(edge(c1BuyAplus) or c1BuyAplus, w)
+wC1Hb = recentTrue(c1_hb, w)
+wC1B = recentTrue(c1_b_green, w)
+wC1B2 = countTrue(c1_b_green, w) >= 2
+wC1Bo = recentTrue(c1_bo, w)
+wC1Bd = recentTrue(c1_bd, w)
+wC1Breakout = recentTrue(c1_breakout, w)
+wC1Prebo = recentTrue(c1_prebo, w)
+wC1R1 = recentTrue(c1_r1_any, w)
+wC1R2 = recentTrue(c1_r2_any, w)
+wC1R3 = recentTrue(c1_r3_any, w)
+wC1R1g = recentTrue(c1_r1_green, w)
+wC1R2g = recentTrue(c1_r2_green, w)
+wC1R3g = recentTrue(c1_r3_green, w)
+wC1R2r = recentTrue(c1_r2_red, w)
+wC1R3r = recentTrue(c1_r3_red, w)
+wC1TrendBuy = recentTrue(edge(c1_trend_buy) or c1_trend_buy, w)
+wC1TrendSell = recentTrue(edge(c1_trend_sell) or c1_trend_sell, w)
+wC1ScalpG = recentTrue(c1_scalp_buy, w)
+wC1ScalpR = recentTrue(c1_scalp_sell, w)
+wC1ScalpAny = recentTrue(c1_scalp_any, w)
+wC1Early = recentTrue(edge(c1_early_buy) or c1_early_buy, w)
+
+wC2BuyApp = recentTrue(edge(c2BuyApp) or c2BuyApp, w)
+wC2BuyAplus = recentTrue(edge(c2BuyAplus) or c2BuyAplus, w)
+wC2BuyB = recentTrue(edge(c2BuyB) or c2BuyB, w)
+wC2Limit = recentTrue(edge(c2Limit) or c2Limit, w)
+wC2Burst = recentTrue(edge(c2BurstBull) or c2BurstBull or edge(c2Burst) or c2Burst, w)
+wC2TrendBuy = recentTrue(edge(c2_trend_buy) or c2_trend_buy, w)
+wC2TrendSell = recentTrue(edge(c2_trend_sell) or c2_trend_sell, w)
+wC2EarlyBuy = recentTrue(c2EarlyBuy, w)
+wC2EarlySell = recentTrue(c2EarlySell, w)
+wC2ScalpSell = recentTrue(c2_scalp_sell, w)
+
+//====================================================================================
+// RULES → SELL
+//====================================================================================
+
+rule1  = enR1  and wC1BuyAplus and wC1Hb
+rule2  = enR2  and wC1Bo and wC1R3 and wC1Breakout and wC2BuyApp and wC2Limit and wC2Burst and wC2TrendBuy
+rule3  = enR3  and wC1Prebo and wC1R2
+rule4  = enR4  and wC1TrendSell and wC1ScalpAny and wC1BuyAplus and wC1B and wC1Bd and wC2Limit
+rule5  = enR5  and wC1Breakout and wC2BuyB
+rule6  = enR6  and wC1Bo and wC1ScalpG and wC1Breakout and wC1TrendBuy and wC1Early and wC2BuyApp and wC2Limit and wC2Burst and wC2TrendBuy
+rule7  = enR7  and wC1Bo and wC1TrendBuy and wC1Early and wC2EarlySell and wC2Limit and wC2BuyB
+rule8  = enR8  and wC1Breakout and wC2BuyB
+rule9  = enR9  and wC1R2r and wC1R2g and wC1BuyAplus and wC2TrendBuy
+rule10 = enR10 and wC1Bo and wC1Breakout and wC2BuyB
+rule11 = enR11 and wC1ScalpR and wC1BuyAplus
+rule12 = enR12 and wC1ScalpG and wC1Early
+rule13 = enR13 and wC2EarlyBuy and wC2BuyAplus
+rule14 = enR14 and wC1B2 and wC1R2 and wC2TrendSell
+rule15 = enR15 and wC1TrendSell and wC2TrendSell
+rule16 = enR16 and wC1Bo and wC1ScalpG and wC1Prebo and wC2TrendBuy
+rule19 = enR19 and wC1TrendSell and wC1ScalpR and wC1R3 and wC1BuyAplus and wC1Hb and wC2EarlyBuy
+rule20 = enR20 and wC1Bo and wC1ScalpG and wC1Breakout and wC1TrendBuy and wC2BuyApp and wC2Burst and wC2TrendBuy
+rule21 = enR21 and wC1BuyAplus
+rule22 = enR22 and wC1BuyAplus and wC1R2g
+rule23 = enR23 and wC1Bo and wC1R2 and wC1Early and wC2EarlySell and wC2Limit and wC2Burst and wC2BuyApp
+rule25 = enR25 and wC1R1 and wC1BuyAplus and wC1Hb and wC2ScalpSell
+rule27 = enR27 and wC1B2 and wC1Bd and wC1R2
+rule28 = enR28 and wC1BuyAplus and wC1Early
+rule29 = enR29 and wC1BuyAplus and wC1R1 and wC1Bd
+rule30 = enR30 and wC1Bo and wC1Breakout and wC1Early and wC2Limit and wC2Burst and wC2BuyApp
+rule31 = enR31 and wC1R3g and wC1R2r and wC1ScalpG and wC1Early and wC2Burst and wC2BuyApp
+rule32 = enR32 and wC1Bo and wC1R3g and wC1TrendBuy and wC2TrendBuy and wC2BuyApp
+
+anyRule = rule1 or rule2 or rule3 or rule4 or rule5 or rule6 or rule7 or rule8 or rule9 or rule10 or rule11 or rule12 or rule13 or rule14 or rule15 or rule16 or rule19 or rule20 or rule21 or rule22 or rule23 or rule25 or rule27 or rule28 or rule29 or rule30 or rule31 or rule32
+
+var int lastSellBar = na
+canFire = na(lastSellBar) or (bar_index - lastSellBar) >= cooldownBars
+sellFire = anyRule and canFire and (not requireConfirmed or barstate.isconfirmed)
+
+if sellFire
+    lastSellBar := bar_index
+
+ruleName() =>
+    string n = ""
+    if rule1
+        n := "R1 BUY A++HB"
+    else if rule2
+        n := "R2 BO+R3+BOUT + C2 A++/LIMIT/BURST/TREND"
+    else if rule3
+        n := "R3 PREBO+R2"
+    else if rule4
+        n := "R4 TREND SELL+SCALP+A++B+BD + LIMIT"
+    else if rule5 or rule8
+        n := "R5/8 BREAKOUT + BUY B"
+    else if rule6
+        n := "R6 BO+SCALP+BOUT+TREND+EARLY + C2 A++"
+    else if rule7
+        n := "R7 BO+TREND+EARLY + EARLY SELL+LIMIT+B"
+    else if rule9
+        n := "R9 R2R+R2G+A+ + TREND BUY"
+    else if rule10
+        n := "R10 BO+BREAKOUT + BUY B"
+    else if rule11
+        n := "R11 SCALP RED + BUY A+"
+    else if rule12
+        n := "R12 SCALP GREEN + EARLY BUY"
+    else if rule13
+        n := "R13 C2 EARLY BUY + BUY A+"
+    else if rule14
+        n := "R14 B×2+R2 + TREND SELL"
+    else if rule15
+        n := "R15 TREND SELL × both"
+    else if rule16
+        n := "R16 BO+SCALP+PREBO + TREND BUY"
+    else if rule19
+        n := "R19 TREND SELL+SCALP+R3+A++HB + EARLY BUY"
+    else if rule20
+        n := "R20 BO+SCALP+BOUT+TREND + A++/BURST/TREND"
+    else if rule21
+        n := "R21 BUY A+"
+    else if rule22
+        n := "R22 BUY A+ + R2 GREEN"
+    else if rule23
+        n := "R23 BO+R2+EARLY + EARLY SELL+LIMIT+BURST+A++"
+    else if rule25
+        n := "R25 R1+A++HB + SCALP ▼"
+    else if rule27
+        n := "R27 B×2 + BD + R2"
+    else if rule28
+        n := "R28 BUY A+ + EARLY BUY"
+    else if rule29
+        n := "R29 BUY A+ + R1 + BD"
+    else if rule30
+        n := "R30 BO+BOUT+EARLY + LIMIT+BURST+A++"
+    else if rule31
+        n := "R31 R3G+R2R+SCALP+EARLY + BURST+A++"
+    else if rule32
+        n := "R32 BO+R3G+TREND + TREND+A++"
+    n
+
+//====================================================================================
+// Visuals
+//====================================================================================
+
+plotshape(showSellShapes and sellFire, title="SELL", style=shape.triangledown, location=location.abovebar, color=color.new(#ff1744, 0), size=size.normal, text="SELL")
+
+if showSellLabels and sellFire
+    label.new(bar_index, high + atr14 * 0.8, "🔻 SELL\n" + ruleName(), style=label.style_label_down, color=color.new(#b71c1c, 10), textcolor=color.white, size=size.normal)
+
+bgcolor(sellFire ? color.new(#ff1744, 88) : na, title="Sell Flash")
+
+f_ruleRow(table tbl, int row, string name, bool on) =>
+    table.cell(tbl, 0, row, name, text_color=color.gray, text_size=size.tiny)
+    table.cell(tbl, 1, row, on ? "✅" : "·", text_color=on ? color.lime : color.gray, text_size=size.tiny)
+
+if showRuleTable and barstate.islast
+    var table t = table.new(position.top_right, 2, 30, bgcolor=color.new(#0d1117, 20), border_width=1, border_color=color.gray)
+    table.cell(t, 0, 0, "RULE", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(t, 1, 0, "NOW", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    f_ruleRow(t, 1, "R1", rule1)
+    f_ruleRow(t, 2, "R2", rule2)
+    f_ruleRow(t, 3, "R3", rule3)
+    f_ruleRow(t, 4, "R4", rule4)
+    f_ruleRow(t, 5, "R5/8", rule5 or rule8)
+    f_ruleRow(t, 6, "R6", rule6)
+    f_ruleRow(t, 7, "R7", rule7)
+    f_ruleRow(t, 8, "R9", rule9)
+    f_ruleRow(t, 9, "R10", rule10)
+    f_ruleRow(t, 10, "R11", rule11)
+    f_ruleRow(t, 11, "R12", rule12)
+    f_ruleRow(t, 12, "R13", rule13)
+    f_ruleRow(t, 13, "R14", rule14)
+    f_ruleRow(t, 14, "R15", rule15)
+    f_ruleRow(t, 15, "R16", rule16)
+    f_ruleRow(t, 16, "R19", rule19)
+    f_ruleRow(t, 17, "R20", rule20)
+    f_ruleRow(t, 18, "R21", rule21)
+    f_ruleRow(t, 19, "R22", rule22)
+    f_ruleRow(t, 20, "R23", rule23)
+    f_ruleRow(t, 21, "R25", rule25)
+    f_ruleRow(t, 22, "R27", rule27)
+    f_ruleRow(t, 23, "R28", rule28)
+    f_ruleRow(t, 24, "R29", rule29)
+    f_ruleRow(t, 25, "R30", rule30)
+    f_ruleRow(t, 26, "R31", rule31)
+    f_ruleRow(t, 27, "R32", rule32)
+    table.cell(t, 0, 28, "FIRE", text_color=color.silver, text_size=size.small)
+    table.cell(t, 1, 28, sellFire ? "🔻 YES" : "NO", text_color=sellFire ? color.red : color.gray, text_size=size.small)
+    table.cell(t, 0, 29, "Win", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 29, str.tostring(lookbackBars), text_color=color.gray, text_size=size.tiny)
+
+//====================================================================================
+// Alerts
+//====================================================================================
+
+alertcondition(sellFire, title="🔻 SELL Confluence", message="Sell Confluence rule fired on {{ticker}} {{interval}}")
+
+if sellFire
+    alert("🔻 SELL: " + ruleName() + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
