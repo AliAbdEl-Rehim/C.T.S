@@ -1,22 +1,21 @@
 //@version=6
-indicator("Sell Confluence Rules • C1+C2", shorttitle="Sell Confluence", overlay=true, max_labels_count=500, max_lines_count=200, max_bars_back=500)
+indicator("Buy Confluence Rules • C1+C2", shorttitle="Buy Confluence", overlay=true, max_labels_count=500, max_lines_count=200, max_bars_back=500)
 
 //====================================================================================
-// SELL when ANY registered rule's components are true within a lookback window.
-// Rules collected: 1–16, 19–23, 25, 27–32 (17/18/24/26 reserved for later).
-// C1 = All-in-One PreBO signals | C2 = Buy/Sell Div Pro + EGX Boost signals
+// BUY: كل قاعدة تتحقق → إشارة شراء مستقلة
+// Rules: 1–16, 19–23, 25, 27–32  |  reserved: 17, 18, 24, 26
+// C1 = All-in-One PreBO | C2 = Buy/Sell Div Pro + EGX Boost
 //====================================================================================
 
 grpWin = "⏱ Confluence Window"
 lookbackBars = input.int(8, "نافذة التقاء الإشارات (شموع)", minval=1, maxval=50, group=grpWin)
-cooldownBars = input.int(3, "تبريد بين إشارات البيع", minval=0, maxval=50, group=grpWin)
+cooldownBars = input.int(3, "تبريد لكل قاعدة (شموع)", minval=0, maxval=50, group=grpWin)
 requireConfirmed = input.bool(true, "تأكيد على إغلاق الشمعة", group=grpWin)
 
 grpShow = "👁 Display"
-showSellLabels = input.bool(true, "عرض لابل البيع", group=grpShow)
-showSellShapes = input.bool(true, "عرض سهم بيع", group=grpShow)
+showBuyLabels = input.bool(true, "عرض لابل الشراء", group=grpShow)
+showBuyShapes = input.bool(true, "عرض سهم شراء", group=grpShow)
 showRuleTable = input.bool(true, "لوحة القواعد النشطة", group=grpShow)
-showComponents = input.bool(false, "عرض مكوّنات الإشارة (تشخيص)", group=grpShow)
 
 grpRules = "✅ تفعيل القواعد"
 enR1  = input.bool(true, "R1  C1: BUY A+ + HB", group=grpRules)
@@ -893,115 +892,293 @@ wC2EarlySell = recentTrue(c2EarlySell, w)
 wC2ScalpSell = recentTrue(c2_scalp_sell, w)
 
 //====================================================================================
-// RULES → SELL
+// RULES → BUY (كل قاعدة مستقلة)
 //====================================================================================
 
+// R1  C1: BUY A+ + HB
 rule1  = enR1  and wC1BuyAplus and wC1Hb
+// R2  C1: BO + R3 + BREAKOUT | C2: BUY A++ + LIMIT + BURST + TREND BUY
 rule2  = enR2  and wC1Bo and wC1R3 and wC1Breakout and wC2BuyApp and wC2Limit and wC2Burst and wC2TrendBuy
+// R3  C1: PRE-BREAKOUT + R2
 rule3  = enR3  and wC1Prebo and wC1R2
+// R4  C1: TREND SELL + SCALP + BUY A+ + B green + BD red | C2: LIMIT
 rule4  = enR4  and wC1TrendSell and wC1ScalpAny and wC1BuyAplus and wC1B and wC1Bd and wC2Limit
+// R5  C1: BREAKOUT | C2: BUY B
 rule5  = enR5  and wC1Breakout and wC2BuyB
+// R6  C1: BO + SCALP GREEN + BREAKOUT + TREND BUY + EARLY BUY | C2: A++ + LIMIT + BURST + TREND BUY
 rule6  = enR6  and wC1Bo and wC1ScalpG and wC1Breakout and wC1TrendBuy and wC1Early and wC2BuyApp and wC2Limit and wC2Burst and wC2TrendBuy
+// R7  C1: BO + TREND BUY + EARLY BUY | C2: EARLY SELL + LIMIT + BUY B
 rule7  = enR7  and wC1Bo and wC1TrendBuy and wC1Early and wC2EarlySell and wC2Limit and wC2BuyB
+// R8  C1: BREAKOUT | C2: BUY B
 rule8  = enR8  and wC1Breakout and wC2BuyB
+// R9  C1: R2 RED + R2 GREEN + BUY A+ | C2: TREND BUY
 rule9  = enR9  and wC1R2r and wC1R2g and wC1BuyAplus and wC2TrendBuy
+// R10 C1: BO + BREAKOUT | C2: BUY B
 rule10 = enR10 and wC1Bo and wC1Breakout and wC2BuyB
+// R11 C1: SCALP RED + BUY A+
 rule11 = enR11 and wC1ScalpR and wC1BuyAplus
+// R12 C1: SCALP GREEN + EARLY BUY
 rule12 = enR12 and wC1ScalpG and wC1Early
+// R13 C2: EARLY BUY + BUY A+
 rule13 = enR13 and wC2EarlyBuy and wC2BuyAplus
+// R14 C1: B green ×2 + R2 | C2: TREND SELL
 rule14 = enR14 and wC1B2 and wC1R2 and wC2TrendSell
+// R15 C1 TREND SELL + C2 TREND SELL
 rule15 = enR15 and wC1TrendSell and wC2TrendSell
+// R16 C1: BO GREEN + SCALP GREEN + PREBO | C2: TREND BUY
 rule16 = enR16 and wC1Bo and wC1ScalpG and wC1Prebo and wC2TrendBuy
+// R19 C1: TREND SELL + SCALP RED + R3 + BUY A+ + HB | C2: EARLY BUY
 rule19 = enR19 and wC1TrendSell and wC1ScalpR and wC1R3 and wC1BuyAplus and wC1Hb and wC2EarlyBuy
+// R20 C1: BO + SCALP GREEN + BREAKOUT + TREND BUY | C2: A++ + BURST + TREND BUY
 rule20 = enR20 and wC1Bo and wC1ScalpG and wC1Breakout and wC1TrendBuy and wC2BuyApp and wC2Burst and wC2TrendBuy
+// R21 C1: BUY A+
 rule21 = enR21 and wC1BuyAplus
+// R22 C1: BUY A+ + R2 GREEN
 rule22 = enR22 and wC1BuyAplus and wC1R2g
+// R23 C1: BO + R2 + EARLY BUY | C2: EARLY SELL + LIMIT + BURST + A++
 rule23 = enR23 and wC1Bo and wC1R2 and wC1Early and wC2EarlySell and wC2Limit and wC2Burst and wC2BuyApp
+// R25 C1: R1 + BUY A+ + HB | C2: SCALP ▼
 rule25 = enR25 and wC1R1 and wC1BuyAplus and wC1Hb and wC2ScalpSell
+// R27 C1: B green ×2 + BD red + R2
 rule27 = enR27 and wC1B2 and wC1Bd and wC1R2
+// R28 C1: BUY A+ + EARLY BUY
 rule28 = enR28 and wC1BuyAplus and wC1Early
+// R29 C1: BUY A+ + R1 + BD
 rule29 = enR29 and wC1BuyAplus and wC1R1 and wC1Bd
+// R30 C1: BO + BREAKOUT + EARLY BUY | C2: LIMIT + BURST + A++
 rule30 = enR30 and wC1Bo and wC1Breakout and wC1Early and wC2Limit and wC2Burst and wC2BuyApp
+// R31 C1: R3 GREEN + R2 RED + SCALP GREEN + EARLY BUY | C2: BURST + A++
 rule31 = enR31 and wC1R3g and wC1R2r and wC1ScalpG and wC1Early and wC2Burst and wC2BuyApp
+// R32 C1: BO + R3 GREEN + TREND BUY | C2: TREND BUY + A++
 rule32 = enR32 and wC1Bo and wC1R3g and wC1TrendBuy and wC2TrendBuy and wC2BuyApp
 
-anyRule = rule1 or rule2 or rule3 or rule4 or rule5 or rule6 or rule7 or rule8 or rule9 or rule10 or rule11 or rule12 or rule13 or rule14 or rule15 or rule16 or rule19 or rule20 or rule21 or rule22 or rule23 or rule25 or rule27 or rule28 or rule29 or rule30 or rule31 or rule32
+timingOk = not requireConfirmed or barstate.isconfirmed
 
-var int lastSellBar = na
-canFire = na(lastSellBar) or (bar_index - lastSellBar) >= cooldownBars
-sellFire = anyRule and canFire and (not requireConfirmed or barstate.isconfirmed)
+// إطلاق شراء عند تحوّل القاعدة من false → true (مع تبريد مستقل لكل قاعدة)
+var int lastR1 = -9999
+var int lastR2 = -9999
+var int lastR3 = -9999
+var int lastR4 = -9999
+var int lastR5 = -9999
+var int lastR6 = -9999
+var int lastR7 = -9999
+var int lastR8 = -9999
+var int lastR9 = -9999
+var int lastR10 = -9999
+var int lastR11 = -9999
+var int lastR12 = -9999
+var int lastR13 = -9999
+var int lastR14 = -9999
+var int lastR15 = -9999
+var int lastR16 = -9999
+var int lastR19 = -9999
+var int lastR20 = -9999
+var int lastR21 = -9999
+var int lastR22 = -9999
+var int lastR23 = -9999
+var int lastR25 = -9999
+var int lastR27 = -9999
+var int lastR28 = -9999
+var int lastR29 = -9999
+var int lastR30 = -9999
+var int lastR31 = -9999
+var int lastR32 = -9999
 
-if sellFire
-    lastSellBar := bar_index
+f_can(int lastBar) =>
+    (bar_index - lastBar) > cooldownBars
 
-ruleName() =>
+fire1  = rule1  and timingOk and f_can(lastR1)  and not rule1[1]
+fire2  = rule2  and timingOk and f_can(lastR2)  and not rule2[1]
+fire3  = rule3  and timingOk and f_can(lastR3)  and not rule3[1]
+fire4  = rule4  and timingOk and f_can(lastR4)  and not rule4[1]
+fire5  = rule5  and timingOk and f_can(lastR5)  and not rule5[1]
+fire6  = rule6  and timingOk and f_can(lastR6)  and not rule6[1]
+fire7  = rule7  and timingOk and f_can(lastR7)  and not rule7[1]
+fire8  = rule8  and timingOk and f_can(lastR8)  and not rule8[1]
+fire9  = rule9  and timingOk and f_can(lastR9)  and not rule9[1]
+fire10 = rule10 and timingOk and f_can(lastR10) and not rule10[1]
+fire11 = rule11 and timingOk and f_can(lastR11) and not rule11[1]
+fire12 = rule12 and timingOk and f_can(lastR12) and not rule12[1]
+fire13 = rule13 and timingOk and f_can(lastR13) and not rule13[1]
+fire14 = rule14 and timingOk and f_can(lastR14) and not rule14[1]
+fire15 = rule15 and timingOk and f_can(lastR15) and not rule15[1]
+fire16 = rule16 and timingOk and f_can(lastR16) and not rule16[1]
+fire19 = rule19 and timingOk and f_can(lastR19) and not rule19[1]
+fire20 = rule20 and timingOk and f_can(lastR20) and not rule20[1]
+fire21 = rule21 and timingOk and f_can(lastR21) and not rule21[1]
+fire22 = rule22 and timingOk and f_can(lastR22) and not rule22[1]
+fire23 = rule23 and timingOk and f_can(lastR23) and not rule23[1]
+fire25 = rule25 and timingOk and f_can(lastR25) and not rule25[1]
+fire27 = rule27 and timingOk and f_can(lastR27) and not rule27[1]
+fire28 = rule28 and timingOk and f_can(lastR28) and not rule28[1]
+fire29 = rule29 and timingOk and f_can(lastR29) and not rule29[1]
+fire30 = rule30 and timingOk and f_can(lastR30) and not rule30[1]
+fire31 = rule31 and timingOk and f_can(lastR31) and not rule31[1]
+fire32 = rule32 and timingOk and f_can(lastR32) and not rule32[1]
+
+if fire1
+    lastR1 := bar_index
+if fire2
+    lastR2 := bar_index
+if fire3
+    lastR3 := bar_index
+if fire4
+    lastR4 := bar_index
+if fire5
+    lastR5 := bar_index
+if fire6
+    lastR6 := bar_index
+if fire7
+    lastR7 := bar_index
+if fire8
+    lastR8 := bar_index
+if fire9
+    lastR9 := bar_index
+if fire10
+    lastR10 := bar_index
+if fire11
+    lastR11 := bar_index
+if fire12
+    lastR12 := bar_index
+if fire13
+    lastR13 := bar_index
+if fire14
+    lastR14 := bar_index
+if fire15
+    lastR15 := bar_index
+if fire16
+    lastR16 := bar_index
+if fire19
+    lastR19 := bar_index
+if fire20
+    lastR20 := bar_index
+if fire21
+    lastR21 := bar_index
+if fire22
+    lastR22 := bar_index
+if fire23
+    lastR23 := bar_index
+if fire25
+    lastR25 := bar_index
+if fire27
+    lastR27 := bar_index
+if fire28
+    lastR28 := bar_index
+if fire29
+    lastR29 := bar_index
+if fire30
+    lastR30 := bar_index
+if fire31
+    lastR31 := bar_index
+if fire32
+    lastR32 := bar_index
+
+buyFire = fire1 or fire2 or fire3 or fire4 or fire5 or fire6 or fire7 or fire8 or fire9 or fire10 or fire11 or fire12 or fire13 or fire14 or fire15 or fire16 or fire19 or fire20 or fire21 or fire22 or fire23 or fire25 or fire27 or fire28 or fire29 or fire30 or fire31 or fire32
+
+activeRulesText() =>
     string n = ""
-    if rule1
-        n := "R1 BUY A++HB"
-    else if rule2
-        n := "R2 BO+R3+BOUT + C2 A++/LIMIT/BURST/TREND"
-    else if rule3
-        n := "R3 PREBO+R2"
-    else if rule4
-        n := "R4 TREND SELL+SCALP+A++B+BD + LIMIT"
-    else if rule5 or rule8
-        n := "R5/8 BREAKOUT + BUY B"
-    else if rule6
-        n := "R6 BO+SCALP+BOUT+TREND+EARLY + C2 A++"
-    else if rule7
-        n := "R7 BO+TREND+EARLY + EARLY SELL+LIMIT+B"
-    else if rule9
-        n := "R9 R2R+R2G+A+ + TREND BUY"
-    else if rule10
-        n := "R10 BO+BREAKOUT + BUY B"
-    else if rule11
-        n := "R11 SCALP RED + BUY A+"
-    else if rule12
-        n := "R12 SCALP GREEN + EARLY BUY"
-    else if rule13
-        n := "R13 C2 EARLY BUY + BUY A+"
-    else if rule14
-        n := "R14 B×2+R2 + TREND SELL"
-    else if rule15
-        n := "R15 TREND SELL × both"
-    else if rule16
-        n := "R16 BO+SCALP+PREBO + TREND BUY"
-    else if rule19
-        n := "R19 TREND SELL+SCALP+R3+A++HB + EARLY BUY"
-    else if rule20
-        n := "R20 BO+SCALP+BOUT+TREND + A++/BURST/TREND"
-    else if rule21
-        n := "R21 BUY A+"
-    else if rule22
-        n := "R22 BUY A+ + R2 GREEN"
-    else if rule23
-        n := "R23 BO+R2+EARLY + EARLY SELL+LIMIT+BURST+A++"
-    else if rule25
-        n := "R25 R1+A++HB + SCALP ▼"
-    else if rule27
-        n := "R27 B×2 + BD + R2"
-    else if rule28
-        n := "R28 BUY A+ + EARLY BUY"
-    else if rule29
-        n := "R29 BUY A+ + R1 + BD"
-    else if rule30
-        n := "R30 BO+BOUT+EARLY + LIMIT+BURST+A++"
-    else if rule31
-        n := "R31 R3G+R2R+SCALP+EARLY + BURST+A++"
-    else if rule32
-        n := "R32 BO+R3G+TREND + TREND+A++"
+    if fire1
+        n += "R1 "
+    if fire2
+        n += "R2 "
+    if fire3
+        n += "R3 "
+    if fire4
+        n += "R4 "
+    if fire5
+        n += "R5 "
+    if fire6
+        n += "R6 "
+    if fire7
+        n += "R7 "
+    if fire8
+        n += "R8 "
+    if fire9
+        n += "R9 "
+    if fire10
+        n += "R10 "
+    if fire11
+        n += "R11 "
+    if fire12
+        n += "R12 "
+    if fire13
+        n += "R13 "
+    if fire14
+        n += "R14 "
+    if fire15
+        n += "R15 "
+    if fire16
+        n += "R16 "
+    if fire19
+        n += "R19 "
+    if fire20
+        n += "R20 "
+    if fire21
+        n += "R21 "
+    if fire22
+        n += "R22 "
+    if fire23
+        n += "R23 "
+    if fire25
+        n += "R25 "
+    if fire27
+        n += "R27 "
+    if fire28
+        n += "R28 "
+    if fire29
+        n += "R29 "
+    if fire30
+        n += "R30 "
+    if fire31
+        n += "R31 "
+    if fire32
+        n += "R32 "
     n
 
 //====================================================================================
-// Visuals
+// Visuals — BUY
 //====================================================================================
 
-plotshape(showSellShapes and sellFire, title="SELL", style=shape.triangledown, location=location.abovebar, color=color.new(#ff1744, 0), size=size.normal, text="SELL")
+plotshape(showBuyShapes and buyFire, title="BUY", style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.normal, text="BUY")
 
-if showSellLabels and sellFire
-    label.new(bar_index, high + atr14 * 0.8, "🔻 SELL\n" + ruleName(), style=label.style_label_down, color=color.new(#b71c1c, 10), textcolor=color.white, size=size.normal)
+int buyStack = 0
+f_buyLabel(bool fire, string tag) =>
+    int stack = buyStack
+    if showBuyLabels and fire
+        label.new(bar_index, low - atr14 * (0.6 + stack * 0.55), "🟢 BUY " + tag, style=label.style_label_up, color=color.new(#1b5e20, 10), textcolor=color.white, size=size.small)
+        stack += 1
+    stack
 
-bgcolor(sellFire ? color.new(#ff1744, 88) : na, title="Sell Flash")
+buyStack := f_buyLabel(fire1, "R1")
+buyStack := f_buyLabel(fire2, "R2")
+buyStack := f_buyLabel(fire3, "R3")
+buyStack := f_buyLabel(fire4, "R4")
+buyStack := f_buyLabel(fire5, "R5")
+buyStack := f_buyLabel(fire6, "R6")
+buyStack := f_buyLabel(fire7, "R7")
+buyStack := f_buyLabel(fire8, "R8")
+buyStack := f_buyLabel(fire9, "R9")
+buyStack := f_buyLabel(fire10, "R10")
+buyStack := f_buyLabel(fire11, "R11")
+buyStack := f_buyLabel(fire12, "R12")
+buyStack := f_buyLabel(fire13, "R13")
+buyStack := f_buyLabel(fire14, "R14")
+buyStack := f_buyLabel(fire15, "R15")
+buyStack := f_buyLabel(fire16, "R16")
+buyStack := f_buyLabel(fire19, "R19")
+buyStack := f_buyLabel(fire20, "R20")
+buyStack := f_buyLabel(fire21, "R21")
+buyStack := f_buyLabel(fire22, "R22")
+buyStack := f_buyLabel(fire23, "R23")
+buyStack := f_buyLabel(fire25, "R25")
+buyStack := f_buyLabel(fire27, "R27")
+buyStack := f_buyLabel(fire28, "R28")
+buyStack := f_buyLabel(fire29, "R29")
+buyStack := f_buyLabel(fire30, "R30")
+buyStack := f_buyLabel(fire31, "R31")
+buyStack := f_buyLabel(fire32, "R32")
+
+bgcolor(buyFire ? color.new(#00e676, 88) : na, title="Buy Flash")
 
 f_ruleRow(table tbl, int row, string name, bool on) =>
     table.cell(tbl, 0, row, name, text_color=color.gray, text_size=size.tiny)
@@ -1010,44 +1187,44 @@ f_ruleRow(table tbl, int row, string name, bool on) =>
 if showRuleTable and barstate.islast
     var table t = table.new(position.top_right, 2, 30, bgcolor=color.new(#0d1117, 20), border_width=1, border_color=color.gray)
     table.cell(t, 0, 0, "RULE", text_color=color.white, bgcolor=color.new(#161b22, 0))
-    table.cell(t, 1, 0, "NOW", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(t, 1, 0, "ON", text_color=color.white, bgcolor=color.new(#161b22, 0))
     f_ruleRow(t, 1, "R1", rule1)
     f_ruleRow(t, 2, "R2", rule2)
     f_ruleRow(t, 3, "R3", rule3)
     f_ruleRow(t, 4, "R4", rule4)
-    f_ruleRow(t, 5, "R5/8", rule5 or rule8)
+    f_ruleRow(t, 5, "R5", rule5)
     f_ruleRow(t, 6, "R6", rule6)
     f_ruleRow(t, 7, "R7", rule7)
-    f_ruleRow(t, 8, "R9", rule9)
-    f_ruleRow(t, 9, "R10", rule10)
-    f_ruleRow(t, 10, "R11", rule11)
-    f_ruleRow(t, 11, "R12", rule12)
-    f_ruleRow(t, 12, "R13", rule13)
-    f_ruleRow(t, 13, "R14", rule14)
-    f_ruleRow(t, 14, "R15", rule15)
-    f_ruleRow(t, 15, "R16", rule16)
-    f_ruleRow(t, 16, "R19", rule19)
-    f_ruleRow(t, 17, "R20", rule20)
-    f_ruleRow(t, 18, "R21", rule21)
-    f_ruleRow(t, 19, "R22", rule22)
-    f_ruleRow(t, 20, "R23", rule23)
-    f_ruleRow(t, 21, "R25", rule25)
-    f_ruleRow(t, 22, "R27", rule27)
-    f_ruleRow(t, 23, "R28", rule28)
-    f_ruleRow(t, 24, "R29", rule29)
-    f_ruleRow(t, 25, "R30", rule30)
-    f_ruleRow(t, 26, "R31", rule31)
-    f_ruleRow(t, 27, "R32", rule32)
-    table.cell(t, 0, 28, "FIRE", text_color=color.silver, text_size=size.small)
-    table.cell(t, 1, 28, sellFire ? "🔻 YES" : "NO", text_color=sellFire ? color.red : color.gray, text_size=size.small)
+    f_ruleRow(t, 8, "R8", rule8)
+    f_ruleRow(t, 9, "R9", rule9)
+    f_ruleRow(t, 10, "R10", rule10)
+    f_ruleRow(t, 11, "R11", rule11)
+    f_ruleRow(t, 12, "R12", rule12)
+    f_ruleRow(t, 13, "R13", rule13)
+    f_ruleRow(t, 14, "R14", rule14)
+    f_ruleRow(t, 15, "R15", rule15)
+    f_ruleRow(t, 16, "R16", rule16)
+    f_ruleRow(t, 17, "R19", rule19)
+    f_ruleRow(t, 18, "R20", rule20)
+    f_ruleRow(t, 19, "R21", rule21)
+    f_ruleRow(t, 20, "R22", rule22)
+    f_ruleRow(t, 21, "R23", rule23)
+    f_ruleRow(t, 22, "R25", rule25)
+    f_ruleRow(t, 23, "R27", rule27)
+    f_ruleRow(t, 24, "R28", rule28)
+    f_ruleRow(t, 25, "R29", rule29)
+    f_ruleRow(t, 26, "R30", rule30)
+    f_ruleRow(t, 27, "R31", rule31)
+    table.cell(t, 0, 28, "R32 / BUY", text_color=color.silver, text_size=size.tiny)
+    table.cell(t, 1, 28, (rule32 ? "✅ " : "· ") + (buyFire ? "🟢" : ""), text_color=buyFire ? color.lime : color.gray, text_size=size.tiny)
     table.cell(t, 0, 29, "Win", text_color=color.gray, text_size=size.tiny)
     table.cell(t, 1, 29, str.tostring(lookbackBars), text_color=color.gray, text_size=size.tiny)
 
 //====================================================================================
-// Alerts
+// Alerts — BUY
 //====================================================================================
 
-alertcondition(sellFire, title="🔻 SELL Confluence", message="Sell Confluence rule fired on {{ticker}} {{interval}}")
+alertcondition(buyFire, title="🟢 BUY Confluence", message="Buy Confluence rule fired on {{ticker}} {{interval}}")
 
-if sellFire
-    alert("🔻 SELL: " + ruleName() + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+if buyFire
+    alert("🟢 BUY: " + activeRulesText() + "| " + syminfo.ticker, alert.freq_once_per_bar_close)
