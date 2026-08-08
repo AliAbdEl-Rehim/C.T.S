@@ -2439,24 +2439,18 @@ hasSignalNow = signal_type_adv != "محايد"
 // ملاحظة: كود BSS الأصلي كان يحسب Supertrend/HMA/Levels بدون رسمها؛ هنا نرسمها بوضوح
 // ==========================================
 grp_bss_vis = "👁 BSS PLOT + LEVEL"
-showBssPlots  = input.bool(true, "إظهار PLOT (Supertrend + HMA + Osc)", group=grp_bss_vis)
+showBssPlots  = input.bool(true, "إظهار PLOT (Supertrend + HMA + EMA)", group=grp_bss_vis)
 showBssLevels = input.bool(true, "إظهار LEVEL (مقاومة/دعم)", group=grp_bss_vis)
 
 // ==========================================
-// 🎨 ألوان BSS (تحكم كامل من الإعدادات)
+// 🎨 ألوان BSS
+// ملاحظة: ألوان plot() ثابتة (const) لتقليل عدّاد الـ plots (حد TV = 64).
+// input.color يضاعف تكلفة كل plot؛ لذلك التحكم من الإعدادات للابل/خطوط/جدول.
+// ألوان الخطوط المرسومة بـ plot تُغيَّر أيضاً من تبويب Style.
 // ==========================================
 grp_bss_colors = "🎨 ألوان BSS"
-colBssStFast      = input.color(color.lime,    "Supertrend Fast", group=grp_bss_colors)
-colBssStMed       = input.color(color.yellow,  "Supertrend Med", group=grp_bss_colors)
-colBssStSlow      = input.color(color.fuchsia, "Supertrend Slow", group=grp_bss_colors)
-colBssHma         = input.color(color.white,   "HMA", group=grp_bss_colors)
-colBssEmaHigh     = input.color(color.teal,    "EMA High", group=grp_bss_colors)
-colBssEmaLow      = input.color(color.maroon,  "EMA Low", group=grp_bss_colors)
-colBssOscZero     = input.color(color.gray,    "Osc Zero Line", group=grp_bss_colors)
-colBssOscCols     = input.color(color.gray,    "Osc Columns", group=grp_bss_colors)
-colBssOscLine     = input.color(color.white,   "Osc Line", group=grp_bss_colors)
-colBssRes         = input.color(color.orange,  "Resistance LEVEL", group=grp_bss_colors)
-colBssSup         = input.color(color.aqua,    "Support LEVEL", group=grp_bss_colors)
+colBssRes         = input.color(color.orange,  "Resistance LEVEL / Lines", group=grp_bss_colors)
+colBssSup         = input.color(color.aqua,    "Support LEVEL / Lines", group=grp_bss_colors)
 colBssNearResBg   = input.color(color.orange,  "Near Resistance BG", group=grp_bss_colors)
 colBssPrebo       = input.color(color.orange,  "Pre-Breakout", group=grp_bss_colors)
 colBssEarly       = input.color(color.purple,  "Early Buy", group=grp_bss_colors)
@@ -2478,25 +2472,18 @@ colBssTblBorder   = input.color(#30363D,       "Table Border", group=grp_bss_col
 colBssTblHeadBg   = input.color(#1A1A1A,       "Table Header BG", group=grp_bss_colors)
 colBssTblRowBg    = input.color(#0A0A0A,       "Table Row BG", group=grp_bss_colors)
 
-atr_v = ta.atr(14)
-osc_val = (close - hma) / (atr_v > 0 ? atr_v : syminfo.mintick)
+// ===== PLOT على الشارت (const colors = 1 slot لكل plot؛ لا Osc pane لتوفير الميزانية) =====
+plot(showBssPlots ? st1 : na, "BSS ST Fast", color=color.lime, linewidth=2, force_overlay=true)
+plot(showBssPlots ? st2 : na, "BSS ST Med", color=color.yellow, linewidth=2, force_overlay=true)
+plot(showBssPlots ? st3 : na, "BSS ST Slow", color=color.fuchsia, linewidth=2, force_overlay=true)
+plot(showBssPlots ? hma : na, "BSS HMA", color=color.white, linewidth=2, force_overlay=true)
+plot(showBssPlots ? ema_high : na, "BSS EMA High", color=color.teal, linewidth=1, force_overlay=true)
+plot(showBssPlots ? ema_low : na, "BSS EMA Low", color=color.maroon, linewidth=1, force_overlay=true)
 
-// ===== PLOT على الشارت الرئيسي (Supertrend + HMA) =====
-plot(showBssPlots ? st1 : na, "BSS ST Fast", color=colBssStFast, linewidth=2, force_overlay=true)
-plot(showBssPlots ? st2 : na, "BSS ST Med", color=colBssStMed, linewidth=2, force_overlay=true)
-plot(showBssPlots ? st3 : na, "BSS ST Slow", color=colBssStSlow, linewidth=2, force_overlay=true)
-plot(showBssPlots ? hma : na, "BSS HMA", color=colBssHma, linewidth=2, force_overlay=true)
-plot(showBssPlots ? ema_high : na, "BSS EMA High", color=colBssEmaHigh, linewidth=1, force_overlay=true)
-plot(showBssPlots ? ema_low : na, "BSS EMA Low", color=colBssEmaLow, linewidth=1, force_overlay=true)
-
-// ===== PLOT نافذة Oscillator (من كود BSS) =====
-plot(showBssPlots ? 0 : na, "BSS Zero Line", color=colBssOscZero, linewidth=1, style=plot.style_line, display=display.pane)
-plot(showBssPlots ? osc_val : na, "BSS Osc Columns", color=colBssOscCols, style=plot.style_columns, display=display.pane)
-plot(showBssPlots ? osc_val : na, "BSS Osc Line", color=colBssOscLine, linewidth=2, display=display.pane)
-
-// ===== LEVEL مقاومة/دعم — دائماً على الشارت =====
-plot(showBssLevels ? resistanceLevel : na, "BSS Resistance LEVEL", color=colBssRes, linewidth=3, style=plot.style_linebr, force_overlay=true)
-plot(showBssLevels ? supportLevel : na, "BSS Support LEVEL", color=colBssSup, linewidth=3, style=plot.style_linebr, force_overlay=true)
+// ===== LEVEL مقاومة/دعم — line objects أدناه قابلة للتلوين من الإعدادات =====
+// plot بألوان const فقط؛ الألوان المخصصة تُطبَّق على الخطوط الأفقية + اللابل
+plot(showBssLevels ? resistanceLevel : na, "BSS Resistance LEVEL", color=color.orange, linewidth=3, style=plot.style_linebr, force_overlay=true)
+plot(showBssLevels ? supportLevel : na, "BSS Support LEVEL", color=color.aqua, linewidth=3, style=plot.style_linebr, force_overlay=true)
 
 // تلوين خفيف عند الاقتراب من المقاومة
 bgcolor(showBssLevels and nearResistance ? color.new(colBssNearResBg, 92) : na, force_overlay=true, title="BSS Near Resistance Zone")
