@@ -1,0 +1,2747 @@
+//@version=6
+indicator("DRE+Ichi+AdvDiv + BSS2000 PreBO", shorttitle="All-in-One PreBO", overlay=true, max_labels_count=500, max_lines_count=500, max_bars_back=500)
+
+//====================================================================================
+// MODULE A: Advanced Divergences (Modo Rápido) — logic preserved; conflict IDs prefixed adv*
+//====================================================================================
+//====================================================================================
+// 📋 HELPER FUNCTIONS (GLOBAL SCOPE)
+//====================================================================================
+
+logit(p) =>
+    float denom = 1.0 - p + 0.0001
+    math.log(p / denom)
+
+clamp(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+absI(x) =>
+    x >= 0 ? x : -x
+
+f_state(float cur, float prev) =>
+    na(cur) or na(prev) ? 0 : cur > prev ? 1 : cur < prev ? -1 : 0
+
+f_seg(float y1, int x1, float y2, int x2) =>
+    int a = x1
+    int b = x2
+    float ya = y1
+    float yb = y2
+    float slope = a != b ? (ya - yb) / (a - b) : na
+    bool inRange = bar_index >= b and bar_index <= a
+    inRange and not na(slope) ? (yb + slope * (bar_index - b)) : na
+
+f_stateTxt(int s) =>
+    s == 1 ? "HH/HL" : s == -1 ? "LH/LL" : "EQ"
+
+//====================================================================================
+// 📋 SECTION 1: CONSTANTES E INPUTS
+//====================================================================================
+
+const int BIG = 10000000
+
+groupMode    = "🎛️ Modo de Detecção"
+modeTop      = input.bool(true,  "Analisar TOPO (bearish)", group=groupMode)
+modeBottom   = input.bool(true,  "Analisar FUNDO (bullish)", group=groupMode)
+
+groupTrend   = "🔄 فلتر الاتجاه الرئيسي (TREND FILTER)"
+useTrendFilter = input.bool(true, "تفعيل فلتر الاتجاه (يمنع الإشارات المعاكسة)", group=groupTrend)
+trendLength    = input.int(50, "فترة الاتجاه الرئيسي", minval=20, maxval=200, group=groupTrend)
+trendThreshold = input.float(0.6, "قوة الاتجاه المطلوبة (0-1)", minval=0.3, maxval=0.9, step=0.05, group=groupTrend)
+
+groupPivot   = "📍 Detecção Rápida (Sem Atraso)"
+L            = input.int(3,  "Left bars (lookback)", minval=1, group=groupPivot)
+
+groupRSI     = "📊 RSI"
+rsiLen       = input.int(14, "Período RSI", minval=2, group=groupRSI)
+
+groupStoch   = "📊 Stochastic (Filtro Adicional)"
+useStoch     = input.bool(true, "Usar Stochastic para confirmar", group=groupStoch)
+stochLen     = input.int(14, "Stochastic Length", minval=5, group=groupStoch)
+stochOverbought = input.int(80, "Stoch Overbought", minval=70, maxval=90, group=groupStoch)
+stochOversold   = input.int(20, "Stoch Oversold", minval=10, maxval=30, group=groupStoch)
+
+groupConfirm = "⏱️ Confirmação Temporal"
+confirmBars  = input.int(5, "Janela máx. entre pivots (barras)", minval=1, group=groupConfirm)
+needBoth     = input.bool(true, "Exigir RSI E OBV dentro da janela", group=groupConfirm)
+
+groupVol     = "📈 Volume Financeiro"
+useFinVol    = input.bool(true, "Usar Volume Financeiro para validação", group=groupVol)
+minVolumeRatio = input.float(1.2, "Volume mínimo (média móvel x)", minval=0.8, maxval=2.0, step=0.1, group=groupVol)
+
+groupScore   = "🎯 Sistema de Score Estatístico"
+highProbCutoff = input.float(0.70, "Corte Alta Probabilidade", minval=0.60, maxval=0.85, step=0.01, group=groupScore)
+medProbCutoff  = input.float(0.50, "Corte Média Probabilidade", minval=0.35, maxval=0.65, step=0.01, group=groupScore)
+useVolatilityFilter = input.bool(true, "Filtrar por Volatilidade (ATR)", group=groupScore)
+
+groupStyle   = "🎨 Exibição"
+showTable    = input.bool(true, "Mostrar painel de estados", group=groupStyle)
+showLines    = input.bool(true, "Desenhar retas do PREÇO", group=groupStyle)
+advShowLabels   = input.bool(true, "Marcar divergências", group=groupStyle)
+showAplusOnly = input.bool(false, "Mostrar apenas sinais A+ (alta qualidade)", group=groupStyle)
+
+//====================================================================================
+// 📋 SECTION 2: CÁLCULOS BASE + فلتر الاتجاه المتقدم
+//====================================================================================
+
+advAtr          = ta.atr(14)
+atrSmooth    = ta.ema(advAtr, 20)
+volatilityRegime = advAtr / atrSmooth
+isVolatile   = volatilityRegime > 1.2
+isCalm       = volatilityRegime < 0.8
+
+rsi = ta.rsi(close, rsiLen)
+
+var float obv = 0.0
+float delta = close > close[1] ? volume : close < close[1] ? -volume : 0
+obv := nz(obv[1], 0) + delta
+obv_smooth = ta.ema(obv, 5)
+
+stochK = ta.sma(ta.stoch(close, high, low, stochLen), 3)
+stochD = ta.sma(stochK, 3)
+
+float finVol = close * volume
+finVolMA = ta.sma(finVol, 20)
+volumeStrong = finVol > finVolMA * minVolumeRatio
+
+// ========== فلتر الاتجاه الرئيسي المتقدم (Trend Strength Filter) ==========
+// حساب ADX يدوياً لأن بعض الإصدارات لا تدعمه مباشرة
+calcADX(len) =>
+    float up = ta.change(high)
+    float down = -ta.change(low)
+    float plusDM = na(up) ? na : (up > down and up > 0 ? up : 0)
+    float minusDM = na(down) ? na : (down > up and down > 0 ? down : 0)
+    float tr = ta.tr(true)
+    float plusDI = 100 * ta.rma(plusDM, len) / ta.rma(tr, len)
+    float minusDI = 100 * ta.rma(minusDM, len) / ta.rma(tr, len)
+    float adx = 100 * ta.rma(math.abs(plusDI - minusDI) / (plusDI + minusDI), len)
+    [plusDI, minusDI, adx]
+
+[diPlus, diMinus, adxValue] = calcADX(14)
+adxStrength = adxValue > 25 ? 0.7 : adxValue > 20 ? 0.5 : 0.3
+adxDirection = diPlus > diMinus ? 1 : -1
+
+// 1. المتوسطات المتحركة (Moving Averages)
+ema20 = ta.ema(close, 20)
+advEma50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+maTrend = (ema20 > advEma50 ? 1 : -1) + (ema20 > ema100 ? 1 : -1) + (advEma50 > ema100 ? 1 : -1)
+maTrendStrength = maTrend / 3  // من -1 إلى 1
+
+// 2. MACD للاتجاه
+[advMacdLine, advSignalLine, _] = ta.macd(close, 12, 26, 9)
+macdTrend = advMacdLine > advSignalLine ? 1 : -1
+macdHistogramStrength = math.abs(advMacdLine - advSignalLine) / ta.atr(14) * 10
+macdStrength = math.min(0.8, macdHistogramStrength)
+
+// 3. القنوات (Bollinger Bands position)
+bbMiddle = ta.sma(close, 20)
+bbUpper = bbMiddle + ta.stdev(close, 20) * 2
+bbLower = bbMiddle - ta.stdev(close, 20) * 2
+bbPosition = (close - bbLower) / (bbUpper - bbLower)  // 0=أسفل, 1=أعلى
+bbTrend = bbPosition > 0.7 ? 1 : bbPosition < 0.3 ? -1 : 0
+
+// حساب قوة الاتجاه الإجمالية (نظام تصويت)
+var float trendStrengthValue = 0.0
+var int overallTrend = 0  // 1 = صاعد, -1 = هابط, 0 = جانبي
+
+if useTrendFilter
+    // جمع الأصوات من جميع المؤشرات
+    float uptrendVotes = 0.0
+    float downtrendVotes = 0.0
+    
+    // صوت MA
+    if maTrendStrength > 0.2
+        uptrendVotes := uptrendVotes + math.abs(maTrendStrength)
+    else if maTrendStrength < -0.2
+        downtrendVotes := downtrendVotes + math.abs(maTrendStrength)
+    
+    // صوت ADX (يحتاج قوة)
+    if adxDirection == 1 and adxStrength > 0.4
+        uptrendVotes := uptrendVotes + adxStrength
+    else if adxDirection == -1 and adxStrength > 0.4
+        downtrendVotes := downtrendVotes + adxStrength
+    
+    // صوت MACD
+    if macdTrend == 1 and macdStrength > 0.3
+        uptrendVotes := uptrendVotes + macdStrength
+    else if macdTrend == -1 and macdStrength > 0.3
+        downtrendVotes := downtrendVotes + macdStrength
+    
+    // صوت BB
+    if bbTrend == 1
+        uptrendVotes := uptrendVotes + 0.5
+    else if bbTrend == -1
+        downtrendVotes := downtrendVotes + 0.5
+    
+    // تحديد الاتجاه وقوته
+    float totalVotes = uptrendVotes + downtrendVotes
+    if totalVotes > 0
+        if uptrendVotes > downtrendVotes
+            overallTrend := 1
+            trendStrengthValue := uptrendVotes / totalVotes
+        else if downtrendVotes > uptrendVotes
+            overallTrend := -1
+            trendStrengthValue := downtrendVotes / totalVotes
+        else
+            overallTrend := 0
+            trendStrengthValue := 0.5
+    else
+        overallTrend := 0
+        trendStrengthValue := 0.5
+    
+    // تنعيم قوة الاتجاه
+    trendStrengthValue := ta.ema(trendStrengthValue, 5)
+else
+    overallTrend := 0
+    trendStrengthValue := 0.5
+
+// فلتر السماح بالإشارات
+isStrongUptrend = overallTrend == 1 and trendStrengthValue >= trendThreshold
+isStrongDowntrend = overallTrend == -1 and trendStrengthValue >= trendThreshold
+isSideways = overallTrend == 0 or trendStrengthValue < trendThreshold
+
+allowBuySignals = not useTrendFilter or not isStrongDowntrend
+allowSellSignals = not useTrendFilter or not isStrongUptrend
+
+// المؤشرات الأساسية للاتجاه (للاستخدام في الـ Score)
+isUptrend   = ema20 > advEma50
+isDowntrend = ema20 < advEma50
+
+//====================================================================================
+// 📋 SECTION 3: DETECÇÃO DE PIVOTS EM TEMPO REAL (SEM ATRASO)
+//====================================================================================
+
+isPeakPrice = high == ta.highest(high, L)
+isPeakRSI   = rsi == ta.highest(rsi, L)
+isPeakOBV   = obv_smooth == ta.highest(obv_smooth, L)
+isPeakVol   = finVol == ta.highest(finVol, L)
+isPeakStoch = stochK == ta.highest(stochK, L)
+
+isTroughPrice = low == ta.lowest(low, L)
+isTroughRSI   = rsi == ta.lowest(rsi, L)
+isTroughOBV   = obv_smooth == ta.lowest(obv_smooth, L)
+isTroughVol   = finVol == ta.lowest(finVol, L)
+isTroughStoch = stochK == ta.lowest(stochK, L)
+
+var float priceHigh1 = na
+var float priceHigh2 = na
+var int   priceHBar1 = na
+var int   priceHBar2 = na
+
+var float rsiHigh1 = na
+var float rsiHigh2 = na
+var int   rsiHBar1 = na
+var int   rsiHBar2 = na
+
+var float obvHigh1 = na
+var float obvHigh2 = na
+var int   obvHBar1 = na
+var int   obvHBar2 = na
+
+var float finVolHigh1 = na
+var float finVolHigh2 = na
+var int   finVolHBar1 = na
+var int   finVolHBar2 = na
+
+var float stochHigh1 = na
+var float stochHigh2 = na
+var int   stochHBar1 = na
+var int   stochHBar2 = na
+
+var float priceLow1 = na
+var float priceLow2 = na
+var int   priceLBar1 = na
+var int   priceLBar2 = na
+
+var float rsiLow1 = na
+var float rsiLow2 = na
+var int   rsiLBar1 = na
+var int   rsiLBar2 = na
+
+var float obvLow1 = na
+var float obvLow2 = na
+var int   obvLBar1 = na
+var int   obvLBar2 = na
+
+var float finVolLow1 = na
+var float finVolLow2 = na
+var int   finVolLBar1 = na
+var int   finVolLBar2 = na
+
+var float stochLow1 = na
+var float stochLow2 = na
+var int   stochLBar1 = na
+var int   stochLBar2 = na
+
+if isPeakPrice
+    priceHigh2 := priceHigh1
+    priceHBar2 := priceHBar1
+    priceHigh1 := high
+    priceHBar1 := bar_index
+
+if isPeakRSI
+    rsiHigh2 := rsiHigh1
+    rsiHBar2 := rsiHBar1
+    rsiHigh1 := rsi
+    rsiHBar1 := bar_index
+
+if isPeakOBV
+    obvHigh2 := obvHigh1
+    obvHBar2 := obvHBar1
+    obvHigh1 := obv_smooth
+    obvHBar1 := bar_index
+
+if isPeakVol
+    finVolHigh2 := finVolHigh1
+    finVolHBar2 := finVolHBar1
+    finVolHigh1 := finVol
+    finVolHBar1 := bar_index
+
+if isPeakStoch
+    stochHigh2 := stochHigh1
+    stochHBar2 := stochHBar1
+    stochHigh1 := stochK
+    stochHBar1 := bar_index
+
+if isTroughPrice
+    priceLow2 := priceLow1
+    priceLBar2 := priceLBar1
+    priceLow1 := low
+    priceLBar1 := bar_index
+
+if isTroughRSI
+    rsiLow2 := rsiLow1
+    rsiLBar2 := rsiLBar1
+    rsiLow1 := rsi
+    rsiLBar1 := bar_index
+
+if isTroughOBV
+    obvLow2 := obvLow1
+    obvLBar2 := obvLBar1
+    obvLow1 := obv_smooth
+    obvLBar1 := bar_index
+
+if isTroughVol
+    finVolLow2 := finVolLow1
+    finVolLBar2 := finVolLBar1
+    finVolLow1 := finVol
+    finVolLBar1 := bar_index
+
+if isTroughStoch
+    stochLow2 := stochLow1
+    stochLBar2 := stochLBar1
+    stochLow1 := stochK
+    stochLBar1 := bar_index
+
+//====================================================================================
+// 📋 SECTION 4: ESTADOS E DISTÂNCIAS
+//====================================================================================
+
+statePriceTop = f_state(priceHigh1, priceHigh2)
+stateRSITop   = f_state(rsiHigh1,   rsiHigh2)
+stateOBVTop   = f_state(obvHigh1,   obvHigh2)
+stateVolTop   = f_state(finVolHigh1, finVolHigh2)
+stateStochTop = f_state(stochHigh1, stochHigh2)
+
+distTopRSI  = not na(priceHBar1) and not na(rsiHBar1) ? absI(priceHBar1 - rsiHBar1) : BIG
+distTopOBV  = not na(priceHBar1) and not na(obvHBar1) ? absI(priceHBar1 - obvHBar1) : BIG
+distTopVol  = not na(priceHBar1) and not na(finVolHBar1) ? absI(priceHBar1 - finVolHBar1) : BIG
+distTopStoch = not na(priceHBar1) and not na(stochHBar1) ? absI(priceHBar1 - stochHBar1) : BIG
+
+timeTopRSI   = distTopRSI <= confirmBars
+timeTopOBV   = distTopOBV <= confirmBars
+timeTopVol   = distTopVol <= confirmBars
+timeTopStoch = distTopStoch <= confirmBars
+
+statePriceLow = f_state(priceLow1, priceLow2)
+stateRSILow   = f_state(rsiLow1,   rsiLow2)
+stateOBVLow   = f_state(obvLow1,   obvLow2)
+stateVolLow   = f_state(finVolLow1, finVolLow2)
+stateStochLow = f_state(stochLow1, stochLow2)
+
+distLowRSI   = not na(priceLBar1) and not na(rsiLBar1) ? absI(priceLBar1 - rsiLBar1) : BIG
+distLowOBV   = not na(priceLBar1) and not na(obvLBar1) ? absI(priceLBar1 - obvLBar1) : BIG
+distLowVol   = not na(priceLBar1) and not na(finVolLBar1) ? absI(priceLBar1 - finVolLBar1) : BIG
+distLowStoch = not na(priceLBar1) and not na(stochLBar1) ? absI(priceLBar1 - stochLBar1) : BIG
+
+timeLowRSI   = distLowRSI <= confirmBars
+timeLowOBV   = distLowOBV <= confirmBars
+timeLowVol   = distLowVol <= confirmBars
+timeLowStoch = distLowStoch <= confirmBars
+
+//====================================================================================
+// 📋 SECTION 5: SISTEMA DE SCORE ESTATÍSTICO
+//====================================================================================
+
+calcBearishScore() =>
+    f1 = (statePriceTop == 1 and stateRSITop <= 0) ? (stateRSITop == -1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceTop == 1 and stateOBVTop <= 0) ? (stateOBVTop == -1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeTopStoch
+        if stochK > stochOverbought and stateStochTop <= 0
+            f3 := 0.75
+        else if stochK > stochOverbought
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeTopVol
+        if stateVolTop <= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolTop <= 0
+            f4 := 0.55
+    f5 = isUptrend ? 0.35 : isDowntrend ? 0.75 : 0.50
+    f6 = 0.50
+    if timeTopRSI and timeTopOBV
+        f6 := 0.85
+    else if timeTopRSI or timeTopOBV
+        f6 := 0.65
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeTopRSI ? 1 : 0) + (timeTopOBV ? 1 : 0) + (timeTopVol and useFinVol ? 1 : 0) + (timeTopStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 1.2 * logit(clamp(f2, 0.1, 0.9)) + 1.0 * logit(clamp(f3, 0.1, 0.9)) + 0.8 * logit(clamp(f4, 0.1, 0.9)) + 1.1 * logit(clamp(f5, 0.1, 0.9)) + 1.4 * logit(clamp(f6, 0.1, 0.9)) + 0.9 * logit(clamp(f7, 0.1, 0.9)) + 1.0 * logit(clamp(f8, 0.1, 0.9))
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+    clamp(prob, 0.05, 0.92)
+
+calcBullishScore() =>
+    f1 = (statePriceLow == -1 and stateRSILow >= 0) ? (stateRSILow == 1 ? 0.85 : 0.65) : 0.25
+    f2 = (statePriceLow == -1 and stateOBVLow >= 0) ? (stateOBVLow == 1 ? 0.80 : 0.60) : 0.25
+    f3 = 0.25
+    if useStoch and timeLowStoch
+        if stochK < stochOversold and stateStochLow >= 0
+            f3 := 0.75
+        else if stochK < stochOversold
+            f3 := 0.55
+    f4 = 0.40
+    if useFinVol and timeLowVol
+        if stateVolLow >= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolLow >= 0
+            f4 := 0.55
+    f5 = isDowntrend ? 0.35 : isUptrend ? 0.75 : 0.50
+    f6 = 0.50
+    if timeLowRSI and timeLowOBV
+        f6 := 0.85
+    else if timeLowRSI or timeLowOBV
+        f6 := 0.65
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+    confCount = (timeLowRSI ? 1 : 0) + (timeLowOBV ? 1 : 0) + (timeLowVol and useFinVol ? 1 : 0) + (timeLowStoch and useStoch ? 1 : 0)
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) + 1.2 * logit(clamp(f2, 0.1, 0.9)) + 1.0 * logit(clamp(f3, 0.1, 0.9)) + 0.8 * logit(clamp(f4, 0.1, 0.9)) + 1.1 * logit(clamp(f5, 0.1, 0.9)) + 1.4 * logit(clamp(f6, 0.1, 0.9)) + 0.9 * logit(clamp(f7, 0.1, 0.9)) + 1.0 * logit(clamp(f8, 0.1, 0.9))
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+    clamp(prob, 0.05, 0.92)
+
+getTier(score, isBearish) =>
+    highScore = score >= highProbCutoff
+    medScore  = score >= medProbCutoff
+    hasMultipleConf = (timeTopRSI and timeTopOBV) or (timeLowRSI and timeLowOBV)
+    hasStochConf = useStoch ? (isBearish ? timeTopStoch : timeLowStoch) : false
+    hasVolConf   = useFinVol ? (isBearish ? timeTopVol : timeLowVol) : false
+    if highScore and hasMultipleConf and (hasStochConf or hasVolConf)
+        "A+"
+    else if highScore and (hasMultipleConf or hasStochConf or hasVolConf)
+        "A"
+    else if medScore
+        "B"
+    else
+        "C"
+
+//====================================================================================
+// 📋 SECTION 6: VALIDAÇÃO DAS DIVERGÊNCIAS COM SCORE
+//====================================================================================
+
+bearishScore = modeTop ? calcBearishScore() : 0.0
+bearishValid = modeTop and bearishScore >= medProbCutoff and allowSellSignals
+bearishTier  = modeTop ? getTier(bearishScore, true) : ""
+
+bullishScore = modeBottom ? calcBullishScore() : 0.0
+bullishValid = modeBottom and bullishScore >= medProbCutoff and allowBuySignals
+bullishTier  = modeBottom ? getTier(bullishScore, false) : ""
+
+showBearish = bearishValid and (not showAplusOnly or bearishTier == "A+")
+showBullish = bullishValid and (not showAplusOnly or bullishTier == "A+")
+
+//====================================================================================
+// 📋 SECTION 7: VISUALIZAÇÃO
+//====================================================================================
+
+if advShowLabels and showBearish and not na(priceHigh1) and not na(priceHBar1)
+    labelText = "🔻 SELL " + bearishTier + " | Score: " + str.tostring(math.round(bearishScore * 100)) + "%"
+    labelColor = bearishTier == "A+" ? color.new(#ff1744, 20) : bearishTier == "A" ? color.new(#ff6d00, 20) : color.new(#ffa000, 20)
+    label.new(x=priceHBar1, y=priceHigh1, text=labelText, style=label.style_label_down, color=labelColor, textcolor=color.white, size=size.small)
+
+if advShowLabels and showBullish and not na(priceLow1) and not na(priceLBar1)
+    labelText = "🟢 BUY " + bullishTier + " | Score: " + str.tostring(math.round(bullishScore * 100)) + "%"
+    labelColor = bullishTier == "A+" ? color.new(#00e676, 20) : bullishTier == "A" ? color.new(#26a69a, 20) : color.new(#4caf50, 20)
+    label.new(x=priceLBar1, y=priceLow1, text=labelText, style=label.style_label_up, color=labelColor, textcolor=color.white, size=size.small)
+
+var float segTop = na
+var float segBottom = na
+
+if showLines
+    if not na(priceHigh1) and not na(priceHigh2)
+        segTop := f_seg(priceHigh1, priceHBar1, priceHigh2, priceHBar2)
+    if not na(priceLow1) and not na(priceLow2)
+        segBottom := f_seg(priceLow1, priceLBar1, priceLow2, priceLBar2)
+
+plot(showLines and modeTop ? segTop : na, "Reta Topos", color.new(#ff1744, 60), linewidth=1, style=plot.style_line)
+plot(showLines and modeBottom ? segBottom : na, "Reta Fundos", color.new(#00e676, 60), linewidth=1, style=plot.style_line)
+
+//====================================================================================
+// 📋 SECTION 8: PAINEL DE ESTADOS
+//====================================================================================
+
+if showTable and barstate.islast
+    var table advTable = table.new(position.top_right, 5, 12, bgcolor=color.new(#0d1117, 95), border_color=color.new(#58a6ff, 40))
+    
+    table.cell(advTable, 0, 0, "Série", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(advTable, 1, 0, "Topo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(advTable, 2, 0, "Δ Topo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(advTable, 3, 0, "Fundo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(advTable, 4, 0, "Δ Fundo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    
+    table.cell(advTable, 0, 1, "Preço", text_color=color.gray)
+    table.cell(advTable, 1, 1, f_stateTxt(statePriceTop), text_color=statePriceTop==1?color.new(#ff1744,0):color.gray)
+    table.cell(advTable, 2, 1, "", text_color=color.gray)
+    table.cell(advTable, 3, 1, f_stateTxt(statePriceLow), text_color=statePriceLow==-1?color.new(#00e676,0):color.gray)
+    table.cell(advTable, 4, 1, "", text_color=color.gray)
+    
+    table.cell(advTable, 0, 2, "RSI", text_color=color.gray)
+    table.cell(advTable, 1, 2, f_stateTxt(stateRSITop), text_color=stateRSITop<=0?color.new(#ff6d00,0):color.gray)
+    table.cell(advTable, 2, 2, str.tostring(distTopRSI), text_color=distTopRSI<=confirmBars?color.new(#00e676,0):color.gray)
+    table.cell(advTable, 3, 2, f_stateTxt(stateRSILow), text_color=stateRSILow>=0?color.new(#00e676,0):color.gray)
+    table.cell(advTable, 4, 2, str.tostring(distLowRSI), text_color=distLowRSI<=confirmBars?color.new(#00e676,0):color.gray)
+    
+    table.cell(advTable, 0, 3, "OBV", text_color=color.gray)
+    table.cell(advTable, 1, 3, f_stateTxt(stateOBVTop), text_color=stateOBVTop<=0?color.new(#ff6d00,0):color.gray)
+    table.cell(advTable, 2, 3, str.tostring(distTopOBV), text_color=distTopOBV<=confirmBars?color.new(#00e676,0):color.gray)
+    table.cell(advTable, 3, 3, f_stateTxt(stateOBVLow), text_color=stateOBVLow>=0?color.new(#00e676,0):color.gray)
+    table.cell(advTable, 4, 3, str.tostring(distLowOBV), text_color=distLowOBV<=confirmBars?color.new(#00e676,0):color.gray)
+    
+    if useStoch
+        table.cell(advTable, 0, 4, "Stoch", text_color=color.gray)
+        table.cell(advTable, 1, 4, f_stateTxt(stateStochTop), text_color=stateStochTop<=0?color.new(#ff6d00,0):color.gray)
+        table.cell(advTable, 2, 4, str.tostring(distTopStoch), text_color=distTopStoch<=confirmBars?color.new(#00e676,0):color.gray)
+        table.cell(advTable, 3, 4, f_stateTxt(stateStochLow), text_color=stateStochLow>=0?color.new(#00e676,0):color.gray)
+        table.cell(advTable, 4, 4, str.tostring(distLowStoch), text_color=distLowStoch<=confirmBars?color.new(#00e676,0):color.gray)
+    
+    table.cell(advTable, 0, 6, "SINAL TOPO", text_color=color.new(#ff1744,0))
+    sellText = showBearish ? bearishTier + " " + str.tostring(math.round(bearishScore*100)) + "%" : (allowSellSignals ? "---" : "🚫 BLOQ")
+    table.cell(advTable, 1, 6, sellText, text_color=color.new(#ff1744,0))
+    
+    table.cell(advTable, 0, 7, "SINAL FUNDO", text_color=color.new(#00e676,0))
+    buyText = showBullish ? bullishTier + " " + str.tostring(math.round(bullishScore*100)) + "%" : (allowBuySignals ? "---" : "🚫 BLOQ")
+    table.cell(advTable, 1, 7, buyText, text_color=color.new(#00e676,0))
+    
+    // عرض قوة الاتجاه
+    table.cell(advTable, 0, 9, "TREND", text_color=color.gray)
+    string trendDisplay = useTrendFilter ? (overallTrend == 1 ? "▲ " + str.tostring(math.round(trendStrengthValue*100)) + "%" : overallTrend == -1 ? "▼ " + str.tostring(math.round(trendStrengthValue*100)) + "%" : "● SIDEWAYS") : "FILTER OFF"
+    color trendDisplayColor = overallTrend == 1 ? color.new(#00e676,0) : overallTrend == -1 ? color.new(#ff1744,0) : color.gray
+    table.cell(advTable, 1, 9, trendDisplay, text_color=trendDisplayColor)
+    
+    table.cell(advTable, 0, 10, "Config", text_color=color.gray)
+    table.cell(advTable, 1, 10, "L" + str.tostring(L), text_color=color.gray)
+    table.cell(advTable, 2, 10, "Jan:" + str.tostring(confirmBars), text_color=color.gray)
+    table.cell(advTable, 3, 10, "Threshold:" + str.tostring(math.round(trendThreshold*100)) + "%", text_color=color.gray)
+
+//====================================================================================
+// 📋 SECTION 9: ALERTAS
+//====================================================================================
+
+alertcondition(showBearish and bearishTier == "A+", "🔻 VENDA A+", "Venda de alta qualidade detectada")
+alertcondition(showBullish and bullishTier == "A+", "🟢 COMPRA A+", "Compra de alta qualidade detectada")
+
+//====================================================================================
+// 📋 SECTION 10: (hidden plots removed — plot-limit fix; signals unchanged)
+//====================================================================================
+
+//====================================================================================
+// MODULE B: DRE Rise + Ichimoku S/R — exact original logic
+//====================================================================================
+//====================================================================================
+// تنبيهات حالات الصعود المستخرجة من صور imp-img
+// يدمج منطق BBPT (code predection) + إشارات شراء/بيع/ذهبية/تجميع (main2)
+// أي حالة تتحقق → سهم أخضر + لابل باسم الحالة + Alert فوري
+//====================================================================================
+
+grpWin = "⏱ Timing"
+lookbackBars = input.int(5, "نافذة التقاء الإشارات (شموع)", minval=1, maxval=20, group=grpWin, tooltip="شراء/بيع/ذهبية خلال آخر N شموع تُحسب ضمن الحالة")
+cooldownBars = input.int(3, "تبريد بين التنبيهات", minval=0, maxval=30, group=grpWin)
+minConf      = input.float(75.0, "أدنى ثقة شراء/بيع %", minval=60, maxval=95, group=grpWin)
+
+grpShow = "👁 Display"
+showLabels = input.bool(true, "عرض لابل الحالات", group=grpShow)
+showShapes = input.bool(true, "عرض أسهم على الشارت", group=grpShow)
+showBg     = input.bool(true, "تلوين خلفية الشمعة", group=grpShow)
+showDash   = input.bool(true, "لوحة الحالات", group=grpShow)
+
+grpCases = "✅ تفعيل الحالات"
+enC1  = input.bool(true, "C1 شراء + ذهبية حمراء + ترند أسفل", group=grpCases)
+enC2  = input.bool(true, "C2 بيع + ذهبية حمراء + ترند 1→2", group=grpCases)
+enC3  = input.bool(true, "C3 شراء + ذهبية حمراء + ترند تحت الخضراء", group=grpCases)
+enC4  = input.bool(true, "C4 TYCN: ذهبية + ترند تحت الخضراء نازل وقريب + تجميع", group=grpCases)
+enC5  = input.bool(true, "C5 مثلث أصفر + تلامس أبيض/أصفر سفلي", group=grpCases)
+enC6  = input.bool(true, "C6 برتقالي لمس الأسود (0) وارتفع", group=grpCases)
+enC7  = input.bool(true, "C7 بيع + ترند أبيض مرتكز على الأسود (0)", group=grpCases)
+enC8  = input.bool(true, "C8 بيع + ذهبية خضراء + أبيض تحت الأسود ≈0.5", group=grpCases)
+enC9  = input.bool(true, "C9 شراء + ترند ≈1.7 تحت الأزرق + أحمر كان فوق + ذهبية حمراء", group=grpCases)
+enC10 = input.bool(true, "C10 ترند 1→2 قريب من تماس 2 + شراء", group=grpCases)
+enC11 = input.bool(true, "C11 ذهبية×2 + تجميع + ترند سفلي", group=grpCases)
+enC12 = input.bool(true, "C12 ترند 1→2 + ذهبية", group=grpCases)
+enC13 = input.bool(true, "C13 برتقالي على الأسود (0) + أبيض في الحمراء + تجميع", group=grpCases)
+enC14 = input.bool(true, "C14 تقاطع أبيض × أسود (0)", group=grpCases)
+enC15 = input.bool(true, "C15 تم الكسر (أبيض يكسر برتقالي علوي لأعلى)", group=grpCases)
+enC16 = input.bool(true, "C16 TYCN: شمعة خضراء + ترند داخل الخضراء↑ بعد تلامس أزرق 2", group=grpCases)
+
+grpBBPT = "⬛ BBPT (code predection)"
+zeroSens   = input.float(0.15, "حساسية الصفر / التلامس", minval=0.0, maxval=1.0, step=0.01, group=grpBBPT)
+nearLvl2   = input.float(0.50, "قرب من مستوى 2 (تحت/تلامس)", minval=0.05, maxval=1.5, step=0.05, group=grpBBPT)
+trendLowMax = input.float(1.0, "ترند سفلي: أقصى قيمة", minval=-2.0, maxval=2.0, step=0.1, group=grpBBPT)
+
+grpMain = "🟢 main2 signals"
+minSignals = input.int(3, "حد أدنى أصوات الشراء/البيع", minval=2, maxval=6, group=grpMain)
+accBars    = input.int(20, "شموع كشف التجميع", minval=5, maxval=50, group=grpMain)
+accRangePct = input.float(0.12, "أقصى مدى تجميع % من السعر", minval=0.04, maxval=0.30, step=0.01, group=grpMain, tooltip="مستطيل تجميع: أعلى-أدنى خلال N شمعة ÷ السعر")
+accVolMult = input.float(1.2, "مضاعف حجم التجميع (اختياري)", minval=0.5, maxval=3.0, step=0.1, group=grpMain)
+
+//====================================================================================
+// BBPT CORE (من code predection)
+// مرجع الخطوط من صورة المستخدم:
+//   أسود ثابت  = Level 0 (المنتصف)          ← hline(0)
+//   أزرق ثابت  = Level +2 و Level -2         ← hline(±2)
+//   برتقالي علوي (حدود الخضراء) = BullTrend
+//   برتقالي سفلي (حدود الحمراء) = BearTrend2
+//   أبيض متحرك                   = Trend (= BullTrend - BearTrend)
+//   منطقة خضراء = فوق +2 | بنية = بين ±2 | حمراء = تحت -2
+//====================================================================================
+atr5 = ta.atr(5)
+BullTrend = (close - ta.lowest(low, 50)) / atr5
+BearTrend = (ta.highest(high, 50) - close) / atr5
+BearTrend2 = -1.0 * BearTrend
+Trend = BullTrend - BearTrend
+
+// —— حالات الخط الأبيض (Trend) ——
+trend_in_1_2      = Trend >= 1.0 and Trend <= 2.0                 // أعلى النصف البني تحت الأزرق +2
+trend_under_green = Trend < 2.0                                   // تحت منطقة الخضراء
+trend_in_green    = Trend > 2.0                                   // داخل المنطقة الخضراء (فوق الأزرق +2)
+trend_low         = Trend <= trendLowMax
+trend_falling     = Trend < Trend[1]
+trend_rising      = Trend > Trend[1]
+trend_near_2      = Trend >= (2.0 - nearLvl2) and Trend < 2.0      // قريب من تماس الأزرق العلوي من تحت
+trend_in_red      = Trend <= -2.0                                  // الأبيض داخل المنطقة الحمراء
+trend_on_black0   = math.abs(Trend) <= zeroSens                   // الأبيض مرتكز على الأسود (الصفر)
+trend_near_neg05  = Trend < 0 and math.abs(Trend) <= (0.5 + zeroSens)  // تحت الأسود ≈ 0.5
+
+// باصص لتحت وقريب من الخضراء (حالة TYCN الأولى)
+trend_down_near_green = trend_near_2 and trend_falling and (Trend[1] <= Trend[2] or Trend < Trend[2])
+
+// المنطقة الخضراء باصة لفوق + تلامس الشمعة السابقة مع الأزرق +2 (حالة TYCN الثانية)
+green_zone_up     = BullTrend > BullTrend[1] or (trend_in_green and trend_rising)
+prev_touch_blue2  = math.abs(Trend[1] - 2.0) <= nearLvl2 or (Trend[1] <= 2.0 and Trend > 2.0)
+green_candle      = close > open
+
+// —— برتقالي × أسود (الصفر) ——
+orange_near_black0 = math.abs(BullTrend) <= zeroSens or math.abs(BearTrend2) <= zeroSens
+orange_cross_up_0  = ta.crossover(BullTrend, 0) or ta.crossover(BearTrend2, 0)  // أصفر/برتقالي لمس الأسود وارتفع
+
+// —— تلامسات أخرى ——
+touch_white_orange_low = math.abs(Trend - BearTrend2) <= math.max(zeroSens, 0.25) and Trend < 0  // أبيض يلامس برتقالي سفلي
+break_up_bull          = ta.crossover(Trend, BullTrend)             // تم الكسر: أبيض يكسر برتقالي علوي لأعلى
+cross_black_zero       = ta.cross(Trend, 0)                         // تقاطع الأبيض مع الأسود (الصفر)
+red_was_above          = BearTrend2[1] > Trend[1] or BearTrend2[1] > 0
+
+//====================================================================================
+// main2 CORE (ذهبية / شراء / بيع / C1-C2 / تجميع)
+//====================================================================================
+atr = ta.atr(14)
+rsi_adv = ta.rsi(close, 14)
+[macdLine, signalLine, histLine] = ta.macd(close, 12, 26, 9)
+ema9  = ta.ema(close, 9)
+ema21 = ta.ema(close, 21)
+ema50 = ta.ema(close, 50)
+bb_basis = ta.sma(close, 20)
+bb_dev   = ta.stdev(close, 20)
+bb_upper = bb_basis + 2.0 * bb_dev
+bb_lower = bb_basis - 2.0 * bb_dev
+volume_ma = ta.sma(volume, 20)
+
+candle_body  = math.abs(close - open)
+candle_range = high - low
+upper_wick   = high - math.max(close, open)
+lower_wick   = math.min(close, open) - low
+body_pct     = candle_range > 0 ? (candle_body / candle_range) * 100.0 : 0.0
+
+bullish_wick = lower_wick > candle_body * 1.5 and close > open   // ذهبية خضراء
+bearish_wick = upper_wick > candle_body * 1.5 and close < open   // ذهبية حمراء
+
+highest20 = ta.highest(high, 20)
+lowest20  = ta.lowest(low, 20)
+near_low  = (low - lowest20) <= atr * 0.25
+near_high = (highest20 - high) <= atr * 0.25
+body_ok   = body_pct >= 15.0
+
+C1 = lower_wick > candle_body * 1.5 and close > open and body_ok and ema9 > ema21 and near_low
+C2 = high < high[1] and low > low[1] and close > open
+yellow_tri = C1 or C2                                            // المثلث الأصفر (BUY C1/C2)
+
+is_oversold  = rsi_adv < 30
+is_overbought = rsi_adv > 70
+macd_bull = macdLine > signalLine and histLine > histLine[1]
+macd_bear = macdLine < signalLine and histLine < histLine[1]
+vol_strong = volume > volume_ma * 1.2
+is_uptrend = ema9 > ema21 and ema21 > ema50
+is_downtrend = ema9 < ema21 and ema21 < ema50
+trend_strength = math.abs(ema9 - ema21) / ema21 * 100.0
+strong_trend = trend_strength > 1.5
+bb_bull_ext = close < bb_lower
+bb_bear_ext = close > bb_upper
+rev_bull = (open[1] - close[1]) > atr[1] * 0.6 and close > open and (close - open) > atr * 0.6 and close > close[1]
+rev_bear = close[1] > open[1] and (close[1] - open[1]) > atr[1] * 0.6 and close < open and (open - close) > atr * 0.6 and close < open[1]
+
+int bullVotes = 0
+int bearVotes = 0
+if is_oversold and rsi_adv > rsi_adv[1]
+    bullVotes += 2
+if macd_bull
+    bullVotes += 2
+if bb_bull_ext and is_uptrend
+    bullVotes += 2
+if vol_strong and macd_bull
+    bullVotes += 1
+if close > ema9 and ema9 > ema21
+    bullVotes += 1
+if rev_bull
+    bullVotes += 2
+if C1 or C2
+    bullVotes += 2
+
+if is_overbought and rsi_adv < rsi_adv[1]
+    bearVotes += 2
+if macd_bear
+    bearVotes += 2
+if bb_bear_ext and is_downtrend
+    bearVotes += 2
+if vol_strong and macd_bear
+    bearVotes += 1
+if close < ema9 and ema9 < ema21
+    bearVotes += 1
+if rev_bear
+    bearVotes += 3
+
+string sigType = "محايد"
+float conf = 50.0
+if bullVotes > bearVotes and bullVotes >= minSignals
+    sigType := "شراء"
+    conf := math.min(95.0, 70.0 + bullVotes * 5.0 + (is_oversold ? 5.0 : 0.0) + (vol_strong ? 5.0 : 0.0) + (strong_trend ? 5.0 : 0.0) + (rev_bull ? 5.0 : 0.0))
+else if bearVotes > bullVotes and bearVotes >= minSignals
+    sigType := "بيع"
+    conf := math.min(95.0, 70.0 + bearVotes * 5.0 + (is_overbought ? 5.0 : 0.0) + (vol_strong ? 5.0 : 0.0) + (strong_trend ? 5.0 : 0.0) + (rev_bear ? 5.0 : 0.0))
+
+buyNow  = sigType == "شراء" and conf >= minConf
+sellNow = sigType == "بيع"  and conf >= minConf
+
+// تجميع (مستطيل Accumulation) — مدى سعري مضغوط خلال N شمعة
+acc_hi = ta.highest(high, accBars)
+acc_lo = ta.lowest(low, accBars)
+acc_span_pct = close > 0 ? (acc_hi - acc_lo) / close : 1.0
+avg_vol = ta.sma(volume, accBars)
+vol_ok_acc = ta.highest(volume, accBars) >= avg_vol * accVolMult
+accumulation = acc_span_pct <= accRangePct and (accVolMult <= 1.0 or vol_ok_acc)
+
+//====================================================================================
+// نوافذ التقاء (إشارة خلال lookback)
+//====================================================================================
+recentTrue(bool cond, int n) =>
+    bool ok = cond
+    if n > 0
+        for i = 1 to n
+            ok := ok or cond[i]
+    ok
+
+buyRecent     = recentTrue(buyNow, lookbackBars)
+sellRecent    = recentTrue(sellNow, lookbackBars)
+redGoldRecent = recentTrue(bearish_wick, lookbackBars)
+grnGoldRecent = recentTrue(bullish_wick, lookbackBars)
+anyGoldRecent = redGoldRecent or grnGoldRecent
+anyGoldWide   = recentTrue(bearish_wick, math.max(lookbackBars, 10)) or recentTrue(bullish_wick, math.max(lookbackBars, 10))
+yellowRecent  = recentTrue(yellow_tri, lookbackBars)
+accRecent     = recentTrue(accumulation, math.max(lookbackBars, 10))
+
+// ذهبية مرتين خلال نافذة أوسع
+int goldHits = 0
+for i = 0 to lookbackBars * 3
+    if bearish_wick[i] or bullish_wick[i]
+        goldHits += 1
+twoGold = goldHits >= 2
+
+//====================================================================================
+// تعريف الحالات (من تعليقات الصور)
+//====================================================================================
+c1  = enC1  and buyRecent  and redGoldRecent and trend_low
+c2  = enC2  and sellRecent and redGoldRecent and trend_in_1_2
+c3  = enC3  and buyRecent  and redGoldRecent and trend_under_green
+// TYCN-1: ذهبية + ترند تحت الخضراء باصص لتحت وقريب منها + مستطيل تجميع
+c4  = enC4  and anyGoldWide and trend_down_near_green and accRecent
+c5  = enC5  and yellowRecent and touch_white_orange_low
+c6  = enC6  and orange_cross_up_0
+c7  = enC7  and sellRecent and trend_on_black0
+c8  = enC8  and sellRecent and grnGoldRecent and trend_near_neg05
+c9  = enC9  and buyRecent and trend_in_1_2 and red_was_above and redGoldRecent
+c10 = enC10 and buyRecent and trend_near_2
+c11 = enC11 and twoGold and accRecent and trend_low
+c12 = enC12 and anyGoldRecent and trend_in_1_2
+c13 = enC13 and orange_near_black0 and trend_in_red and accRecent
+c14 = enC14 and cross_black_zero and trend_rising
+c15 = enC15 and break_up_bull
+// TYCN-2: شمعة خضراء + ترند داخل الخضراء باصة لفوق + الشمعة السابقة لمست الأزرق +2 (قيمة≈2.30)
+c16 = enC16 and green_candle and trend_in_green and green_zone_up and prev_touch_blue2 and Trend <= 3.5
+
+anyCase = c1 or c2 or c3 or c4 or c5 or c6 or c7 or c8 or c9 or c10 or c11 or c12 or c13 or c14 or c15 or c16
+
+// تبريد
+var int lastFireBar = na
+canFire = na(lastFireBar) or (bar_index - lastFireBar) >= cooldownBars
+fire = anyCase and canFire and barstate.isconfirmed
+
+if fire
+    lastFireBar := bar_index
+
+//====================================================================================
+// اسم الحالة المعروضة
+//====================================================================================
+caseName() =>
+    string n = ""
+    if c1
+        n := "C1 شراء+ذهبية حمراء+ترند أسفل"
+    else if c2
+        n := "C2 بيع+ذهبية حمراء+ترند1-2"
+    else if c3
+        n := "C3 شراء+ذهبية+ترند تحت خضراء"
+    else if c9
+        n := "C9 شراء+ترند1-2+أحمر فوق+ذهبية"
+    else if c10
+        n := "C10 ترند≈2 + شراء"
+    else if c12
+        n := "C12 ترند1-2 + ذهبية"
+    else if c4
+        n := "C4 TYCN ذهبية+ترند نازل قرب خضراء+تجميع"
+    else if c11
+        n := "C11 ذهبية×2+تجميع+ترند سفلي"
+    else if c5
+        n := "C5 مثلث أصفر+تلامس سفلي"
+    else if c16
+        n := "C16 TYCN شمعة خضراء+ترند داخل خضراء↑ بعد أزرق2"
+    else if c6
+        n := "C6 برتقالي لمس أسود(0)↑"
+    else if c7
+        n := "C7 بيع+أبيض على أسود(0)"
+    else if c8
+        n := "C8 بيع+ذهبية خضراء+تحت0≈0.5"
+    else if c13
+        n := "C13 برتقالي@0 + أبيض في حمراء + تجميع"
+    else if c14
+        n := "C14 تقاطع أبيض×أسود(0)↑"
+    else if c15
+        n := "C15 تم الكسر أبيض×برتقالي↑"
+    n
+
+//====================================================================================
+// رسم DRE Rise (مع تعديل الموقع لتجنب التداخل)
+//====================================================================================
+bgcolor(showBg and fire ? color.new(color.lime, 85) : na)
+
+plotshape(showShapes and fire, title="Rise Case", style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.normal, text="صعود")
+
+if showLabels and fire
+    // أقرب للشمعة من طبقة BO/R حتى تبقى الطبقات مفصولة
+    label.new(bar_index, high + atr * 0.55, "⚡ " + caseName() + "\nTrend=" + str.tostring(Trend, "#.##"), 
+              style=label.style_label_down, color=color.new(#1b5e20, 10), textcolor=color.white, size=size.normal)
+
+//====================================================================================
+// Alerts DRE
+//====================================================================================
+// تنبيه موحّد لأي حالة صعود (C1–C16 عبر caseName) — وفّرنا plot-budget بعد دمج BSS
+alertcondition(fire, title="⚡ أي حالة صعود", message="DRE Rise: حالة صعود مهمة تحققت — راجع الشارت فوراً")
+
+if fire
+    alert("⚡ صعود: " + caseName() + " | Trend=" + str.tostring(Trend, "#.##") + " | " + syminfo.ticker, alert.freq_once_per_bar_close)
+
+//====================================================================================
+// Dashboard DRE (تم نقل الموضع إلى أسفل يسار لتجنب التداخل)
+//====================================================================================
+if showDash and barstate.islast
+    var table t = table.new(position.bottom_left, 2, 19, bgcolor=color.new(#0d1117, 15), border_width=1, border_color=color.gray)
+    table.cell(t, 0, 0, "الحالة", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(t, 1, 0, "الآن", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(t, 0, 1,  "C1 شراء+ذهبية↓", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 1,  c1 ? "✅" : "·", text_color=c1 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 2,  "C2 بيع+ذهبية 1-2", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 2,  c2 ? "✅" : "·", text_color=c2 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 3,  "C3 شراء تحت خضراء", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 3,  c3 ? "✅" : "·", text_color=c3 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 4,  "C4 TYCN ذهبية+نازل", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 4,  c4 ? "✅" : "·", text_color=c4 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 5,  "C5 مثلث+تلامس", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 5,  c5 ? "✅" : "·", text_color=c5 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 6,  "C6 برتقالي×أسود(0)↑", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 6,  c6 ? "✅" : "·", text_color=c6 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 7,  "C7 بيع+أبيض@أسود(0)", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 7,  c7 ? "✅" : "·", text_color=c7 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 8,  "C8 بيع+تحت أسود≈0.5", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 8,  c8 ? "✅" : "·", text_color=c8 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 9,  "C9 شراء+1-2+ذهبية", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 9,  c9 ? "✅" : "·", text_color=c9 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 10, "C10 ترند≈2+شراء", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 10, c10 ? "✅" : "·", text_color=c10 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 11, "C11 ذهبية×2", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 11, c11 ? "✅" : "·", text_color=c11 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 12, "C12 ترند1-2+ذهبية", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 12, c12 ? "✅" : "·", text_color=c12 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 13, "C13 برتقالي@0+حمراء", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 13, c13 ? "✅" : "·", text_color=c13 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 14, "C14 أبيض×أسود(0)", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 14, c14 ? "✅" : "·", text_color=c14 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 15, "C15 تم الكسر", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 15, c15 ? "✅" : "·", text_color=c15 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 16, "C16 TYCN خضراء↑", text_color=color.gray, text_size=size.tiny)
+    table.cell(t, 1, 16, c16 ? "✅" : "·", text_color=c16 ? color.lime : color.gray, text_size=size.tiny)
+    table.cell(t, 0, 17, "Trend", text_color=color.silver, text_size=size.tiny)
+    table.cell(t, 1, 17, str.tostring(Trend, "#.##"), text_color=trend_in_1_2 ? color.orange : trend_in_green ? color.lime : color.white, text_size=size.tiny)
+    table.cell(t, 0, 18, "FIRE", text_color=color.silver, text_size=size.tiny)
+    table.cell(t, 1, 18, fire ? "⚡ YES" : "NO", text_color=fire ? color.lime : color.red, text_size=size.small)
+
+//══════════════════════════════════════════════════════════════════════════════
+// ICHIMOKU LIVE R1-R3 + Fib-Style Historical S/R (دمج)
+//══════════════════════════════════════════════════════════════════════════════
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ICHIMOKU SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+groupIchi = "Ichimoku"
+
+conversionPeriods = input.int(9,  "Tenkan Length",      minval=1, group=groupIchi)
+basePeriods       = input.int(26, "Kijun Length",       minval=1, group=groupIchi)
+spanBPeriods      = input.int(52, "Senkou B Length",    minval=1, group=groupIchi)
+displacement      = input.int(26, "Cloud Displacement", minval=1, group=groupIchi)
+
+middleDonchian(int length) =>
+    (ta.lowest(low, length) + ta.highest(high, length)) / 2.0
+
+tenkan  = middleDonchian(conversionPeriods)
+kijun   = middleDonchian(basePeriods)
+senkouA = (tenkan + kijun) / 2.0
+senkouB = middleDonchian(spanBPeriods)
+chikou  = close
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DISPLAY SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+groupDisplay = "Display"
+
+showTenkan = input.bool(true,  "Show Tenkan", group=groupDisplay)
+showKijun  = input.bool(true,  "Show Kijun",  group=groupDisplay)
+showChikou = input.bool(true,  "Show Chikou", group=groupDisplay)
+showCloud  = input.bool(true,  "Show Cloud",  group=groupDisplay)
+
+tenkanColor = input.color(color.red,    "Tenkan Color",   group=groupDisplay)
+kijunColor  = input.color(color.blue,   "Kijun Color",    group=groupDisplay)
+chikouColor = input.color(color.teal,   "Chikou Color",   group=groupDisplay)
+bullCloud   = input.color(color.new(color.green, 82), "Bull Cloud", group=groupDisplay)
+bearCloud   = input.color(color.new(color.red,   82), "Bear Cloud", group=groupDisplay)
+
+// const colors here reduce plot-count (input colors still used by labels/tables elsewhere)
+plot(showTenkan ? tenkan : na, "Tenkan", color=color.red, linewidth=2)
+plot(showKijun  ? kijun  : na, "Kijun",  color=color.blue,  linewidth=2)
+plot(showChikou ? chikou : na, "Chikou", color=color.teal, linewidth=2, offset=-displacement)
+
+plotA = plot(showCloud ? senkouA : na, "Senkou A", color=color.green, linewidth=2, offset=displacement)
+plotB = plot(showCloud ? senkouB : na, "Senkou B", color=color.red, linewidth=2, offset=displacement)
+fill(plotA, plotB, color=showCloud ? (senkouA >= senkouB ? color.new(color.green, 82) : color.new(color.red, 82)) : na, title="Kumo")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// DIVERGENCE SETTINGS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+groupDiv = "Divergence Detection"
+
+leftBars   = input.int(5, "Pivot Left Bars",  minval=1, group=groupDiv)
+rightBars  = input.int(2, "Pivot Right Bars", minval=1, group=groupDiv,
+     tooltip="A signal is confirmed this many candles after the actual pivot.")
+minBars    = input.int(5, "Minimum Bars Between Pivots", minval=1, group=groupDiv)
+maxBars    = input.int(100, "Maximum Bars Between Pivots", minval=2, group=groupDiv)
+confirmClose = input.bool(true, "Confirm On Candle Close", group=groupDiv)
+
+useRegular = input.bool(true,  "Regular Divergences", group=groupDiv)
+useHidden  = input.bool(true,  "Hidden Divergences",  group=groupDiv)
+
+useCloudMid   = input.bool(true,  "Price vs Cloud Midpoint", group=groupDiv,
+     tooltip="Compares price pivots with the midpoint between unshifted Senkou A and Senkou B.")
+useTKSpread   = input.bool(true,  "Price vs Tenkan–Kijun Spread", group=groupDiv,
+     tooltip="Compares price pivots with Tenkan minus Kijun. Rising values indicate improving bullish momentum.")
+useThickness  = input.bool(false, "Price vs Cloud Thickness", group=groupDiv,
+     tooltip="Compares price pivots with the absolute distance between Senkou A and Senkou B.")
+
+stackSignals = input.bool(true, "Stack Multiple Signals", group=groupDiv,
+     tooltip="When enabled, every qualifying divergence is shown. Otherwise one combined BUY or SELL signal is printed.")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// INTERNAL DIVERGENCE SERIES
+// These use the current, unshifted Ichimoku calculations.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+cloudMid      = (senkouA + senkouB) / 2.0
+tkSpread      = tenkan - kijun
+cloudThickness = math.abs(senkouA - senkouB)
+
+// Price pivots
+pivotLow  = ta.pivotlow(low,  leftBars, rightBars)
+pivotHigh = ta.pivothigh(high, leftBars, rightBars)
+
+newLowPivot  = not na(pivotLow)
+newHighPivot = not na(pivotHigh)
+
+pivotLowBar  = bar_index - rightBars
+pivotHighBar = bar_index - rightBars
+
+confirmed = not confirmClose or barstate.isconfirmed
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PREVIOUS PIVOT STORAGE
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+var float prevLowPrice = na
+var int   prevLowBar   = na
+var float prevLowMid   = na
+var float prevLowTK    = na
+var float prevLowThick = na
+
+var float prevHighPrice = na
+var int   prevHighBar   = na
+var float prevHighMid   = na
+var float prevHighTK    = na
+var float prevHighThick = na
+
+// Signal flags
+bool bullMidReg = false
+bool bullTKReg = false
+bool bullThickReg = false
+bool bullMidHidden = false
+bool bullTKHidden = false
+bool bullThickHidden = false
+
+bool bearMidReg = false
+bool bearTKReg = false
+bool bearThickReg = false
+bool bearMidHidden = false
+bool bearTKHidden = false
+bool bearThickHidden = false
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BULLISH DIVERGENCES AT PRICE LOWS
+// Regular bullish: price makes lower low, Ichimoku metric makes higher low.
+// Hidden bullish:  price makes higher low, Ichimoku metric makes lower low.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if newLowPivot and confirmed
+    float currPrice = pivotLow
+    float currMid   = cloudMid[rightBars]
+    float currTK    = tkSpread[rightBars]
+    float currThick = cloudThickness[rightBars]
+
+    bool validDistance = not na(prevLowBar) and (pivotLowBar - prevLowBar >= minBars) and (pivotLowBar - prevLowBar <= maxBars)
+
+    if validDistance
+        bullMidReg      := useCloudMid  and useRegular and currPrice < prevLowPrice and currMid   > prevLowMid
+        bullTKReg       := useTKSpread  and useRegular and currPrice < prevLowPrice and currTK    > prevLowTK
+        bullThickReg    := useThickness and useRegular and currPrice < prevLowPrice and currThick > prevLowThick
+
+        bullMidHidden   := useCloudMid  and useHidden and currPrice > prevLowPrice and currMid   < prevLowMid
+        bullTKHidden    := useTKSpread  and useHidden and currPrice > prevLowPrice and currTK    < prevLowTK
+        bullThickHidden := useThickness and useHidden and currPrice > prevLowPrice and currThick < prevLowThick
+
+    prevLowPrice := currPrice
+    prevLowBar   := pivotLowBar
+    prevLowMid   := currMid
+    prevLowTK    := currTK
+    prevLowThick := currThick
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// BEARISH DIVERGENCES AT PRICE HIGHS
+// Regular bearish: price makes higher high, Ichimoku metric makes lower high.
+// Hidden bearish:  price makes lower high, Ichimoku metric makes higher high.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if newHighPivot and confirmed
+    float currPrice = pivotHigh
+    float currMid   = cloudMid[rightBars]
+    float currTK    = tkSpread[rightBars]
+    float currThick = cloudThickness[rightBars]
+
+    bool validDistance = not na(prevHighBar) and (pivotHighBar - prevHighBar >= minBars) and (pivotHighBar - prevHighBar <= maxBars)
+
+    if validDistance
+        bearMidReg      := useCloudMid  and useRegular and currPrice > prevHighPrice and currMid   < prevHighMid
+        bearTKReg       := useTKSpread  and useRegular and currPrice > prevHighPrice and currTK    < prevHighTK
+        bearThickReg    := useThickness and useRegular and currPrice > prevHighPrice and currThick < prevHighThick
+
+        bearMidHidden   := useCloudMid  and useHidden and currPrice < prevHighPrice and currMid   > prevHighMid
+        bearTKHidden    := useTKSpread  and useHidden and currPrice < prevHighPrice and currTK    > prevHighTK
+        bearThickHidden := useThickness and useHidden and currPrice < prevHighPrice and currThick > prevHighThick
+
+    prevHighPrice := currPrice
+    prevHighBar   := pivotHighBar
+    prevHighMid   := currMid
+    prevHighTK    := currTK
+    prevHighThick := currThick
+
+bullAny = bullMidReg or bullTKReg or bullThickReg or bullMidHidden or bullTKHidden or bullThickHidden
+bearAny = bearMidReg or bearTKReg or bearThickReg or bearMidHidden or bearTKHidden or bearThickHidden
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SIGNAL LABEL FUNCTION
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+f_signalLabel(bool bullish, string shortText, string signalName, string explanation, float y) =>
+    label.new(
+         bar_index - rightBars,
+         y,
+         shortText,
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=bullish ? label.style_label_up : label.style_label_down,
+         color=bullish ? color.new(color.green, 0) : color.new(color.red, 0),
+         textcolor=color.white,
+         size=size.normal,
+         tooltip=signalName + "\n" + explanation
+    )
+
+// إزاحة أكبر + تباعد أوضح حتى لا تتغطى لابلز B/HB/S/HS على بعضها
+float lowY  = low[rightBars]  - ta.atr(14)[rightBars] * 0.55
+float highY = high[rightBars] + ta.atr(14)[rightBars] * 0.55
+float stackStep = ta.atr(14)[rightBars] * 0.65
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// PRINT SIGNALS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if stackSignals
+    int bullStack = 0
+    if bullMidReg
+        f_signalLabel(true, "B", "BUY — Regular Cloud Midpoint Divergence",
+             "Price made a lower low while the Ichimoku cloud midpoint made a higher low. Bearish pressure is weakening.", lowY - bullStack * stackStep)
+        bullStack += 1
+    if bullTKReg
+        f_signalLabel(true, "B", "BUY — Regular Tenkan–Kijun Divergence",
+             "Price made a lower low while the Tenkan–Kijun spread made a higher low. Ichimoku momentum improved.", lowY - bullStack * stackStep)
+        bullStack += 1
+    if bullThickReg
+        f_signalLabel(true, "B", "BUY — Regular Cloud Thickness Divergence",
+             "Price made a lower low while cloud thickness made a higher low. The cloud structure strengthened against the price decline.", lowY - bullStack * stackStep)
+        bullStack += 1
+    if bullMidHidden
+        f_signalLabel(true, "HB", "BUY — Hidden Cloud Midpoint Divergence",
+             "Price made a higher low while the cloud midpoint made a lower low. This can support bullish trend continuation.", lowY - bullStack * stackStep)
+        bullStack += 1
+    if bullTKHidden
+        f_signalLabel(true, "HB", "BUY — Hidden Tenkan–Kijun Divergence",
+             "Price made a higher low while the Tenkan–Kijun spread made a lower low. This can indicate bullish continuation after an internal reset.", lowY - bullStack * stackStep)
+        bullStack += 1
+    if bullThickHidden
+        f_signalLabel(true, "HB", "BUY — Hidden Cloud Thickness Divergence",
+             "Price made a higher low while cloud thickness made a lower low. This can precede bullish trend continuation.", lowY - bullStack * stackStep)
+
+    int bearStack = 0
+    if bearMidReg
+        f_signalLabel(false, "S", "SELL — Regular Cloud Midpoint Divergence",
+             "Price made a higher high while the Ichimoku cloud midpoint made a lower high. Bullish pressure is weakening.", highY + bearStack * stackStep)
+        bearStack += 1
+    if bearTKReg
+        f_signalLabel(false, "S", "SELL — Regular Tenkan–Kijun Divergence",
+             "Price made a higher high while the Tenkan–Kijun spread made a lower high. Ichimoku momentum deteriorated.", highY + bearStack * stackStep)
+        bearStack += 1
+    if bearThickReg
+        f_signalLabel(false, "S", "SELL — Regular Cloud Thickness Divergence",
+             "Price made a higher high while cloud thickness made a lower high. The cloud structure weakened against the price rise.", highY + bearStack * stackStep)
+        bearStack += 1
+    if bearMidHidden
+        f_signalLabel(false, "HS", "SELL — Hidden Cloud Midpoint Divergence",
+             "Price made a lower high while the cloud midpoint made a higher high. This can support bearish trend continuation.", highY + bearStack * stackStep)
+        bearStack += 1
+    if bearTKHidden
+        f_signalLabel(false, "HS", "SELL — Hidden Tenkan–Kijun Divergence",
+             "Price made a lower high while the Tenkan–Kijun spread made a higher high. This can indicate bearish continuation after an internal reset.", highY + bearStack * stackStep)
+        bearStack += 1
+    if bearThickHidden
+        f_signalLabel(false, "HS", "SELL — Hidden Cloud Thickness Divergence",
+             "Price made a lower high while cloud thickness made a higher high. This can precede bearish trend continuation.", highY + bearStack * stackStep)
+else
+    if bullAny
+        f_signalLabel(true, "BUY", "BUY — Ichimoku Bullish Divergence",
+             "At least one bullish divergence was detected between price and an Ichimoku cloud metric. Hover over individual stacked signals by enabling Stack Multiple Signals.", lowY)
+    if bearAny
+        f_signalLabel(false, "SELL", "SELL — Ichimoku Bearish Divergence",
+             "At least one bearish divergence was detected between price and an Ichimoku cloud metric. Hover over individual stacked signals by enabling Stack Multiple Signals.", highY)
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// FORWARD SUPPORT / RESISTANCE AND BREAKOUT LEVELS
+// Confirmed swing highs become resistance candidates.
+// Confirmed swing lows become support candidates.
+// Levels extend to the right so they are visible before price retests them.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+groupLevels = "Breakout / Breakdown Levels"
+
+showSwingLevels = input.bool(true, "Show Swing Support / Resistance", group=groupLevels)
+levelPivotLeft   = input.int(5, "Level Pivot Left Bars", minval=1, group=groupLevels)
+levelPivotRight  = input.int(2, "Level Pivot Right Bars", minval=1, group=groupLevels,
+     tooltip="The level becomes available after this many confirmation candles.")
+maxActiveLevels  = input.int(6, "Maximum Active Levels Per Side", minval=1, maxval=20, group=groupLevels)
+removeBroken     = input.bool(false, "Remove Level After Break", group=groupLevels,
+     tooltip="Off keeps broken levels visible as possible support/resistance flips.")
+showBreakSignals = input.bool(true, "Show Breakout / Breakdown Signals", group=groupLevels)
+useCloseForBreak = input.bool(true, "Require Close Beyond Level", group=groupLevels)
+breakBufferATR   = input.float(0.05, "Break Buffer (ATR)", minval=0.0, step=0.01, group=groupLevels,
+     tooltip="Requires price to clear a level by this ATR fraction, reducing marginal false breaks.")
+
+showKijunLevel = input.bool(true, "Show Current Kijun S/R", group=groupLevels)
+showCloudLevels = input.bool(true, "Show Projected Cloud S/R", group=groupLevels,
+     tooltip="Shows the cloud top and bottom projected forward by the Ichimoku displacement.")
+
+resistanceColor = input.color(color.new(color.red, 10), "Resistance Color", group=groupLevels)
+supportColor    = input.color(color.new(color.green, 10), "Support Color", group=groupLevels)
+brokenColor     = input.color(color.new(color.gray, 45), "Broken Level Color", group=groupLevels)
+
+// Current dynamic Ichimoku reference levels (أوضح على الشارت)
+plot(showKijunLevel ? kijun : na, "Current Kijun S/R", color=color.blue, linewidth=3, style=plot.style_linebr)
+
+futureCloudTop    = math.max(senkouA, senkouB)
+futureCloudBottom = math.min(senkouA, senkouB)
+
+plot(showCloudLevels ? futureCloudTop : na, "Projected Cloud Resistance", color=color.red, linewidth=2, offset=displacement, style=plot.style_linebr)
+plot(showCloudLevels ? futureCloudBottom : na, "Projected Cloud Support", color=color.green, linewidth=2, offset=displacement, style=plot.style_linebr)
+
+// Store active horizontal swing levels
+var line[] resistanceLines = array.new_line()
+var float[] resistancePrices = array.new_float()
+var bool[] resistanceBroken = array.new_bool()
+
+var line[] supportLines = array.new_line()
+var float[] supportPrices = array.new_float()
+var bool[] supportBroken = array.new_bool()
+
+levelPivotHigh = ta.pivothigh(high, levelPivotLeft, levelPivotRight)
+levelPivotLow  = ta.pivotlow(low, levelPivotLeft, levelPivotRight)
+
+// Add a new confirmed resistance
+if showSwingLevels and not na(levelPivotHigh)
+    float newResistance = levelPivotHigh
+    line newLine = line.new(
+         bar_index - levelPivotRight,
+         newResistance,
+         bar_index,
+         newResistance,
+         xloc=xloc.bar_index,
+         extend=extend.right,
+         color=color.red,
+         width=2,
+         style=line.style_solid)
+    array.push(resistanceLines, newLine)
+    array.push(resistancePrices, newResistance)
+    array.push(resistanceBroken, false)
+
+    if array.size(resistanceLines) > maxActiveLevels
+        line oldLine = array.shift(resistanceLines)
+        line.delete(oldLine)
+        array.shift(resistancePrices)
+        array.shift(resistanceBroken)
+
+// Add a new confirmed support
+if showSwingLevels and not na(levelPivotLow)
+    float newSupport = levelPivotLow
+    line newLine = line.new(
+         bar_index - levelPivotRight,
+         newSupport,
+         bar_index,
+         newSupport,
+         xloc=xloc.bar_index,
+         extend=extend.right,
+         color=color.green,
+         width=2,
+         style=line.style_solid)
+    array.push(supportLines, newLine)
+    array.push(supportPrices, newSupport)
+    array.push(supportBroken, false)
+
+    if array.size(supportLines) > maxActiveLevels
+        line oldLine = array.shift(supportLines)
+        line.delete(oldLine)
+        array.shift(supportPrices)
+        array.shift(supportBroken)
+
+atrBreakBuffer = ta.atr(14) * breakBufferATR
+bool breakoutSignal = false
+bool breakdownSignal = false
+float brokenResistancePrice = na
+float brokenSupportPrice = na
+
+// Check resistance levels for upside breaks
+if array.size(resistanceLines) > 0
+    for i = array.size(resistanceLines) - 1 to 0
+        bool wasBroken = array.get(resistanceBroken, i)
+        float levelPrice = array.get(resistancePrices, i)
+        float breakValue = useCloseForBreak ? close : high
+        bool crossedNow = not wasBroken and breakValue > levelPrice + atrBreakBuffer and (useCloseForBreak ? close[1] <= levelPrice + atrBreakBuffer : high[1] <= levelPrice + atrBreakBuffer)
+
+        if crossedNow
+            breakoutSignal := true
+            brokenResistancePrice := levelPrice
+            array.set(resistanceBroken, i, true)
+            line activeLine = array.get(resistanceLines, i)
+            line.set_color(activeLine, brokenColor)
+            line.set_style(activeLine, line.style_dashed)
+
+            if removeBroken
+                line.delete(activeLine)
+                array.remove(resistanceLines, i)
+                array.remove(resistancePrices, i)
+                array.remove(resistanceBroken, i)
+
+// Check support levels for downside breaks
+if array.size(supportLines) > 0
+    for i = array.size(supportLines) - 1 to 0
+        bool wasBroken = array.get(supportBroken, i)
+        float levelPrice = array.get(supportPrices, i)
+        float breakValue = useCloseForBreak ? close : low
+        bool crossedNow = not wasBroken and breakValue < levelPrice - atrBreakBuffer and (useCloseForBreak ? close[1] >= levelPrice - atrBreakBuffer : low[1] >= levelPrice - atrBreakBuffer)
+
+        if crossedNow
+            breakdownSignal := true
+            brokenSupportPrice := levelPrice
+            array.set(supportBroken, i, true)
+            line activeLine = array.get(supportLines, i)
+            line.set_color(activeLine, brokenColor)
+            line.set_style(activeLine, line.style_dashed)
+
+            if removeBroken
+                line.delete(activeLine)
+                array.remove(supportLines, i)
+                array.remove(supportPrices, i)
+                array.remove(supportBroken, i)
+
+// Break labels — حجم أكبر + إزاحة أعلى/أسفل لتجنب التداخل مع DRE و Rejection
+if showBreakSignals and breakoutSignal
+    label.new(
+         bar_index,
+         high + atr * 1.4,
+         "BO",
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=label.style_label_down,
+         color=color.new(color.green, 0),
+         textcolor=color.white,
+         size=size.normal,
+         tooltip="BREAKOUT\nPrice moved above confirmed swing resistance at " + str.tostring(brokenResistancePrice, format.mintick) + ". The broken resistance may become support on a retest.")
+
+if showBreakSignals and breakdownSignal
+    label.new(
+         bar_index,
+         low - atr * 1.4,
+         "BD",
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=label.style_label_up,
+         color=color.new(color.red, 0),
+         textcolor=color.white,
+         size=size.normal,
+         tooltip="BREAKDOWN\nPrice moved below confirmed swing support at " + str.tostring(brokenSupportPrice, format.mintick) + ". The broken support may become resistance on a retest.")
+
+// Optional nearest-level dashboard (تم نقل الموضع إلى أعلى يسار)
+showLevelTable = input.bool(true, "Show Nearest-Level Table", group=groupLevels)
+tablePosition = input.string("Top Left", "Table Position", options=["Top Right", "Top Left", "Bottom Right", "Bottom Left"], group=groupLevels)
+
+tablePos = tablePosition == "Top Left" ? position.top_left :
+     tablePosition == "Bottom Right" ? position.bottom_right :
+     tablePosition == "Bottom Left" ? position.bottom_left : position.top_right
+
+var table levelTable = table.new(tablePos, 2, 5, border_width=1)
+
+float nearestResistance = na
+float nearestSupport = na
+
+if array.size(resistancePrices) > 0
+    for i = 0 to array.size(resistancePrices) - 1
+        float candidate = array.get(resistancePrices, i)
+        bool isBroken = array.get(resistanceBroken, i)
+        if not isBroken and candidate > close
+            nearestResistance := na(nearestResistance) ? candidate : math.min(nearestResistance, candidate)
+
+if array.size(supportPrices) > 0
+    for i = 0 to array.size(supportPrices) - 1
+        float candidate = array.get(supportPrices, i)
+        bool isBroken = array.get(supportBroken, i)
+        if not isBroken and candidate < close
+            nearestSupport := na(nearestSupport) ? candidate : math.max(nearestSupport, candidate)
+
+float resistanceDistancePct = not na(nearestResistance) ? (nearestResistance - close) / close * 100.0 : na
+float supportDistancePct = not na(nearestSupport) ? (close - nearestSupport) / close * 100.0 : na
+
+if barstate.islast
+    if showLevelTable
+        table.cell(levelTable, 0, 0, "LEVEL", text_color=color.white, bgcolor=color.new(color.gray, 60))
+        table.cell(levelTable, 1, 0, "PRICE / DISTANCE", text_color=color.white, bgcolor=color.new(color.gray, 60))
+
+        table.cell(levelTable, 0, 1, "Resistance", text_color=color.white, bgcolor=color.new(color.red, 65))
+        table.cell(levelTable, 1, 1, na(nearestResistance) ? "None" : str.tostring(nearestResistance, format.mintick) + "  (" + str.tostring(resistanceDistancePct, "#.##") + "%)", text_color=color.white)
+
+        table.cell(levelTable, 0, 2, "Support", text_color=color.white, bgcolor=color.new(color.green, 65))
+        table.cell(levelTable, 1, 2, na(nearestSupport) ? "None" : str.tostring(nearestSupport, format.mintick) + "  (" + str.tostring(supportDistancePct, "#.##") + "%)", text_color=color.white)
+
+        table.cell(levelTable, 0, 3, "Cloud Top", text_color=color.white, bgcolor=color.new(color.red, 80))
+        table.cell(levelTable, 1, 3, str.tostring(futureCloudTop, format.mintick), text_color=color.white)
+
+        table.cell(levelTable, 0, 4, "Cloud Bottom", text_color=color.white, bgcolor=color.new(color.green, 80))
+        table.cell(levelTable, 1, 4, str.tostring(futureCloudBottom, format.mintick), text_color=color.white)
+    else
+        table.clear(levelTable, 0, 0, 1, 4)
+
+
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ICHIMOKU SUPPORT / RESISTANCE REJECTION SIGNALS
+//
+// Cloud interpretation:
+// • Cloud Top    = upper edge of the Kumo.
+// • Cloud Bottom = lower edge of the Kumo.
+// • Price above cloud: Cloud Top is first support, Cloud Bottom is deeper support.
+// • Price below cloud: Cloud Bottom is first resistance, Cloud Top is deeper resistance.
+// • Price inside cloud: both edges are active boundaries.
+// • Kijun is a dynamic equilibrium support/resistance level.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+groupReject = "Ichimoku Rejection Signals"
+
+rejectionSignalMode = input.string(
+     "Live Intrabar",
+     "Rejection Signal Mode",
+     options=["Live Intrabar", "Confirmed on Close"],
+     group=groupReject,
+     tooltip="Live Intrabar prints and updates R1–R3 during the active candle. It may disappear before close if the rejection fails. Confirmed on Close only prints after the candle closes."
+)
+liveRejections = rejectionSignalMode == "Live Intrabar"
+rejectionTimingOk = liveRejections or barstate.isconfirmed
+
+showCloudRejections = input.bool(true, "Show Cloud Rejections", group=groupReject)
+showKijunRejections = input.bool(true, "Show Kijun Rejections", group=groupReject)
+rejectionUseCurrentCloud = input.bool(true, "Use Current Cloud At Price", group=groupReject,
+     tooltip="Uses the cloud that is visually aligned with the current candle. This is usually the correct choice for rejection signals.")
+rejectionToleranceATR = input.float(0.15, "Touch Tolerance (ATR)", minval=0.0, step=0.01, group=groupReject)
+minWickATR = input.float(0.10, "Minimum Rejection Wick (ATR)", minval=0.0, step=0.01, group=groupReject)
+requireCloseBack = input.bool(true, "Require Close Back Beyond Level", group=groupReject)
+requireCandleDirection = input.bool(false, "Require Bull/Bear Candle", group=groupReject)
+onlyFirstTouch = input.bool(false, "Only First Touch After 5 Bars", group=groupReject)
+
+// Cloud visually aligned to the current bar.
+// Senkou spans are plotted forward, so the cloud visible at the current candle
+// comes from calculations displacement bars ago.
+alignedCloudA = rejectionUseCurrentCloud ? senkouA[displacement] : senkouA
+alignedCloudB = rejectionUseCurrentCloud ? senkouB[displacement] : senkouB
+
+cloudTopSR = math.max(alignedCloudA, alignedCloudB)
+cloudBottomSR = math.min(alignedCloudA, alignedCloudB)
+
+atrReject = ta.atr(14)
+touchTol = atrReject * rejectionToleranceATR
+minWick = atrReject * minWickATR
+
+bullBody = close > open
+bearBody = close < open
+
+lowerWick = math.min(open, close) - low
+upperWick = high - math.max(open, close)
+
+priceAboveCloud = close > cloudTopSR
+priceBelowCloud = close < cloudBottomSR
+priceInsideCloud = close <= cloudTopSR and close >= cloudBottomSR
+
+// Bullish rejection logic:
+// price trades into/below a support level, leaves a lower wick,
+// then closes back above or sufficiently away from that level.
+f_bullReject(float level) =>
+    bool touched = low <= level + touchTol
+    bool wickOk = lowerWick >= minWick
+    bool closeOk = requireCloseBack ? close > level : close > low + (high - low) * 0.50
+    bool candleOk = not requireCandleDirection or bullBody
+    touched and wickOk and closeOk and candleOk
+
+// Bearish rejection logic:
+// price trades into/above a resistance level, leaves an upper wick,
+// then closes back below or sufficiently away from that level.
+f_bearReject(float level) =>
+    bool touched = high >= level - touchTol
+    bool wickOk = upperWick >= minWick
+    bool closeOk = requireCloseBack ? close < level : close < high - (high - low) * 0.50
+    bool candleOk = not requireCandleDirection or bearBody
+    touched and wickOk and closeOk and candleOk
+
+// First-touch filter
+recentTouchTop = ta.barssince(low <= cloudTopSR + touchTol or high >= cloudTopSR - touchTol)
+recentTouchBottom = ta.barssince(low <= cloudBottomSR + touchTol or high >= cloudBottomSR - touchTol)
+recentTouchKijun = ta.barssince(low <= kijun + touchTol or high >= kijun - touchTol)
+
+topFirstTouchOk = not onlyFirstTouch or na(recentTouchTop[1]) or recentTouchTop[1] > 5
+bottomFirstTouchOk = not onlyFirstTouch or na(recentTouchBottom[1]) or recentTouchBottom[1] > 5
+kijunFirstTouchOk = not onlyFirstTouch or na(recentTouchKijun[1]) or recentTouchKijun[1] > 5
+
+// Above the cloud:
+// top edge = first support, bottom edge = deeper support.
+bullRejectCloudTop =
+     showCloudRejections and priceAboveCloud and topFirstTouchOk and f_bullReject(cloudTopSR)
+
+bullRejectCloudBottom =
+     showCloudRejections and priceAboveCloud and bottomFirstTouchOk and f_bullReject(cloudBottomSR)
+
+// Below the cloud:
+// bottom edge = first resistance, top edge = deeper resistance.
+bearRejectCloudBottom =
+     showCloudRejections and priceBelowCloud and bottomFirstTouchOk and f_bearReject(cloudBottomSR)
+
+bearRejectCloudTop =
+     showCloudRejections and priceBelowCloud and topFirstTouchOk and f_bearReject(cloudTopSR)
+
+// Inside the cloud:
+// bottom acts as support, top acts as resistance.
+bullRejectInsideBottom =
+     showCloudRejections and priceInsideCloud and bottomFirstTouchOk and f_bullReject(cloudBottomSR)
+
+bearRejectInsideTop =
+     showCloudRejections and priceInsideCloud and topFirstTouchOk and f_bearReject(cloudTopSR)
+
+// Kijun rejections
+bullRejectKijun =
+     showKijunRejections and kijunFirstTouchOk and close >= kijun and f_bullReject(kijun)
+
+bearRejectKijun =
+     showKijunRejections and kijunFirstTouchOk and close <= kijun and f_bearReject(kijun)
+
+bullCloudRejectAny = bullRejectCloudTop or bullRejectCloudBottom or bullRejectInsideBottom
+bearCloudRejectAny = bearRejectCloudBottom or bearRejectCloudTop or bearRejectInsideTop
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// REJECTION STRENGTH SCORE
+// Only stronger Ichimoku rejections print. All signals use the same "R"
+// label; color and position show direction.
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+bullScore = 0
+bearScore = 0
+
+// Core level weight
+bullScore += bullRejectCloudTop ? 2 : 0
+bullScore += bullRejectCloudBottom ? 3 : 0
+bullScore += bullRejectInsideBottom ? 2 : 0
+bullScore += bullRejectKijun ? 1 : 0
+
+bearScore += bearRejectCloudBottom ? 2 : 0
+bearScore += bearRejectCloudTop ? 3 : 0
+bearScore += bearRejectInsideTop ? 2 : 0
+bearScore += bearRejectKijun ? 1 : 0
+
+// Tenkan/Kijun directional agreement
+bullScore += tenkan > kijun ? 1 : 0
+bearScore += tenkan < kijun ? 1 : 0
+
+// Future cloud agreement
+bullScore += senkouA > senkouB ? 2 : 0
+bearScore += senkouA < senkouB ? 2 : 0
+
+// Chikou confirmation versus historical price
+bullScore += chikou > close[displacement] ? 2 : 0
+bearScore += chikou < close[displacement] ? 2 : 0
+
+bullRejectionSignal = rejectionTimingOk and (bullCloudRejectAny or bullRejectKijun)
+bearRejectionSignal = rejectionTimingOk and (bearCloudRejectAny or bearRejectKijun)
+
+bullRejectSource =
+     bullRejectCloudBottom ? "deep cloud support" :
+     bullRejectCloudTop ? "cloud-top support" :
+     bullRejectInsideBottom ? "inside-cloud support" :
+     bullRejectKijun ? "Kijun support" : "Ichimoku support"
+
+bearRejectSource =
+     bearRejectCloudTop ? "deep cloud resistance" :
+     bearRejectCloudBottom ? "cloud-bottom resistance" :
+     bearRejectInsideTop ? "inside-cloud resistance" :
+     bearRejectKijun ? "Kijun resistance" : "Ichimoku resistance"
+
+// Three-level rejection quality:
+// R1 = basic rejection
+// R2 = good rejection with added Ichimoku agreement
+// R3 = strongest rejection with broad Ichimoku confluence
+bullRLevel = bullScore >= 6 ? 3 : bullScore >= 3 ? 2 : 1
+bearRLevel = bearScore >= 6 ? 3 : bearScore >= 3 ? 2 : 1
+
+bullRText = "R" + str.tostring(bullRLevel)
+bearRText = "R" + str.tostring(bearRLevel)
+
+bullStrengthText = bullRLevel == 3 ? "High" : bullRLevel == 2 ? "Medium" : "Basic"
+bearStrengthText = bearRLevel == 3 ? "High" : bearRLevel == 2 ? "Medium" : "Basic"
+
+bullSignalColor =
+     bullRLevel == 3 ? color.new(color.rgb(0, 100, 0), 0) :
+     bullRLevel == 2 ? color.new(color.green, 0) :
+     color.new(color.green, 55)
+
+bearSignalColor =
+     bearRLevel == 3 ? color.new(color.rgb(139, 0, 0), 0) :
+     bearRLevel == 2 ? color.new(color.red, 0) :
+     color.new(color.red, 55)
+
+// Live signals are semi-transparent while the current candle is still open.
+// They become fully opaque when the candle closes.
+isProvisionalLiveSignal = liveRejections and barstate.isrealtime and not barstate.isconfirmed
+bullDisplayColor = isProvisionalLiveSignal ? color.new(bullSignalColor, 45) : bullSignalColor
+bearDisplayColor = isProvisionalLiveSignal ? color.new(bearSignalColor, 45) : bearSignalColor
+timingText = isProvisionalLiveSignal ? "Live intrabar — provisional" : "Confirmed"
+
+// Rejection R1–R3 — حجم أكبر + طبقة أبعد من BO/BD حتى لا تتغطى
+if bullRejectionSignal
+    label.new(
+         bar_index,
+         low - atrReject * 2.2,
+         bullRText,
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=label.style_label_up,
+         color=bullDisplayColor,
+         textcolor=color.white,
+         size=size.normal,
+         tooltip="Bullish Rejection " + bullRText +
+             "\n" + timingText +
+             "\nPrice tested " + bullRejectSource + " and buyers rejected lower prices." +
+             "\nStrength: " + bullStrengthText +
+             "\nIchimoku score: " + str.tostring(bullScore) + "/10")
+
+if bearRejectionSignal
+    label.new(
+         bar_index,
+         high + atrReject * 2.2,
+         bearRText,
+         xloc=xloc.bar_index,
+         yloc=yloc.price,
+         style=label.style_label_down,
+         color=bearDisplayColor,
+         textcolor=color.white,
+         size=size.normal,
+         tooltip="Bearish Rejection " + bearRText +
+             "\n" + timingText +
+             "\nPrice tested " + bearRejectSource + " and sellers rejected higher prices." +
+             "\nStrength: " + bearStrengthText +
+             "\nIchimoku score: " + str.tostring(bearScore) + "/10")
+
+alertcondition(bullRejectionSignal, title="Bullish Ichimoku Rejection", message="Strong bullish Ichimoku rejection on {{ticker}} {{interval}}")
+alertcondition(bearRejectionSignal, title="Bearish Ichimoku Rejection", message="Strong bearish Ichimoku rejection on {{ticker}} {{interval}}")
+
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+//══════════════════════════════════════════════════════════════════════════════
+// ICHIMOKU DYNAMIC SUPPORT / RESISTANCE ROADMAP
+//
+// Sources:
+//   • Kijun
+//   • Tenkan
+//   • Current cloud top/bottom
+//   • Future cloud top/bottom
+//   • Flat Span B shelf
+//   • Optional confirmed swing high/low
+//
+// The nearest levels above price are ranked R1–R5.
+// The nearest levels below price are ranked S1–S5.
+// Strength is based on Ichimoku confluence, flatness and proximity.
+//══════════════════════════════════════════════════════════════════════════════
+groupRoadmap = "Ichimoku Dynamic S/R Roadmap"
+
+showRoadmap       = input.bool(true, "Show Ichimoku Roadmap", group=groupRoadmap)
+showRoadmapLines  = input.bool(true, "Show Current Ranked S/R Lines", group=groupRoadmap)
+showRoadmapTable  = input.bool(true, "Show Roadmap Table", group=groupRoadmap)
+showLevelLabels   = input.bool(true, "Show R/S Labels at Right Edge", group=groupRoadmap)
+roadmapCount      = input.int(5, "Levels Per Side", minval=1, maxval=5, group=groupRoadmap)
+mergeDistanceATR  = input.float(0.35, "Merge Nearby Levels (ATR)", minval=0.05, step=0.05, group=groupRoadmap)
+flatLookback      = input.int(10, "Flat Span B Lookback", minval=2, maxval=100, group=groupRoadmap)
+swingLeft         = input.int(3, "Swing Left Bars", minval=1, group=groupRoadmap)
+swingRight        = input.int(3, "Swing Right Bars", minval=1, group=groupRoadmap)
+useSwingLevels    = input.bool(true, "Use Confirmed Swing Confluence", group=groupRoadmap)
+
+roadmapResistanceColor = input.color(color.red, "Resistance Color", group=groupRoadmap)
+roadmapSupportColor    = input.color(color.green, "Support Color", group=groupRoadmap)
+roadmapNeutralColor    = input.color(color.gray, "Neutral Color", group=groupRoadmap)
+
+float roadmapATR = ta.atr(14)
+float mergeDistance = math.max(syminfo.mintick, roadmapATR * mergeDistanceATR)
+
+// Current visually aligned cloud.
+float roadmapCloudTop = math.max(senkouA[displacement], senkouB[displacement])
+float roadmapCloudBottom = math.min(senkouA[displacement], senkouB[displacement])
+
+// Projected cloud values at the current bar, representing the cloud plotted forward.
+float roadmapFutureTop = math.max(senkouA, senkouB)
+float roadmapFutureBottom = math.min(senkouA, senkouB)
+
+// Flat Span B shelf: a flat Kumo boundary often behaves as a price magnet / barrier.
+bool spanBFlat = ta.highest(senkouB, flatLookback) == ta.lowest(senkouB, flatLookback)
+float flatSpanBLevel = spanBFlat ? senkouB : na
+
+// Most recent confirmed price swings.
+float roadmapPivotHigh = ta.pivothigh(high, swingLeft, swingRight)
+float roadmapPivotLow  = ta.pivotlow(low, swingLeft, swingRight)
+
+var float lastRoadmapSwingHigh = na
+var float lastRoadmapSwingLow = na
+
+if not na(roadmapPivotHigh)
+    lastRoadmapSwingHigh := roadmapPivotHigh
+if not na(roadmapPivotLow)
+    lastRoadmapSwingLow := roadmapPivotLow
+
+// Candidate arrays.
+var float[] roadmapLevels = array.new_float()
+var string[] roadmapNames = array.new_string()
+var int[] roadmapScores = array.new_int()
+
+array.clear(roadmapLevels)
+array.clear(roadmapNames)
+array.clear(roadmapScores)
+
+f_addRoadmapCandidate(float level, string name, int baseScore) =>
+    if not na(level)
+        array.push(roadmapLevels, level)
+        array.push(roadmapNames, name)
+        array.push(roadmapScores, baseScore)
+
+f_addRoadmapCandidate(kijun, "Kijun", 4)
+f_addRoadmapCandidate(tenkan, "Tenkan", 2)
+f_addRoadmapCandidate(roadmapCloudTop, "Cloud Top", 4)
+f_addRoadmapCandidate(roadmapCloudBottom, "Cloud Bottom", 4)
+f_addRoadmapCandidate(roadmapFutureTop, "Future Cloud Top", 3)
+f_addRoadmapCandidate(roadmapFutureBottom, "Future Cloud Bottom", 3)
+f_addRoadmapCandidate(flatSpanBLevel, "Flat Span B", 5)
+
+if useSwingLevels
+    f_addRoadmapCandidate(lastRoadmapSwingHigh, "Swing High", 3)
+    f_addRoadmapCandidate(lastRoadmapSwingLow, "Swing Low", 3)
+
+// Merge nearby candidate levels into confluence zones.
+var float[] mergedLevels = array.new_float()
+var string[] mergedNames = array.new_string()
+var int[] mergedScores = array.new_int()
+var int[] mergedCounts = array.new_int()
+
+array.clear(mergedLevels)
+array.clear(mergedNames)
+array.clear(mergedScores)
+array.clear(mergedCounts)
+
+int candidateCount = array.size(roadmapLevels)
+if candidateCount > 0
+    for i = 0 to candidateCount - 1
+        float candidateLevel = array.get(roadmapLevels, i)
+        string candidateName = array.get(roadmapNames, i)
+        int candidateScore = array.get(roadmapScores, i)
+
+        int mergeIndex = -1
+        int mergedCountNow = array.size(mergedLevels)
+
+        if mergedCountNow > 0
+            for j = 0 to mergedCountNow - 1
+                if math.abs(candidateLevel - array.get(mergedLevels, j)) <= mergeDistance
+                    mergeIndex := j
+                    break
+
+        if mergeIndex == -1
+            array.push(mergedLevels, candidateLevel)
+            array.push(mergedNames, candidateName)
+            array.push(mergedScores, candidateScore)
+            array.push(mergedCounts, 1)
+        else
+            int oldCount = array.get(mergedCounts, mergeIndex)
+            float oldLevel = array.get(mergedLevels, mergeIndex)
+            float mergedLevel = (oldLevel * oldCount + candidateLevel) / (oldCount + 1)
+            string oldName = array.get(mergedNames, mergeIndex)
+            int oldScore = array.get(mergedScores, mergeIndex)
+
+            array.set(mergedLevels, mergeIndex, mergedLevel)
+            array.set(mergedNames, mergeIndex, oldName + " + " + candidateName)
+            array.set(mergedScores, mergeIndex, math.min(10, oldScore + candidateScore))
+            array.set(mergedCounts, mergeIndex, oldCount + 1)
+
+// Additional quality adjustments.
+int mergedTotal = array.size(mergedLevels)
+if mergedTotal > 0
+    for i = 0 to mergedTotal - 1
+        float level = array.get(mergedLevels, i)
+        int score = array.get(mergedScores, i)
+        int count = array.get(mergedCounts, i)
+
+        // Extra confluence bonus.
+        score += count >= 3 ? 2 : count == 2 ? 1 : 0
+
+        // Closer levels receive a small relevance bonus.
+        float distanceATR = roadmapATR > 0 ? math.abs(level - close) / roadmapATR : 100.0
+        score += distanceATR <= 0.75 ? 1 : 0
+
+        array.set(mergedScores, i, math.min(score, 10))
+
+// Separate resistance and support.
+var float[] resistanceLevels = array.new_float()
+var string[] resistanceNames = array.new_string()
+var int[] resistanceScores = array.new_int()
+
+var float[] supportLevels = array.new_float()
+var string[] supportNames = array.new_string()
+var int[] supportScores = array.new_int()
+
+array.clear(resistanceLevels)
+array.clear(resistanceNames)
+array.clear(resistanceScores)
+array.clear(supportLevels)
+array.clear(supportNames)
+array.clear(supportScores)
+
+if mergedTotal > 0
+    for i = 0 to mergedTotal - 1
+        float level = array.get(mergedLevels, i)
+        string name = array.get(mergedNames, i)
+        int score = array.get(mergedScores, i)
+
+        if level > close
+            array.push(resistanceLevels, level)
+            array.push(resistanceNames, name)
+            array.push(resistanceScores, score)
+        else if level < close
+            array.push(supportLevels, level)
+            array.push(supportNames, name)
+            array.push(supportScores, score)
+
+// Sort resistance ascending: nearest resistance first.
+int resistanceCount = array.size(resistanceLevels)
+if resistanceCount > 1
+    for i = 0 to resistanceCount - 2
+        for j = i + 1 to resistanceCount - 1
+            if array.get(resistanceLevels, j) < array.get(resistanceLevels, i)
+                float tempLevel = array.get(resistanceLevels, i)
+                string tempName = array.get(resistanceNames, i)
+                int tempScore = array.get(resistanceScores, i)
+
+                array.set(resistanceLevels, i, array.get(resistanceLevels, j))
+                array.set(resistanceNames, i, array.get(resistanceNames, j))
+                array.set(resistanceScores, i, array.get(resistanceScores, j))
+
+                array.set(resistanceLevels, j, tempLevel)
+                array.set(resistanceNames, j, tempName)
+                array.set(resistanceScores, j, tempScore)
+
+// Sort support descending: nearest support first.
+int supportCount = array.size(supportLevels)
+if supportCount > 1
+    for i = 0 to supportCount - 2
+        for j = i + 1 to supportCount - 1
+            if array.get(supportLevels, j) > array.get(supportLevels, i)
+                float tempLevel = array.get(supportLevels, i)
+                string tempName = array.get(supportNames, i)
+                int tempScore = array.get(supportScores, i)
+
+                array.set(supportLevels, i, array.get(supportLevels, j))
+                array.set(supportNames, i, array.get(supportNames, j))
+                array.set(supportScores, i, array.get(supportScores, j))
+
+                array.set(supportLevels, j, tempLevel)
+                array.set(supportNames, j, tempName)
+                array.set(supportScores, j, tempScore)
+
+// Candle-by-candle dotted roadmap.
+//
+// This deliberately uses plot.style_circles rather than projected line objects.
+// It behaves like the Fib code:
+//   • every candle stores the S/R value historically
+//   • old levels remain visible automatically
+//   • current levels end at the latest candle
+//   • no long artificial extension into empty chart space
+
+float roadmapR1 = resistanceCount > 0 and roadmapCount >= 1 ? array.get(resistanceLevels, 0) : na
+float roadmapR2 = resistanceCount > 1 and roadmapCount >= 2 ? array.get(resistanceLevels, 1) : na
+float roadmapR3 = resistanceCount > 2 and roadmapCount >= 3 ? array.get(resistanceLevels, 2) : na
+float roadmapR4 = resistanceCount > 3 and roadmapCount >= 4 ? array.get(resistanceLevels, 3) : na
+float roadmapR5 = resistanceCount > 4 and roadmapCount >= 5 ? array.get(resistanceLevels, 4) : na
+
+float roadmapS1 = supportCount > 0 and roadmapCount >= 1 ? array.get(supportLevels, 0) : na
+float roadmapS2 = supportCount > 1 and roadmapCount >= 2 ? array.get(supportLevels, 1) : na
+float roadmapS3 = supportCount > 2 and roadmapCount >= 3 ? array.get(supportLevels, 2) : na
+float roadmapS4 = supportCount > 3 and roadmapCount >= 4 ? array.get(supportLevels, 3) : na
+float roadmapS5 = supportCount > 4 and roadmapCount >= 5 ? array.get(supportLevels, 4) : na
+
+// خطوط مستويات Roadmap ظاهرة كـ linebr (أوضح من الدوائر)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapR1 : na,
+     "Ichimoku Resistance R1",
+     color=color.red,
+     linewidth=3,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapR2 : na,
+     "Ichimoku Resistance R2",
+     color=color.new(color.red, 20),
+     linewidth=2,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapR3 : na,
+     "Ichimoku Resistance R3",
+     color=color.new(color.red, 35),
+     linewidth=2,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapR4 : na,
+     "Ichimoku Resistance R4",
+     color=color.new(color.red, 50),
+     linewidth=1,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapR5 : na,
+     "Ichimoku Resistance R5",
+     color=color.new(color.red, 60),
+     linewidth=1,
+     style=plot.style_linebr
+)
+
+plot(
+     showRoadmap and showRoadmapLines ? roadmapS1 : na,
+     "Ichimoku Support S1",
+     color=color.green,
+     linewidth=3,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapS2 : na,
+     "Ichimoku Support S2",
+     color=color.new(color.green, 20),
+     linewidth=2,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapS3 : na,
+     "Ichimoku Support S3",
+     color=color.new(color.green, 35),
+     linewidth=2,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapS4 : na,
+     "Ichimoku Support S4",
+     color=color.new(color.green, 50),
+     linewidth=1,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapS5 : na,
+     "Ichimoku Support S5",
+     color=color.new(color.green, 60),
+     linewidth=1,
+     style=plot.style_linebr
+)
+
+// خطوط أفقية ثابتة للمستويات الحالية (R1–R3 / S1–S3) — تظهر دائماً كـ LEVEL
+var line lvlR1 = na
+var line lvlR2 = na
+var line lvlR3 = na
+var line lvlS1 = na
+var line lvlS2 = na
+var line lvlS3 = na
+
+f_updLevelLine(line ln, float price, color col, bool on) =>
+    line out = ln
+    if on and not na(price)
+        if na(out)
+            out := line.new(bar_index - 30, price, bar_index + 5, price, xloc=xloc.bar_index, extend=extend.right, color=col, width=2, style=line.style_solid)
+        else
+            line.set_xy1(out, bar_index - 30, price)
+            line.set_xy2(out, bar_index + 5, price)
+            line.set_color(out, col)
+            line.set_extend(out, extend.right)
+    else if not na(out)
+        line.delete(out)
+        out := na
+    out
+
+if barstate.islast
+    bool levelsOn = showRoadmap and showRoadmapLines
+    lvlR1 := f_updLevelLine(lvlR1, roadmapR1, color.red, levelsOn)
+    lvlR2 := f_updLevelLine(lvlR2, roadmapR2, color.new(color.red, 25), levelsOn)
+    lvlR3 := f_updLevelLine(lvlR3, roadmapR3, color.new(color.red, 40), levelsOn)
+    lvlS1 := f_updLevelLine(lvlS1, roadmapS1, color.green, levelsOn)
+    lvlS2 := f_updLevelLine(lvlS2, roadmapS2, color.new(color.green, 25), levelsOn)
+    lvlS3 := f_updLevelLine(lvlS3, roadmapS3, color.new(color.green, 40), levelsOn)
+
+// Current endpoint labels only. They sit on the latest candle, not far to the right.
+var label[] roadmapResistanceLabels = array.new_label()
+var label[] roadmapSupportLabels = array.new_label()
+
+if barstate.isfirst
+    for i = 0 to 4
+        array.push(
+             roadmapResistanceLabels,
+             label.new(
+                  bar_index,
+                  close,
+                  "",
+                  xloc=xloc.bar_index,
+                  style=label.style_label_left,
+                  size=size.tiny,
+                  color=color.new(roadmapResistanceColor, 100),
+                  textcolor=color.white
+             )
+        )
+        array.push(
+             roadmapSupportLabels,
+             label.new(
+                  bar_index,
+                  close,
+                  "",
+                  xloc=xloc.bar_index,
+                  style=label.style_label_left,
+                  size=size.tiny,
+                  color=color.new(roadmapSupportColor, 100),
+                  textcolor=color.white
+             )
+        )
+
+f_strengthText(int score) =>
+    score >= 9 ? "Very Strong" :
+     score >= 7 ? "Strong" :
+     score >= 5 ? "Medium" :
+     "Light"
+
+if barstate.islast
+    for i = 0 to 4
+        label rLabel = array.get(roadmapResistanceLabels, i)
+        label sLabel = array.get(roadmapSupportLabels, i)
+
+        bool showR = showRoadmap and showLevelLabels and i < roadmapCount and i < resistanceCount
+        bool showS = showRoadmap and showLevelLabels and i < roadmapCount and i < supportCount
+
+        if showR
+            float rLevel = array.get(resistanceLevels, i)
+            string rName = array.get(resistanceNames, i)
+            int rScore = array.get(resistanceScores, i)
+
+            label.set_xy(rLabel, bar_index, rLevel)
+            label.set_text(rLabel, "R" + str.tostring(i + 1))
+            label.set_color(rLabel, color.new(roadmapResistanceColor, i * 12))
+            label.set_textcolor(rLabel, color.white)
+            label.set_tooltip(
+                 rLabel,
+                 "Ichimoku Resistance R" + str.tostring(i + 1) +
+                 "\nLevel: " + str.tostring(rLevel, format.mintick) +
+                 "\nStrength: " + f_strengthText(rScore) + " (" + str.tostring(rScore) + "/10)" +
+                 "\nConfluence: " + rName
+            )
+        else
+            label.set_text(rLabel, "")
+            label.set_color(rLabel, color.new(roadmapResistanceColor, 100))
+
+        if showS
+            float sLevel = array.get(supportLevels, i)
+            string sName = array.get(supportNames, i)
+            int sScore = array.get(supportScores, i)
+
+            label.set_xy(sLabel, bar_index, sLevel)
+            label.set_text(sLabel, "S" + str.tostring(i + 1))
+            label.set_color(sLabel, color.new(roadmapSupportColor, i * 12))
+            label.set_textcolor(sLabel, color.white)
+            label.set_tooltip(
+                 sLabel,
+                 "Ichimoku Support S" + str.tostring(i + 1) +
+                 "\nLevel: " + str.tostring(sLevel, format.mintick) +
+                 "\nStrength: " + f_strengthText(sScore) + " (" + str.tostring(sScore) + "/10)" +
+                 "\nConfluence: " + sName
+            )
+        else
+            label.set_text(sLabel, "")
+            label.set_color(sLabel, color.new(roadmapSupportColor, 100))
+
+// Roadmap table (نقل إلى أسفل يمين لتجنب التداخل)
+var table roadmapTable = table.new(position.bottom_right, 4, 12, border_width=1)
+
+if barstate.islast
+    table.clear(roadmapTable, 0, 0, 3, 11)
+
+    if showRoadmap and showRoadmapTable
+        table.cell(roadmapTable, 0, 0, "LEVEL", text_color=color.white, bgcolor=color.new(color.gray, 60))
+        table.cell(roadmapTable, 1, 0, "PRICE / DIST", text_color=color.white, bgcolor=color.new(color.gray, 60))
+        table.cell(roadmapTable, 2, 0, "STRENGTH", text_color=color.white, bgcolor=color.new(color.gray, 60))
+        table.cell(roadmapTable, 3, 0, "SOURCE", text_color=color.white, bgcolor=color.new(color.gray, 60))
+
+        for i = 0 to 4
+            int rRow = i + 1
+            if i < roadmapCount and i < resistanceCount
+                float rLevel = array.get(resistanceLevels, i)
+                string rName = array.get(resistanceNames, i)
+                int rScore = array.get(resistanceScores, i)
+                float rDistance = close != 0 ? (rLevel - close) / close * 100.0 : na
+
+                table.cell(roadmapTable, 0, rRow, "R" + str.tostring(i + 1), text_color=color.white, bgcolor=color.new(roadmapResistanceColor, 55))
+                table.cell(roadmapTable, 1, rRow, str.tostring(rLevel, format.mintick) + " / " + str.tostring(rDistance, "#.##") + "%")
+                table.cell(roadmapTable, 2, rRow, str.tostring(rScore) + "/10 " + f_strengthText(rScore))
+                table.cell(roadmapTable, 3, rRow, rName)
+            else
+                table.cell(roadmapTable, 0, rRow, "")
+                table.cell(roadmapTable, 1, rRow, "")
+                table.cell(roadmapTable, 2, rRow, "")
+                table.cell(roadmapTable, 3, rRow, "")
+
+        for i = 0 to 4
+            int sRow = i + 7
+            if i < roadmapCount and i < supportCount
+                float sLevel = array.get(supportLevels, i)
+                string sName = array.get(supportNames, i)
+                int sScore = array.get(supportScores, i)
+                float sDistance = close != 0 ? (close - sLevel) / close * 100.0 : na
+
+                table.cell(roadmapTable, 0, sRow, "S" + str.tostring(i + 1), text_color=color.white, bgcolor=color.new(roadmapSupportColor, 55))
+                table.cell(roadmapTable, 1, sRow, str.tostring(sLevel, format.mintick) + " / " + str.tostring(sDistance, "#.##") + "%")
+                table.cell(roadmapTable, 2, sRow, str.tostring(sScore) + "/10 " + f_strengthText(sScore))
+                table.cell(roadmapTable, 3, sRow, sName)
+            else
+                table.cell(roadmapTable, 0, sRow, "")
+                table.cell(roadmapTable, 1, sRow, "")
+                table.cell(roadmapTable, 2, sRow, "")
+                table.cell(roadmapTable, 3, sRow, "")
+
+// Alerts for nearest roadmap levels.
+float nearestRoadmapResistance = resistanceCount > 0 ? array.get(resistanceLevels, 0) : na
+float nearestRoadmapSupport = supportCount > 0 ? array.get(supportLevels, 0) : na
+
+bool roadmapResistanceBreak = showRoadmap and not na(nearestRoadmapResistance) and ta.crossover(close, nearestRoadmapResistance)
+bool roadmapSupportBreak = showRoadmap and not na(nearestRoadmapSupport) and ta.crossunder(close, nearestRoadmapSupport)
+
+alertcondition(
+     roadmapResistanceBreak,
+     "Ichimoku Roadmap Resistance Break",
+     "Price broke above the nearest Ichimoku roadmap resistance on {{ticker}} {{interval}}."
+)
+
+alertcondition(
+     roadmapSupportBreak,
+     "Ichimoku Roadmap Support Break",
+     "Price broke below the nearest Ichimoku roadmap support on {{ticker}} {{interval}}."
+)
+
+
+// ALERTS
+//━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+alertcondition(bullAny, title="Ichimoku Divergence BUY",  message="Bullish Ichimoku divergence BUY signal on {{ticker}} {{interval}}")
+alertcondition(bearAny, title="Ichimoku Divergence SELL", message="Bearish Ichimoku divergence SELL signal on {{ticker}} {{interval}}")
+alertcondition(breakoutSignal, title="Swing Resistance Breakout", message="Price broke above confirmed swing resistance on {{ticker}} {{interval}}")
+alertcondition(breakdownSignal, title="Swing Support Breakdown", message="Price broke below confirmed swing support on {{ticker}} {{interval}}")
+
+//====================================================================================
+// MODULE C: BSS2000+ Control + Pre-Breakout Alert
+// Logic preserved; conflict IDs prefixed bss*; pane osc removed for plot limit;
+// label offsets enlarged so signals stay clear vs DRE/Ichimoku markers.
+//====================================================================================
+// ==========================================
+// 📊 إعدادات التحكم في الإشارات
+// ==========================================
+grp_signals = "🎛️ التحكم في الإشارات"
+showEarlyBuy = input.bool(true, "🚀 إظهار إشارات EARLY BUY", group=grp_signals)
+showPreBreakout = input.bool(true, "⚡ إظهار إنذار Pre-Breakout", group=grp_signals)
+showBreakout = input.bool(true, "🔥 إظهار إشارات BREAKOUT", group=grp_signals)
+showTrendBuy = input.bool(true, "🟢 إظهار إشارات TREND BUY", group=grp_signals)
+showTrendSell = input.bool(true, "🔴 إظهار إشارات TREND SELL", group=grp_signals)
+showScalpBuy = input.bool(true, "🟢 إظهار إشارات SCALP BUY", group=grp_signals)
+showScalpSell = input.bool(true, "🔴 إظهار إشارات SCALP SELL", group=grp_signals)
+showAdvanced = input.bool(true, "⭐ إظهار الإشارات المتقدمة", group=grp_signals)
+bssShowLines = input.bool(true, "📏 إظهار الخطوط المساعدة", group=grp_signals)
+bssShowTable = input.bool(true, "📊 إظهار الجداول", group=grp_signals)
+
+// ==========================================
+// ⚡ إعدادات Pre-Breakout Alert (الجديد!)
+// ==========================================
+grp_prebo = "⚡ إعدادات الإنذار المبكر"
+preboLookback = input.int(20, "فترة المقاومة", minval=5, maxval=50, group=grp_prebo)
+preboProximity = input.float(85.0, "نسبة القرب من المقاومة %", minval=70.0, maxval=99.0, step=1.0, group=grp_prebo, tooltip="90% يعني السعر عند 90% من المقاومة")
+preboSqueezeBars = input.int(5, "شمعات الضغط المطلوبة", minval=3, maxval=15, group=grp_prebo)
+preboVolAccumMult = input.float(1.2, "مضاعف تراكم الحجم", minval=1.0, maxval=2.0, step=0.1, group=grp_prebo)
+preboRSIMin = input.float(45.0, "RSI الأدنى للإنذار", minval=30.0, maxval=60.0, step=5.0, group=grp_prebo)
+preboRSIMax = input.float(75.0, "RSI الأقصى للإنذار", minval=60.0, maxval=85.0, step=5.0, group=grp_prebo)
+preboMinScore = input.int(3, "الحد الأدنى للنقاط (1-5)", minval=2, maxval=5, group=grp_prebo)
+preboRequireTrend = input.bool(true, "يتطلب اتجاه صاعد", group=grp_prebo)
+preboMaxAtrSqueeze = input.float(0.8, "حد ATR للضغط", minval=0.3, maxval=1.5, step=0.1, group=grp_prebo)
+
+// ==========================================
+// 1. HYBRID SUPERTREND
+// ==========================================
+grp_st = "⚙️ إعدادات SUPERTREND"
+atrP1 = input.int(7, "Fast ATR", group=grp_st)
+fac1  = input.float(1.5, "Fast Factor", step=0.1, group=grp_st)
+atrP2 = input.int(14, "Med ATR", group=grp_st)
+fac2  = input.float(2.5, "Med Factor", step=0.1, group=grp_st)
+atrP3 = input.int(21, "Slow ATR", group=grp_st)
+fac3  = input.float(3.5, "Slow Factor", step=0.1, group=grp_st)
+
+[st1, dir1] = ta.supertrend(fac1, atrP1)
+[st2, dir2] = ta.supertrend(fac2, atrP2)
+[st3, dir3] = ta.supertrend(fac3, atrP3)
+
+is_hybrid_green = dir1 < 0 and dir2 < 0 and dir3 < 0
+is_hybrid_red   = dir1 > 0 and dir2 > 0 and dir3 > 0
+
+// ==========================================
+// 2. HMA & EMA
+// ==========================================
+grp_td = "📈 إعدادات الاتجاه"
+h_len   = input.int(30, "HMA Length", group=grp_td)
+ema_len = input.int(14, "Scalp EMA Length", group=grp_td)
+
+hma = ta.hma(close, h_len)
+ema_high = ta.ema(high, ema_len)
+ema_low  = ta.ema(low, ema_len)
+
+is_hma_green = hma > hma[1]
+is_hma_red   = hma < hma[1]
+
+// ==========================================
+// 3. RULES
+// ==========================================
+trend_buy_cond  = is_hybrid_green and is_hma_green
+trend_sell_cond = is_hybrid_red and is_hma_red
+scalp_buy_cond  = ta.crossover(close, ema_high)
+scalp_sell_cond = ta.crossunder(close, ema_low)
+
+// ==========================================
+// 4. BREAKOUT DETECTOR (الأصلي)
+// ==========================================
+grp_break = "🔥 إعدادات الاختراق"
+lookback = input.int(20, "Breakout Lookback", minval=5, maxval=50, group=grp_break)
+breakoutThreshold = input.float(1.5, "Breakout Threshold", minval=1.0, maxval=3.0, step=0.1, group=grp_break)
+volumeMult = input.float(1.5, "ضعف الحجم للاختراق", minval=1.0, maxval=3.0, step=0.1, group=grp_break)
+momentumThreshold = input.float(3.0, "نسبة الزخم %", minval=1.0, maxval=10.0, step=0.5, group=grp_break)
+
+highestHigh = ta.highest(high, lookback)
+lowestLow = ta.lowest(low, lookback)
+
+breakoutSize = close - highestHigh[1]
+breakdownSize = lowestLow[1] - close
+
+atrVal = ta.atr(14)
+breakoutRatio = breakoutSize / atrVal
+breakdownRatio = breakdownSize / atrVal
+
+isBreakout = close > highestHigh[1] and breakoutRatio >= breakoutThreshold
+isBreakdown = close < lowestLow[1] and breakdownRatio >= breakoutThreshold
+
+// ==========================================
+// 5. INDICATORS
+// ==========================================
+
+// RSI
+rsiVal = ta.rsi(close, 14)
+rsiOversold = rsiVal < 30
+rsiRising = rsiVal > rsiVal[1]
+
+// MACD
+[bssMacdLine, bssSignalLine, bssHistLine] = ta.macd(close, 12, 26, 9)
+macdBullish = bssMacdLine > bssSignalLine and bssHistLine > bssHistLine[1]
+macdBearish = bssMacdLine < bssSignalLine and bssHistLine < bssHistLine[1]
+
+// Volume
+volumeMa = ta.sma(volume, 20)
+volumeSpike = volume > volumeMa * volumeMult
+
+// Price Change
+priceChange = (close - close[1]) / close[1] * 100
+momentumSpike = priceChange > momentumThreshold
+
+// EMA50
+bssEma50 = ta.ema(close, 50)
+
+// ==========================================
+// ⚡ 6. PRE-BREAKOUT ALERT SYSTEM (الجديد!)
+// ==========================================
+
+// --- 6.1 حساب المقاومة الحالية ---
+resistanceLevel = highestHigh[1]  // أعلى قمة في فترة الـ lookback
+supportLevel = lowestLow[1]       // أدنى قاع في فترة الـ lookback
+
+// --- 6.2 نسبة القرب من المقاومة ---
+// 100% = عند المقاومة تماماً, 0% = عند الدعم
+pricePosition = (close - supportLevel) / (resistanceLevel - supportLevel + syminfo.mintick) * 100
+nearResistance = pricePosition >= preboProximity and pricePosition < 100
+
+// --- 6.3 ضغط السعر (Squeeze Detection) ---
+// نطاق ضيق = السعر يتحرك جانبياً قرب المقاومة
+recentRange = ta.highest(high, preboSqueezeBars) - ta.lowest(low, preboSqueezeBars)
+avgRange = ta.sma(high - low, preboSqueezeBars)
+isSqueezed = recentRange <= avgRange * preboMaxAtrSqueeze
+
+// --- 6.4 تراكم الحجم الصامت ---
+// الحجم أعلى من المتوسط لكن بدون ارتفاع سعري كبير
+volumeAccumulating = volume > volumeMa * preboVolAccumMult
+volumeRising = volume > volume[1] and volume[1] > volume[2]
+
+// --- 6.5 RSI في منطقة الإعداد ---
+rsiInSetupZone = rsiVal >= preboRSIMin and rsiVal <= preboRSIMax and rsiRising
+
+// --- 6.6 زخم MACD الإيجابي الخفي ---
+macdImproving = bssHistLine > bssHistLine[1] and bssHistLine[1] > bssHistLine[2]
+
+// --- 6.7 شمعة إعداد قرب المقاومة ---
+// شمعة صغيرة أو Doji أو Hammer قرب المقاومة
+candleBody = math.abs(close - open)
+candleRange = high - low
+bodyToRange = candleRange > 0 ? candleBody / candleRange : 0
+isSetupCandle = bodyToRange < 0.6 or (close > open and low < open)  // Doji أو Hammer مبسط
+
+// --- 6.8 حساب نقاط القوة (Score) ---
+preboScore = 0
+preboReasons = ""
+
+if nearResistance
+    preboScore += 1
+    preboReasons += "قرب المقاومة\n"
+
+if isSqueezed
+    preboScore += 1
+    preboReasons += "ضغط سعري\n"
+
+if volumeAccumulating and volumeRising
+    preboScore += 1
+    preboReasons += "تراكم حجم\n"
+
+if rsiInSetupZone
+    preboScore += 1
+    preboReasons += "RSI إيجابي\n"
+
+if macdImproving
+    preboScore += 1
+    preboReasons += "MACD تحسن\n"
+
+if isSetupCandle and nearResistance
+    preboScore += 1
+    preboReasons += "شمعة إعداد\n"
+
+// --- 6.9 فلتر الاتجاه ---
+trendOk = not preboRequireTrend or is_hybrid_green or bssEma50 > bssEma50[1]
+
+// --- 6.10 الشرط النهائي للإنذار المبكر ---
+preBreakoutAlert = nearResistance and preboScore >= preboMinScore and trendOk and not isBreakout
+
+// --- 6.11 قياس قوة الإنذار ---
+preboStrength = preboScore >= 5 ? "🔥🔥🔥 قوي جداً" : preboScore >= 4 ? "🔥🔥 قوي" : "🔥 متوسط"
+
+// ==========================================
+// 7. EARLY BUY SIGNALS (الأصلي)
+// ==========================================
+
+earlyBuySignal = false
+earlyBuyReason = ""
+
+// شرط 1: قاع + RSI متشبع بيعي + انعكاس
+if close < lowestLow[5] and rsiOversold and rsiRising
+    earlyBuySignal := true
+    earlyBuyReason := "قاع + RSI متشبع بيعي"
+
+// شرط 2: اختراق بحجم مفاجئ
+if isBreakout and volumeSpike
+    earlyBuySignal := true
+    earlyBuyReason := "اختراق بحجم مفاجئ"
+
+// شرط 3: انعكاس MACD
+if close > close[1] and rsiRising and macdBullish
+    earlyBuySignal := true
+    earlyBuyReason := "انعكاس MACD"
+
+// شرط 4: شمعة انعكاسية قوية
+bullishReversalCandle = close > open and (close - open) > atrVal * 0.8 and close > close[1] * 1.02
+if bullishReversalCandle and rsiOversold
+    earlyBuySignal := true
+    earlyBuyReason := "شمعة انعكاسية قوية"
+
+// شرط 5: اختراق EMA50 مع حجم
+if close > bssEma50 and close > bssEma50[1] and volumeSpike
+    earlyBuySignal := true
+    earlyBuyReason := "اختراق EMA50 بحجم"
+
+// ==========================================
+// 8. PREDICTOR
+// ==========================================
+grp_pred = "🧠 إعدادات المتنبئ"
+min_signals_required = input.int(1, "Min Signals", minval=1, maxval=3, group=grp_pred)
+min_confidence = input.float(30.0, "Min Confidence %", minval=20, maxval=90, group=grp_pred)
+tp1_percent = input.float(2.0, "TP1 %", minval=0.5, maxval=5.0, group=grp_pred)
+tp2_percent = input.float(4.0, "TP2 %", minval=1.0, maxval=8.0, group=grp_pred)
+tp3_percent = input.float(6.0, "TP3 %", minval=2.0, maxval=12.0, group=grp_pred)
+stop_loss_percent = input.float(2.0, "Stop Loss %", minval=0.5, maxval=5.0, group=grp_pred)
+
+bullish_signals = 0
+bearish_signals = 0
+
+// إشارات TREND
+if trend_buy_cond
+    bullish_signals := bullish_signals + 2
+if trend_sell_cond
+    bearish_signals := bearish_signals + 2
+
+// إشارات SCALP
+if scalp_buy_cond
+    bullish_signals := bullish_signals + 1
+if scalp_sell_cond
+    bearish_signals := bearish_signals + 1
+
+// إشارات الاتجاه
+if is_hybrid_green
+    bullish_signals := bullish_signals + 1
+if is_hma_green
+    bullish_signals := bullish_signals + 1
+if is_hybrid_red
+    bearish_signals := bearish_signals + 1
+if is_hma_red
+    bearish_signals := bearish_signals + 1
+
+// إشارات BREAKOUT
+if isBreakout and volumeSpike
+    bullish_signals := bullish_signals + 2
+if momentumSpike
+    bullish_signals := bullish_signals + 1
+if earlyBuySignal
+    bullish_signals := bullish_signals + 3
+
+if isBreakdown and volumeSpike
+    bearish_signals := bearish_signals + 2
+
+// إشارات MACD
+if macdBullish
+    bullish_signals := bullish_signals + 1
+if macdBearish
+    bearish_signals := bearish_signals + 1
+
+// ⚡ إشارات Pre-Breakout (تضيف ثقة!)
+if preBreakoutAlert
+    bullish_signals := bullish_signals + 2
+
+signal_type_adv = "محايد"
+
+if bullish_signals >= 1 and bullish_signals > bearish_signals
+    signal_type_adv := "شراء 🟢"
+if bearish_signals >= 1 and bearish_signals > bullish_signals
+    signal_type_adv := "بيع 🔴"
+
+final_confidence = 50.0
+if signal_type_adv != "محايد"
+    max_signals = math.max(bullish_signals, bearish_signals)
+    final_confidence := 55.0 + (max_signals * 5.0)
+    final_confidence := math.min(final_confidence, 95)
+
+hasSignalNow = signal_type_adv != "محايد"
+
+// ==========================================
+// 9. VISUALIZATION — PLOT + LEVEL (إجباري على الشارت)
+// ملاحظة: كود BSS الأصلي كان يحسب Supertrend/HMA/Levels بدون رسمها؛ هنا نرسمها بوضوح
+// ==========================================
+grp_bss_vis = "👁 BSS PLOT + LEVEL"
+showBssPlots  = input.bool(true, "إظهار PLOT (Supertrend + HMA + Osc)", group=grp_bss_vis)
+showBssLevels = input.bool(true, "إظهار LEVEL (مقاومة/دعم)", group=grp_bss_vis)
+
+// ==========================================
+// 🎨 ألوان BSS (تحكم كامل من الإعدادات)
+// ==========================================
+grp_bss_colors = "🎨 ألوان BSS"
+colBssStFast      = input.color(color.lime,    "Supertrend Fast", group=grp_bss_colors)
+colBssStMed       = input.color(color.yellow,  "Supertrend Med", group=grp_bss_colors)
+colBssStSlow      = input.color(color.fuchsia, "Supertrend Slow", group=grp_bss_colors)
+colBssHma         = input.color(color.white,   "HMA", group=grp_bss_colors)
+colBssEmaHigh     = input.color(color.teal,    "EMA High", group=grp_bss_colors)
+colBssEmaLow      = input.color(color.maroon,  "EMA Low", group=grp_bss_colors)
+colBssOscZero     = input.color(color.gray,    "Osc Zero Line", group=grp_bss_colors)
+colBssOscCols     = input.color(color.gray,    "Osc Columns", group=grp_bss_colors)
+colBssOscLine     = input.color(color.white,   "Osc Line", group=grp_bss_colors)
+colBssRes         = input.color(color.orange,  "Resistance LEVEL", group=grp_bss_colors)
+colBssSup         = input.color(color.aqua,    "Support LEVEL", group=grp_bss_colors)
+colBssNearResBg   = input.color(color.orange,  "Near Resistance BG", group=grp_bss_colors)
+colBssPrebo       = input.color(color.orange,  "Pre-Breakout", group=grp_bss_colors)
+colBssEarly       = input.color(color.purple,  "Early Buy", group=grp_bss_colors)
+colBssBreakout    = input.color(color.blue,    "Breakout", group=grp_bss_colors)
+colBssTrendBuy    = input.color(color.green,   "Trend Buy", group=grp_bss_colors)
+colBssTrendSell   = input.color(color.red,     "Trend Sell", group=grp_bss_colors)
+colBssScalpBuy    = input.color(color.lime,    "Scalp Buy", group=grp_bss_colors)
+colBssScalpSell   = input.color(color.red,     "Scalp Sell", group=grp_bss_colors)
+colBssAdvBuy      = input.color(color.green,   "Advanced Buy", group=grp_bss_colors)
+colBssAdvSell     = input.color(color.red,     "Advanced Sell", group=grp_bss_colors)
+colBssLabelText   = input.color(color.white,   "Label Text", group=grp_bss_colors)
+colBssScalpBuyTxt = input.color(color.black,   "Scalp Buy Text", group=grp_bss_colors)
+colBssTblHeader   = input.color(#FFCC00,       "Table Header Text", group=grp_bss_colors)
+colBssTblMuted    = input.color(color.gray,    "Table Muted Text", group=grp_bss_colors)
+colBssTblConf     = input.color(color.yellow,  "Table Confidence", group=grp_bss_colors)
+colBssTblVotes    = input.color(#00AAFF,       "Table Votes", group=grp_bss_colors)
+colBssTblBg       = input.color(#000000,       "Table Background", group=grp_bss_colors)
+colBssTblBorder   = input.color(#30363D,       "Table Border", group=grp_bss_colors)
+colBssTblHeadBg   = input.color(#1A1A1A,       "Table Header BG", group=grp_bss_colors)
+colBssTblRowBg    = input.color(#0A0A0A,       "Table Row BG", group=grp_bss_colors)
+
+atr_v = ta.atr(14)
+osc_val = (close - hma) / (atr_v > 0 ? atr_v : syminfo.mintick)
+
+// ===== PLOT على الشارت الرئيسي (Supertrend + HMA) =====
+plot(showBssPlots ? st1 : na, "BSS ST Fast", color=colBssStFast, linewidth=2, force_overlay=true)
+plot(showBssPlots ? st2 : na, "BSS ST Med", color=colBssStMed, linewidth=2, force_overlay=true)
+plot(showBssPlots ? st3 : na, "BSS ST Slow", color=colBssStSlow, linewidth=2, force_overlay=true)
+plot(showBssPlots ? hma : na, "BSS HMA", color=colBssHma, linewidth=2, force_overlay=true)
+plot(showBssPlots ? ema_high : na, "BSS EMA High", color=colBssEmaHigh, linewidth=1, force_overlay=true)
+plot(showBssPlots ? ema_low : na, "BSS EMA Low", color=colBssEmaLow, linewidth=1, force_overlay=true)
+
+// ===== PLOT نافذة Oscillator (من كود BSS) =====
+plot(showBssPlots ? 0 : na, "BSS Zero Line", color=colBssOscZero, linewidth=1, style=plot.style_line, display=display.pane)
+plot(showBssPlots ? osc_val : na, "BSS Osc Columns", color=colBssOscCols, style=plot.style_columns, display=display.pane)
+plot(showBssPlots ? osc_val : na, "BSS Osc Line", color=colBssOscLine, linewidth=2, display=display.pane)
+
+// ===== LEVEL مقاومة/دعم — دائماً على الشارت =====
+plot(showBssLevels ? resistanceLevel : na, "BSS Resistance LEVEL", color=colBssRes, linewidth=3, style=plot.style_linebr, force_overlay=true)
+plot(showBssLevels ? supportLevel : na, "BSS Support LEVEL", color=colBssSup, linewidth=3, style=plot.style_linebr, force_overlay=true)
+
+// تلوين خفيف عند الاقتراب من المقاومة
+bgcolor(showBssLevels and nearResistance ? color.new(colBssNearResBg, 92) : na, force_overlay=true, title="BSS Near Resistance Zone")
+
+// خطوط LEVEL أفقية ممتدة + لابل
+var line bssResLevelLine = na
+var line bssSupLevelLine = na
+var label bssResLbl = na
+var label bssSupLbl = na
+
+if barstate.islast
+    if showBssLevels
+        if na(bssResLevelLine)
+            bssResLevelLine := line.new(bar_index - 50, resistanceLevel, bar_index + 15, resistanceLevel, xloc=xloc.bar_index, extend=extend.right, color=colBssRes, width=3, style=line.style_solid)
+        else
+            line.set_xy1(bssResLevelLine, bar_index - 50, resistanceLevel)
+            line.set_xy2(bssResLevelLine, bar_index + 15, resistanceLevel)
+            line.set_color(bssResLevelLine, colBssRes)
+            line.set_style(bssResLevelLine, line.style_solid)
+            line.set_width(bssResLevelLine, 3)
+            line.set_extend(bssResLevelLine, extend.right)
+
+        if na(bssSupLevelLine)
+            bssSupLevelLine := line.new(bar_index - 50, supportLevel, bar_index + 15, supportLevel, xloc=xloc.bar_index, extend=extend.right, color=colBssSup, width=3, style=line.style_solid)
+        else
+            line.set_xy1(bssSupLevelLine, bar_index - 50, supportLevel)
+            line.set_xy2(bssSupLevelLine, bar_index + 15, supportLevel)
+            line.set_color(bssSupLevelLine, colBssSup)
+            line.set_style(bssSupLevelLine, line.style_solid)
+            line.set_width(bssSupLevelLine, 3)
+            line.set_extend(bssSupLevelLine, extend.right)
+
+        if na(bssResLbl)
+            bssResLbl := label.new(bar_index + 2, resistanceLevel, "LEVEL RES " + str.tostring(resistanceLevel, format.mintick), style=label.style_label_left, color=colBssRes, textcolor=colBssLabelText, size=size.normal)
+        else
+            label.set_xy(bssResLbl, bar_index + 2, resistanceLevel)
+            label.set_text(bssResLbl, "LEVEL RES " + str.tostring(resistanceLevel, format.mintick))
+            label.set_color(bssResLbl, colBssRes)
+            label.set_textcolor(bssResLbl, colBssLabelText)
+
+        if na(bssSupLbl)
+            bssSupLbl := label.new(bar_index + 2, supportLevel, "LEVEL SUP " + str.tostring(supportLevel, format.mintick), style=label.style_label_left, color=colBssSup, textcolor=colBssLabelText, size=size.normal)
+        else
+            label.set_xy(bssSupLbl, bar_index + 2, supportLevel)
+            label.set_text(bssSupLbl, "LEVEL SUP " + str.tostring(supportLevel, format.mintick))
+            label.set_color(bssSupLbl, colBssSup)
+            label.set_textcolor(bssSupLbl, colBssLabelText)
+    else
+        if not na(bssResLevelLine)
+            line.delete(bssResLevelLine)
+            bssResLevelLine := na
+        if not na(bssSupLevelLine)
+            line.delete(bssSupLevelLine)
+            bssSupLevelLine := na
+        if not na(bssResLbl)
+            label.delete(bssResLbl)
+            bssResLbl := na
+        if not na(bssSupLbl)
+            label.delete(bssSupLbl)
+            bssSupLbl := na
+
+// ==========================================
+// 10. عرض الإشارات على الشارت
+// ==========================================
+
+atrOffset = ta.atr(14) * 0.4
+
+// تدوير خطوط BSS حتى لا تستهلك max_lines وتخفي مستويات Swing/Roadmap
+var line[] bssHelperLines = array.new_line()
+f_bssKeepLine(line ln) =>
+    array.push(bssHelperLines, ln)
+    if array.size(bssHelperLines) > 15
+        line oldLn = array.shift(bssHelperLines)
+        line.delete(oldLn)
+
+// ⚡⚡⚡ PRE-BREAKOUT ALERT (الجديد!)
+if showPreBreakout and preBreakoutAlert and not preBreakoutAlert[1]
+    preboText = "⚡ PRE-BREAKOUT\n" + preboStrength + "\nالنقاط: " + str.tostring(preboScore) + "/6\n" + preboReasons
+    preboText := preboText + "\nبعد " + str.tostring(math.round(100 - pricePosition, 1)) + "% عن المقاومة"
+    
+    label.new(x=bar_index, y=low - atrOffset * 16, 
+              text=preboText, 
+              style=label.style_label_up, 
+              color=color.new(colBssPrebo, 80), 
+              textcolor=colBssLabelText, 
+              size=size.large)
+    
+    // خط مقاومة محدود (بدون extend.right الدائم) حتى تبقى مستويات LEVEL ظاهرة
+    if bssShowLines
+        line preboLn = line.new(x1=bar_index, y1=resistanceLevel, x2=bar_index + 25, y2=resistanceLevel, 
+                 color=colBssPrebo, width=2, style=line.style_dashed, extend=extend.none)
+        f_bssKeepLine(preboLn)
+
+// 🚀 EARLY BUY
+if showEarlyBuy and earlyBuySignal and not earlyBuySignal[1]
+    label.new(x=bar_index, y=low - atrOffset * 14, 
+              text="🚀🚀 EARLY BUY\n" + earlyBuyReason + "\nسعر: " + str.tostring(close, "#.##"), 
+              style=label.style_label_up, 
+              color=color.new(colBssEarly, 90), 
+              textcolor=colBssLabelText, 
+              size=size.large)
+    
+    if bssShowLines
+        line earlyLn = line.new(x1=bar_index, y1=low, x2=bar_index, y2=low - atrOffset * 12, color=colBssEarly, width=2, style=line.style_dashed)
+        f_bssKeepLine(earlyLn)
+
+// 🔥 BREAKOUT
+if showBreakout and isBreakout and volumeSpike and not isBreakout[1]
+    label.new(x=bar_index, y=low - atrOffset * 10, 
+              text="🔥 BREAKOUT\n" + str.tostring(math.round(breakoutRatio * 100) / 100) + "x ATR\nحجم: " + str.tostring(math.round(volume / volumeMa)) + "x", 
+              style=label.style_label_up, 
+              color=color.new(colBssBreakout, 80), 
+              textcolor=colBssLabelText, 
+              size=size.normal)
+
+// 🟢 TREND BUY
+if showTrendBuy and trend_buy_cond and not trend_buy_cond[1]
+    label.new(x=bar_index, y=low - atrOffset * 12, 
+              text="🟢🟢 TREND BUY\nConf: " + str.tostring(math.round(final_confidence)) + "%", 
+              style=label.style_label_up, 
+              color=color.new(colBssTrendBuy, 90), 
+              textcolor=colBssLabelText, 
+              size=size.large)
+
+// 🔴 TREND SELL
+if showTrendSell and trend_sell_cond and not trend_sell_cond[1]
+    label.new(x=bar_index, y=high + atrOffset * 12, 
+              text="🔴🔴 TREND SELL\nConf: " + str.tostring(math.round(final_confidence)) + "%", 
+              style=label.style_label_down, 
+              color=color.new(colBssTrendSell, 90), 
+              textcolor=colBssLabelText, 
+              size=size.large)
+
+// 🟢 SCALP BUY
+if showScalpBuy and scalp_buy_cond
+    label.new(x=bar_index, y=low - atrOffset * 8, 
+              text="🟢 SCALP", 
+              style=label.style_label_up, 
+              color=color.new(colBssScalpBuy, 70), 
+              textcolor=colBssScalpBuyTxt, 
+              size=size.normal)
+
+// 🔴 SCALP SELL
+if showScalpSell and scalp_sell_cond
+    label.new(x=bar_index, y=high + atrOffset * 8, 
+              text="🔴 SCALP", 
+              style=label.style_label_down, 
+              color=color.new(colBssScalpSell, 70), 
+              textcolor=colBssLabelText, 
+              size=size.normal)
+
+// ⭐ الإشارات المتقدمة
+if showAdvanced and hasSignalNow
+    if signal_type_adv == "شراء 🟢"
+        bssLabelText = "🟢 " + signal_type_adv + " | Score: " + str.tostring(math.round(final_confidence)) + "%"
+        bssLabelText := bssLabelText + "\n↑" + str.tostring(bullish_signals) + " ↓" + str.tostring(bearish_signals)
+        
+        if is_hybrid_green and is_hma_green
+            bssLabelText := bssLabelText + "\n📈 اتجاه صاعد"
+        if isBreakout
+            bssLabelText := bssLabelText + "\n🔥 اختراق"
+        if preBreakoutAlert
+            bssLabelText := bssLabelText + "\n⚡ إنذار مبكر"
+        if earlyBuySignal
+            bssLabelText := bssLabelText + "\n🚀 إشارة مبكرة"
+        if macdBullish
+            bssLabelText := bssLabelText + "\n📊 MACD صاعد"
+        if volumeSpike
+            bssLabelText := bssLabelText + "\n📊 حجم مرتفع"
+        
+        label.new(x=bar_index, y=low - atrOffset * 20, 
+                  text=bssLabelText, 
+                  style=label.style_label_up, 
+                  color=color.new(colBssAdvBuy, 80), 
+                  textcolor=colBssLabelText, 
+                  size=size.normal)
+    
+    if signal_type_adv == "بيع 🔴"
+        bssLabelText = "🔴 " + signal_type_adv + " | Score: " + str.tostring(math.round(final_confidence)) + "%"
+        bssLabelText := bssLabelText + "\n↑" + str.tostring(bullish_signals) + " ↓" + str.tostring(bearish_signals)
+        
+        if is_hybrid_red and is_hma_red
+            bssLabelText := bssLabelText + "\n📉 اتجاه هابط"
+        if isBreakdown
+            bssLabelText := bssLabelText + "\n💥 انهيار"
+        if macdBearish
+            bssLabelText := bssLabelText + "\n📊 MACD هابط"
+        
+        label.new(x=bar_index, y=high + atrOffset * 16, 
+                  text=bssLabelText, 
+                  style=label.style_label_down, 
+                  color=color.new(colBssAdvSell, 80), 
+                  textcolor=colBssLabelText, 
+                  size=size.normal)
+
+// ==========================================
+// 11. TABLES
+// ==========================================
+if bssShowTable
+    var table predTable = table.new(position.middle_right, 2, 10, bgcolor=color.new(colBssTblBg, 15), border_color=color.new(colBssTblBorder, 40))
+
+    if barstate.islast
+        table.cell(predTable, 0, 0, "📊 BSS2000+ PreBO", bgcolor=colBssTblHeadBg, text_color=colBssTblHeader, text_size=size.large, text_halign=text.align_center)
+        table.cell(predTable, 1, 0, "VALUE", bgcolor=colBssTblHeadBg, text_color=colBssTblHeader, text_size=size.large, text_halign=text.align_center)
+        
+        table.cell(predTable, 0, 1, "Signal", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        color predColor = signal_type_adv == "شراء 🟢" ? colBssAdvBuy : signal_type_adv == "بيع 🔴" ? colBssAdvSell : colBssLabelText
+        table.cell(predTable, 1, 1, signal_type_adv != "محايد" ? signal_type_adv : "Waiting", bgcolor=colBssTblRowBg, text_color=predColor)
+        
+        table.cell(predTable, 0, 2, "Confidence", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        table.cell(predTable, 1, 2, str.tostring(final_confidence, "#.#") + "%", bgcolor=colBssTblRowBg, text_color=colBssTblConf)
+        
+        table.cell(predTable, 0, 3, "Votes", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        table.cell(predTable, 1, 3, "🟢" + str.tostring(bullish_signals) + " 🔴" + str.tostring(bearish_signals), bgcolor=colBssTblRowBg, text_color=colBssTblVotes)
+        
+        // ⚡ صف Pre-Breakout الجديد
+        table.cell(predTable, 0, 4, "Pre-Breakout", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        preboStatus = preBreakoutAlert ? "⚡ " + preboStrength : "---"
+        preboColor = preBreakoutAlert ? colBssPrebo : colBssTblMuted
+        table.cell(predTable, 1, 4, preboStatus, bgcolor=colBssTblRowBg, text_color=preboColor)
+        
+        table.cell(predTable, 0, 5, "Pre-BO Score", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        table.cell(predTable, 1, 5, str.tostring(preboScore) + "/6", bgcolor=colBssTblRowBg, text_color=preboScore >= 4 ? colBssPrebo : colBssTblMuted)
+        
+        table.cell(predTable, 0, 6, "Breakout", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        table.cell(predTable, 1, 6, isBreakout ? "🔥 YES" : "---", bgcolor=colBssTblRowBg, text_color=isBreakout ? colBssBreakout : colBssTblMuted)
+        
+        table.cell(predTable, 0, 7, "Early Buy", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        table.cell(predTable, 1, 7, earlyBuySignal ? "🚀 YES" : "---", bgcolor=colBssTblRowBg, text_color=earlyBuySignal ? colBssEarly : colBssTblMuted)
+        
+        table.cell(predTable, 0, 8, "RSI", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        table.cell(predTable, 1, 8, str.tostring(math.round(rsiVal)), bgcolor=colBssTblRowBg, text_color=rsiVal > 70 ? colBssTrendSell : rsiVal < 30 ? colBssTrendBuy : colBssTblMuted)
+        
+        table.cell(predTable, 0, 9, "Volume", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        table.cell(predTable, 1, 9, volumeSpike ? "🔥 SPIKE" : "Normal", bgcolor=colBssTblRowBg, text_color=volumeSpike ? colBssBreakout : colBssTblMuted)
+
+// ==========================================
+// 12. ALERTS
+// ==========================================
+alertcondition(showPreBreakout and preBreakoutAlert, "⚡ Pre-Breakout Alert", "Pre-Breakout Alert! السعر يستعد للاختراق!")
+alertcondition(showEarlyBuy and earlyBuySignal, "🚀 EARLY BUY", "Early Buy Signal Detected!")
+alertcondition(showBreakout and isBreakout and volumeSpike, "🔥 BREAKOUT", "Breakout with Volume Spike!")
+alertcondition(showTrendBuy and trend_buy_cond, "Trend Buy", "Trend Buy Signal")
+alertcondition(showTrendSell and trend_sell_cond, "Trend Sell", "Trend Sell Signal")
+alertcondition(showScalpBuy and scalp_buy_cond, "Scalp Buy", "Scalp Buy Signal")
+alertcondition(showScalpSell and scalp_sell_cond, "Scalp Sell", "Scalp Sell Signal")
+alertcondition(showAdvanced and hasSignalNow and signal_type_adv == "شراء 🟢", "Advanced Buy", "Advanced Buy Signal")
+alertcondition(showAdvanced and hasSignalNow and signal_type_adv == "بيع 🔴", "Advanced Sell", "Advanced Sell Signal")
