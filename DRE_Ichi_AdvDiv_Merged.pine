@@ -1,5 +1,6 @@
 //@version=6
-indicator("DRE+Ichi+AdvDiv + BSS2000 PreBO", shorttitle="All-in-One PreBO", overlay=true, max_labels_count=500, max_lines_count=500, max_bars_back=500)
+// plot-budget fix v64 — if shorttitle is not "PreBO v64", you have an old copy
+indicator("DRE+Ichi+AdvDiv + BSS2000 PreBO", shorttitle="PreBO v64", overlay=true, max_labels_count=500, max_lines_count=500, max_bars_back=500)
 
 //====================================================================================
 // MODULE A: Advanced Divergences (Modo Rápido) — logic preserved; conflict IDs prefixed adv*
@@ -482,8 +483,7 @@ if showLines
     if not na(priceLow1) and not na(priceLow2)
         segBottom := f_seg(priceLow1, priceLBar1, priceLow2, priceLBar2)
 
-plot(showLines and modeTop ? segTop : na, "Reta Topos", color.new(#ff1744, 60), linewidth=1, style=plot.style_line)
-plot(showLines and modeBottom ? segBottom : na, "Reta Fundos", color.new(#00e676, 60), linewidth=1, style=plot.style_line)
+// Div price rays removed to stay under TV plot-limit 64 (labels still mark signals)
 
 //====================================================================================
 // 📋 SECTION 8: PAINEL DE ESTADOS
@@ -570,7 +570,7 @@ minConf      = input.float(75.0, "أدنى ثقة شراء/بيع %", minval=60,
 grpShow = "👁 Display"
 showLabels = input.bool(true, "عرض لابل الحالات", group=grpShow)
 showShapes = input.bool(true, "عرض أسهم على الشارت", group=grpShow)
-showBg     = input.bool(true, "تلوين خلفية الشمعة", group=grpShow)
+showBg     = input.bool(false, "تلوين خلفية الشمعة (معطّل لحد plots)", group=grpShow)
 showDash   = input.bool(true, "لوحة الحالات", group=grpShow)
 
 grpCases = "✅ تفعيل الحالات"
@@ -846,14 +846,13 @@ caseName() =>
 //====================================================================================
 // رسم DRE Rise (مع تعديل الموقع لتجنب التداخل)
 //====================================================================================
-bgcolor(showBg and fire ? color.new(color.lime, 85) : na)
-
-plotshape(showShapes and fire, title="Rise Case", style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.normal, text="صعود")
-
+// bgcolor/plotshape removed for plot-budget; label carries the rise signal
 if showLabels and fire
     // أقرب للشمعة من طبقة BO/R حتى تبقى الطبقات مفصولة
     label.new(bar_index, high + atr * 0.55, "⚡ " + caseName() + "\nTrend=" + str.tostring(Trend, "#.##"), 
               style=label.style_label_down, color=color.new(#1b5e20, 10), textcolor=color.white, size=size.normal)
+else if showShapes and fire
+    label.new(bar_index, low, "▲ صعود", style=label.style_label_up, color=color.new(#00e676, 0), textcolor=color.white, size=size.small)
 
 //====================================================================================
 // Alerts DRE
@@ -954,7 +953,7 @@ plot(showChikou ? chikou : na, "Chikou", color=color.teal, linewidth=2, offset=-
 
 plotA = plot(showCloud ? senkouA : na, "Senkou A", color=color.green, linewidth=2, offset=displacement)
 plotB = plot(showCloud ? senkouB : na, "Senkou B", color=color.red, linewidth=2, offset=displacement)
-fill(plotA, plotB, color=showCloud ? (senkouA >= senkouB ? color.new(color.green, 82) : color.new(color.red, 82)) : na, title="Kumo")
+fill(plotA, plotB, color=senkouA >= senkouB ? color.new(color.green, 82) : color.new(color.red, 82), title="Kumo")
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // DIVERGENCE SETTINGS
@@ -1194,22 +1193,17 @@ useCloseForBreak = input.bool(true, "Require Close Beyond Level", group=groupLev
 breakBufferATR   = input.float(0.05, "Break Buffer (ATR)", minval=0.0, step=0.01, group=groupLevels,
      tooltip="Requires price to clear a level by this ATR fraction, reducing marginal false breaks.")
 
-showKijunLevel = input.bool(true, "Show Current Kijun S/R", group=groupLevels)
-showCloudLevels = input.bool(true, "Show Projected Cloud S/R", group=groupLevels,
-     tooltip="Shows the cloud top and bottom projected forward by the Ichimoku displacement.")
+showKijunLevel = input.bool(false, "Show Current Kijun S/R (use main Kijun plot)", group=groupLevels)
+showCloudLevels = input.bool(false, "Show Projected Cloud S/R (use Senkou plots)", group=groupLevels,
+     tooltip="Disabled to stay under plot limit 64. Senkou A/B already show the cloud.")
 
 resistanceColor = input.color(color.new(color.red, 10), "Resistance Color", group=groupLevels)
 supportColor    = input.color(color.new(color.green, 10), "Support Color", group=groupLevels)
 brokenColor     = input.color(color.new(color.gray, 45), "Broken Level Color", group=groupLevels)
 
-// Current dynamic Ichimoku reference levels (أوضح على الشارت)
-plot(showKijunLevel ? kijun : na, "Current Kijun S/R", color=color.blue, linewidth=3, style=plot.style_linebr)
-
+// Kijun / projected cloud plots removed — already drawn as Kijun + Senkou A/B (saves plot budget)
 futureCloudTop    = math.max(senkouA, senkouB)
 futureCloudBottom = math.min(senkouA, senkouB)
-
-plot(showCloudLevels ? futureCloudTop : na, "Projected Cloud Resistance", color=color.red, linewidth=2, offset=displacement, style=plot.style_linebr)
-plot(showCloudLevels ? futureCloudBottom : na, "Projected Cloud Support", color=color.green, linewidth=2, offset=displacement, style=plot.style_linebr)
 
 // Store active horizontal swing levels
 var line[] resistanceLines = array.new_line()
@@ -1867,7 +1861,7 @@ float roadmapS3 = supportCount > 2 and roadmapCount >= 3 ? array.get(supportLeve
 float roadmapS4 = supportCount > 3 and roadmapCount >= 4 ? array.get(supportLevels, 3) : na
 float roadmapS5 = supportCount > 4 and roadmapCount >= 5 ? array.get(supportLevels, 4) : na
 
-// خطوط مستويات Roadmap ظاهرة كـ linebr (أوضح من الدوائر)
+// فقط R1/S1 كـ plot (الباقي عبر line objects R1–R3 / S1–S3 + الجدول) — توفير ميزانية plots
 plot(
      showRoadmap and showRoadmapLines ? roadmapR1 : na,
      "Ichimoku Resistance R1",
@@ -1876,67 +1870,10 @@ plot(
      style=plot.style_linebr
 )
 plot(
-     showRoadmap and showRoadmapLines ? roadmapR2 : na,
-     "Ichimoku Resistance R2",
-     color=color.new(color.red, 20),
-     linewidth=2,
-     style=plot.style_linebr
-)
-plot(
-     showRoadmap and showRoadmapLines ? roadmapR3 : na,
-     "Ichimoku Resistance R3",
-     color=color.new(color.red, 35),
-     linewidth=2,
-     style=plot.style_linebr
-)
-plot(
-     showRoadmap and showRoadmapLines ? roadmapR4 : na,
-     "Ichimoku Resistance R4",
-     color=color.new(color.red, 50),
-     linewidth=1,
-     style=plot.style_linebr
-)
-plot(
-     showRoadmap and showRoadmapLines ? roadmapR5 : na,
-     "Ichimoku Resistance R5",
-     color=color.new(color.red, 60),
-     linewidth=1,
-     style=plot.style_linebr
-)
-
-plot(
      showRoadmap and showRoadmapLines ? roadmapS1 : na,
      "Ichimoku Support S1",
      color=color.green,
      linewidth=3,
-     style=plot.style_linebr
-)
-plot(
-     showRoadmap and showRoadmapLines ? roadmapS2 : na,
-     "Ichimoku Support S2",
-     color=color.new(color.green, 20),
-     linewidth=2,
-     style=plot.style_linebr
-)
-plot(
-     showRoadmap and showRoadmapLines ? roadmapS3 : na,
-     "Ichimoku Support S3",
-     color=color.new(color.green, 35),
-     linewidth=2,
-     style=plot.style_linebr
-)
-plot(
-     showRoadmap and showRoadmapLines ? roadmapS4 : na,
-     "Ichimoku Support S4",
-     color=color.new(color.green, 50),
-     linewidth=1,
-     style=plot.style_linebr
-)
-plot(
-     showRoadmap and showRoadmapLines ? roadmapS5 : na,
-     "Ichimoku Support S5",
-     color=color.new(color.green, 60),
-     linewidth=1,
      style=plot.style_linebr
 )
 
@@ -2135,6 +2072,7 @@ alertcondition(breakoutSignal, title="Swing Resistance Breakout", message="Price
 alertcondition(breakdownSignal, title="Swing Support Breakdown", message="Price broke below confirmed swing support on {{ticker}} {{interval}}")
 
 //====================================================================================
+_plotBudgetKeep = showBg or showKijunLevel or showCloudLevels or not na(colBssNearResBg)
 // MODULE C: BSS2000+ Control + Pre-Breakout Alert
 // Logic preserved; conflict IDs prefixed bss*; pane osc removed for plot limit;
 // label offsets enlarged so signals stay clear vs DRE/Ichimoku markers.
@@ -2472,21 +2410,10 @@ colBssTblBorder   = input.color(#30363D,       "Table Border", group=grp_bss_col
 colBssTblHeadBg   = input.color(#1A1A1A,       "Table Header BG", group=grp_bss_colors)
 colBssTblRowBg    = input.color(#0A0A0A,       "Table Row BG", group=grp_bss_colors)
 
-// ===== PLOT على الشارت (const colors = 1 slot لكل plot؛ لا Osc pane لتوفير الميزانية) =====
+// ===== PLOT BSS مختصر (حد TV=64) — الباقي عبر line/label =====
 plot(showBssPlots ? st1 : na, "BSS ST Fast", color=color.lime, linewidth=2, force_overlay=true)
-plot(showBssPlots ? st2 : na, "BSS ST Med", color=color.yellow, linewidth=2, force_overlay=true)
-plot(showBssPlots ? st3 : na, "BSS ST Slow", color=color.fuchsia, linewidth=2, force_overlay=true)
 plot(showBssPlots ? hma : na, "BSS HMA", color=color.white, linewidth=2, force_overlay=true)
-plot(showBssPlots ? ema_high : na, "BSS EMA High", color=color.teal, linewidth=1, force_overlay=true)
-plot(showBssPlots ? ema_low : na, "BSS EMA Low", color=color.maroon, linewidth=1, force_overlay=true)
-
-// ===== LEVEL مقاومة/دعم — line objects أدناه قابلة للتلوين من الإعدادات =====
-// plot بألوان const فقط؛ الألوان المخصصة تُطبَّق على الخطوط الأفقية + اللابل
-plot(showBssLevels ? resistanceLevel : na, "BSS Resistance LEVEL", color=color.orange, linewidth=3, style=plot.style_linebr, force_overlay=true)
-plot(showBssLevels ? supportLevel : na, "BSS Support LEVEL", color=color.aqua, linewidth=3, style=plot.style_linebr, force_overlay=true)
-
-// تلوين خفيف عند الاقتراب من المقاومة
-bgcolor(showBssLevels and nearResistance ? color.new(colBssNearResBg, 92) : na, force_overlay=true, title="BSS Near Resistance Zone")
+// ST Med/Slow + EMA + LEVEL plots removed; LEVEL lines/labels below still render
 
 // خطوط LEVEL أفقية ممتدة + لابل
 var line bssResLevelLine = na
@@ -2723,12 +2650,7 @@ if bssShowTable
 // ==========================================
 // 12. ALERTS
 // ==========================================
+// Alerts condensed (each alertcondition counts toward plot budget)
 alertcondition(showPreBreakout and preBreakoutAlert, "⚡ Pre-Breakout Alert", "Pre-Breakout Alert! السعر يستعد للاختراق!")
-alertcondition(showEarlyBuy and earlyBuySignal, "🚀 EARLY BUY", "Early Buy Signal Detected!")
-alertcondition(showBreakout and isBreakout and volumeSpike, "🔥 BREAKOUT", "Breakout with Volume Spike!")
-alertcondition(showTrendBuy and trend_buy_cond, "Trend Buy", "Trend Buy Signal")
-alertcondition(showTrendSell and trend_sell_cond, "Trend Sell", "Trend Sell Signal")
-alertcondition(showScalpBuy and scalp_buy_cond, "Scalp Buy", "Scalp Buy Signal")
-alertcondition(showScalpSell and scalp_sell_cond, "Scalp Sell", "Scalp Sell Signal")
-alertcondition(showAdvanced and hasSignalNow and signal_type_adv == "شراء 🟢", "Advanced Buy", "Advanced Buy Signal")
-alertcondition(showAdvanced and hasSignalNow and signal_type_adv == "بيع 🔴", "Advanced Sell", "Advanced Sell Signal")
+alertcondition(showEarlyBuy and earlyBuySignal or showBreakout and isBreakout and volumeSpike or showTrendBuy and trend_buy_cond or showScalpBuy and scalp_buy_cond or showAdvanced and hasSignalNow and signal_type_adv == "شراء 🟢", "BSS Buy Bundle", "BSS buy-side signal")
+alertcondition(showTrendSell and trend_sell_cond or showScalpSell and scalp_sell_cond or showAdvanced and hasSignalNow and signal_type_adv == "بيع 🔴", "BSS Sell Bundle", "BSS sell-side signal")
