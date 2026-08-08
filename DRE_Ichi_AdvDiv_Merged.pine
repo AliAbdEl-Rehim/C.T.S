@@ -2072,7 +2072,6 @@ alertcondition(breakoutSignal, title="Swing Resistance Breakout", message="Price
 alertcondition(breakdownSignal, title="Swing Support Breakdown", message="Price broke below confirmed swing support on {{ticker}} {{interval}}")
 
 //====================================================================================
-_plotBudgetKeep = showBg or showKijunLevel or showCloudLevels or not na(colBssNearResBg)
 // MODULE C: BSS2000+ Control + Pre-Breakout Alert
 // Logic preserved; conflict IDs prefixed bss*; pane osc removed for plot limit;
 // label offsets enlarged so signals stay clear vs DRE/Ichimoku markers.
@@ -2389,7 +2388,6 @@ showBssLevels = input.bool(true, "إظهار LEVEL (مقاومة/دعم)", group
 grp_bss_colors = "🎨 ألوان BSS"
 colBssRes         = input.color(color.orange,  "Resistance LEVEL / Lines", group=grp_bss_colors)
 colBssSup         = input.color(color.aqua,    "Support LEVEL / Lines", group=grp_bss_colors)
-colBssNearResBg   = input.color(color.orange,  "Near Resistance BG", group=grp_bss_colors)
 colBssPrebo       = input.color(color.orange,  "Pre-Breakout", group=grp_bss_colors)
 colBssEarly       = input.color(color.purple,  "Early Buy", group=grp_bss_colors)
 colBssBreakout    = input.color(color.blue,    "Breakout", group=grp_bss_colors)
