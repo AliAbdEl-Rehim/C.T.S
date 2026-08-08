@@ -1,6 +1,5 @@
 //@version=6
-// plot-budget fix v64 — if shorttitle is not "PreBO v64", you have an old copy
-indicator("DRE+Ichi+AdvDiv + BSS2000 PreBO", shorttitle="PreBO v64", overlay=true, max_labels_count=500, max_lines_count=500, max_bars_back=500)
+indicator("DRE+Ichi+AdvDiv + BSS2000 PreBO", shorttitle="All-in-One PreBO", overlay=true, max_labels_count=500, max_lines_count=500, max_bars_back=500)
 
 //====================================================================================
 // MODULE A: Advanced Divergences (Modo Rápido) — logic preserved; conflict IDs prefixed adv*
@@ -483,7 +482,8 @@ if showLines
     if not na(priceLow1) and not na(priceLow2)
         segBottom := f_seg(priceLow1, priceLBar1, priceLow2, priceLBar2)
 
-// Div price rays removed to stay under TV plot-limit 64 (labels still mark signals)
+plot(showLines and modeTop ? segTop : na, "Reta Topos", color.new(#ff1744, 60), linewidth=1, style=plot.style_line)
+plot(showLines and modeBottom ? segBottom : na, "Reta Fundos", color.new(#00e676, 60), linewidth=1, style=plot.style_line)
 
 //====================================================================================
 // 📋 SECTION 8: PAINEL DE ESTADOS
@@ -570,7 +570,7 @@ minConf      = input.float(75.0, "أدنى ثقة شراء/بيع %", minval=60,
 grpShow = "👁 Display"
 showLabels = input.bool(true, "عرض لابل الحالات", group=grpShow)
 showShapes = input.bool(true, "عرض أسهم على الشارت", group=grpShow)
-showBg     = input.bool(false, "تلوين خلفية الشمعة (معطّل لحد plots)", group=grpShow)
+showBg     = input.bool(true, "تلوين خلفية الشمعة", group=grpShow)
 showDash   = input.bool(true, "لوحة الحالات", group=grpShow)
 
 grpCases = "✅ تفعيل الحالات"
@@ -846,13 +846,14 @@ caseName() =>
 //====================================================================================
 // رسم DRE Rise (مع تعديل الموقع لتجنب التداخل)
 //====================================================================================
-// bgcolor/plotshape removed for plot-budget; label carries the rise signal
+bgcolor(showBg and fire ? color.new(color.lime, 85) : na)
+
+plotshape(showShapes and fire, title="Rise Case", style=shape.triangleup, location=location.belowbar, color=color.new(#00e676, 0), size=size.normal, text="صعود")
+
 if showLabels and fire
     // أقرب للشمعة من طبقة BO/R حتى تبقى الطبقات مفصولة
     label.new(bar_index, high + atr * 0.55, "⚡ " + caseName() + "\nTrend=" + str.tostring(Trend, "#.##"), 
               style=label.style_label_down, color=color.new(#1b5e20, 10), textcolor=color.white, size=size.normal)
-else if showShapes and fire
-    label.new(bar_index, low, "▲ صعود", style=label.style_label_up, color=color.new(#00e676, 0), textcolor=color.white, size=size.small)
 
 //====================================================================================
 // Alerts DRE
@@ -953,7 +954,7 @@ plot(showChikou ? chikou : na, "Chikou", color=color.teal, linewidth=2, offset=-
 
 plotA = plot(showCloud ? senkouA : na, "Senkou A", color=color.green, linewidth=2, offset=displacement)
 plotB = plot(showCloud ? senkouB : na, "Senkou B", color=color.red, linewidth=2, offset=displacement)
-fill(plotA, plotB, color=senkouA >= senkouB ? color.new(color.green, 82) : color.new(color.red, 82), title="Kumo")
+fill(plotA, plotB, color=showCloud ? (senkouA >= senkouB ? color.new(color.green, 82) : color.new(color.red, 82)) : na, title="Kumo")
 
 //━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // DIVERGENCE SETTINGS
@@ -1193,15 +1194,16 @@ useCloseForBreak = input.bool(true, "Require Close Beyond Level", group=groupLev
 breakBufferATR   = input.float(0.05, "Break Buffer (ATR)", minval=0.0, step=0.01, group=groupLevels,
      tooltip="Requires price to clear a level by this ATR fraction, reducing marginal false breaks.")
 
-showKijunLevel = input.bool(false, "Show Current Kijun S/R (use main Kijun plot)", group=groupLevels)
-showCloudLevels = input.bool(false, "Show Projected Cloud S/R (use Senkou plots)", group=groupLevels,
-     tooltip="Disabled to stay under plot limit 64. Senkou A/B already show the cloud.")
+showKijunLevel = input.bool(true, "Show Current Kijun S/R", group=groupLevels)
+showCloudLevels = input.bool(true, "Show Projected Cloud S/R", group=groupLevels,
+     tooltip="Shows the cloud top and bottom projected forward by the Ichimoku displacement.")
 
 resistanceColor = input.color(color.new(color.red, 10), "Resistance Color", group=groupLevels)
 supportColor    = input.color(color.new(color.green, 10), "Support Color", group=groupLevels)
 brokenColor     = input.color(color.new(color.gray, 45), "Broken Level Color", group=groupLevels)
 
-// Kijun / projected cloud plots removed — already drawn as Kijun + Senkou A/B (saves plot budget)
+// NOTE (plot-limit): duplicate Kijun / projected-cloud plots removed.
+// Use main Kijun + Senkou A/B plots instead (same levels, saves 3 plot slots).
 futureCloudTop    = math.max(senkouA, senkouB)
 futureCloudBottom = math.min(senkouA, senkouB)
 
@@ -1861,7 +1863,7 @@ float roadmapS3 = supportCount > 2 and roadmapCount >= 3 ? array.get(supportLeve
 float roadmapS4 = supportCount > 3 and roadmapCount >= 4 ? array.get(supportLevels, 3) : na
 float roadmapS5 = supportCount > 4 and roadmapCount >= 5 ? array.get(supportLevels, 4) : na
 
-// فقط R1/S1 كـ plot (الباقي عبر line objects R1–R3 / S1–S3 + الجدول) — توفير ميزانية plots
+// خطوط مستويات Roadmap ظاهرة كـ linebr (أوضح من الدوائر)
 plot(
      showRoadmap and showRoadmapLines ? roadmapR1 : na,
      "Ichimoku Resistance R1",
@@ -1870,12 +1872,43 @@ plot(
      style=plot.style_linebr
 )
 plot(
+     showRoadmap and showRoadmapLines ? roadmapR2 : na,
+     "Ichimoku Resistance R2",
+     color=color.new(color.red, 20),
+     linewidth=2,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapR3 : na,
+     "Ichimoku Resistance R3",
+     color=color.new(color.red, 35),
+     linewidth=2,
+     style=plot.style_linebr
+)
+// R4/R5 plots removed for TV plot-limit 64 — still in table + R/S labels
+
+plot(
      showRoadmap and showRoadmapLines ? roadmapS1 : na,
      "Ichimoku Support S1",
      color=color.green,
      linewidth=3,
      style=plot.style_linebr
 )
+plot(
+     showRoadmap and showRoadmapLines ? roadmapS2 : na,
+     "Ichimoku Support S2",
+     color=color.new(color.green, 20),
+     linewidth=2,
+     style=plot.style_linebr
+)
+plot(
+     showRoadmap and showRoadmapLines ? roadmapS3 : na,
+     "Ichimoku Support S3",
+     color=color.new(color.green, 35),
+     linewidth=2,
+     style=plot.style_linebr
+)
+// S4/S5 plots removed for TV plot-limit 64 — still in table + R/S labels
 
 // خطوط أفقية ثابتة للمستويات الحالية (R1–R3 / S1–S3) — تظهر دائماً كـ LEVEL
 var line lvlR1 = na
@@ -2376,42 +2409,31 @@ hasSignalNow = signal_type_adv != "محايد"
 // ملاحظة: كود BSS الأصلي كان يحسب Supertrend/HMA/Levels بدون رسمها؛ هنا نرسمها بوضوح
 // ==========================================
 grp_bss_vis = "👁 BSS PLOT + LEVEL"
-showBssPlots  = input.bool(true, "إظهار PLOT (Supertrend + HMA + EMA)", group=grp_bss_vis)
+showBssPlots  = input.bool(true, "إظهار PLOT (Supertrend + HMA + Osc)", group=grp_bss_vis)
 showBssLevels = input.bool(true, "إظهار LEVEL (مقاومة/دعم)", group=grp_bss_vis)
 
-// ==========================================
-// 🎨 ألوان BSS
-// ملاحظة: ألوان plot() ثابتة (const) لتقليل عدّاد الـ plots (حد TV = 64).
-// input.color يضاعف تكلفة كل plot؛ لذلك التحكم من الإعدادات للابل/خطوط/جدول.
-// ألوان الخطوط المرسومة بـ plot تُغيَّر أيضاً من تبويب Style.
-// ==========================================
-grp_bss_colors = "🎨 ألوان BSS"
-colBssRes         = input.color(color.orange,  "Resistance LEVEL / Lines", group=grp_bss_colors)
-colBssSup         = input.color(color.aqua,    "Support LEVEL / Lines", group=grp_bss_colors)
-colBssPrebo       = input.color(color.orange,  "Pre-Breakout", group=grp_bss_colors)
-colBssEarly       = input.color(color.purple,  "Early Buy", group=grp_bss_colors)
-colBssBreakout    = input.color(color.blue,    "Breakout", group=grp_bss_colors)
-colBssTrendBuy    = input.color(color.green,   "Trend Buy", group=grp_bss_colors)
-colBssTrendSell   = input.color(color.red,     "Trend Sell", group=grp_bss_colors)
-colBssScalpBuy    = input.color(color.lime,    "Scalp Buy", group=grp_bss_colors)
-colBssScalpSell   = input.color(color.red,     "Scalp Sell", group=grp_bss_colors)
-colBssAdvBuy      = input.color(color.green,   "Advanced Buy", group=grp_bss_colors)
-colBssAdvSell     = input.color(color.red,     "Advanced Sell", group=grp_bss_colors)
-colBssLabelText   = input.color(color.white,   "Label Text", group=grp_bss_colors)
-colBssScalpBuyTxt = input.color(color.black,   "Scalp Buy Text", group=grp_bss_colors)
-colBssTblHeader   = input.color(#FFCC00,       "Table Header Text", group=grp_bss_colors)
-colBssTblMuted    = input.color(color.gray,    "Table Muted Text", group=grp_bss_colors)
-colBssTblConf     = input.color(color.yellow,  "Table Confidence", group=grp_bss_colors)
-colBssTblVotes    = input.color(#00AAFF,       "Table Votes", group=grp_bss_colors)
-colBssTblBg       = input.color(#000000,       "Table Background", group=grp_bss_colors)
-colBssTblBorder   = input.color(#30363D,       "Table Border", group=grp_bss_colors)
-colBssTblHeadBg   = input.color(#1A1A1A,       "Table Header BG", group=grp_bss_colors)
-colBssTblRowBg    = input.color(#0A0A0A,       "Table Row BG", group=grp_bss_colors)
+atr_v = ta.atr(14)
+osc_val = (close - hma) / (atr_v > 0 ? atr_v : syminfo.mintick)
 
-// ===== PLOT BSS مختصر (حد TV=64) — الباقي عبر line/label =====
+// ===== PLOT على الشارت الرئيسي (Supertrend + HMA) =====
 plot(showBssPlots ? st1 : na, "BSS ST Fast", color=color.lime, linewidth=2, force_overlay=true)
+plot(showBssPlots ? st2 : na, "BSS ST Med", color=color.yellow, linewidth=2, force_overlay=true)
+plot(showBssPlots ? st3 : na, "BSS ST Slow", color=color.fuchsia, linewidth=2, force_overlay=true)
 plot(showBssPlots ? hma : na, "BSS HMA", color=color.white, linewidth=2, force_overlay=true)
-// ST Med/Slow + EMA + LEVEL plots removed; LEVEL lines/labels below still render
+plot(showBssPlots ? ema_high : na, "BSS EMA High", color=color.teal, linewidth=1, force_overlay=true)
+plot(showBssPlots ? ema_low : na, "BSS EMA Low", color=color.maroon, linewidth=1, force_overlay=true)
+
+// ===== PLOT نافذة Oscillator (من كود BSS) =====
+plot(showBssPlots ? 0 : na, "BSS Zero Line", color=color.gray, linewidth=1, style=plot.style_line, display=display.pane)
+plot(showBssPlots ? osc_val : na, "BSS Osc Columns", color=color.gray, style=plot.style_columns, display=display.pane)
+plot(showBssPlots ? osc_val : na, "BSS Osc Line", color=color.white, linewidth=2, display=display.pane)
+
+// ===== LEVEL مقاومة/دعم — دائماً على الشارت =====
+plot(showBssLevels ? resistanceLevel : na, "BSS Resistance LEVEL", color=color.orange, linewidth=3, style=plot.style_linebr, force_overlay=true)
+plot(showBssLevels ? supportLevel : na, "BSS Support LEVEL", color=color.aqua, linewidth=3, style=plot.style_linebr, force_overlay=true)
+
+// تلوين خفيف عند الاقتراب من المقاومة
+bgcolor(showBssLevels and nearResistance ? color.new(color.orange, 92) : na, force_overlay=true, title="BSS Near Resistance Zone")
 
 // خطوط LEVEL أفقية ممتدة + لابل
 var line bssResLevelLine = na
@@ -2422,40 +2444,36 @@ var label bssSupLbl = na
 if barstate.islast
     if showBssLevels
         if na(bssResLevelLine)
-            bssResLevelLine := line.new(bar_index - 50, resistanceLevel, bar_index + 15, resistanceLevel, xloc=xloc.bar_index, extend=extend.right, color=colBssRes, width=3, style=line.style_solid)
+            bssResLevelLine := line.new(bar_index - 50, resistanceLevel, bar_index + 15, resistanceLevel, xloc=xloc.bar_index, extend=extend.right, color=color.orange, width=3, style=line.style_solid)
         else
             line.set_xy1(bssResLevelLine, bar_index - 50, resistanceLevel)
             line.set_xy2(bssResLevelLine, bar_index + 15, resistanceLevel)
-            line.set_color(bssResLevelLine, colBssRes)
+            line.set_color(bssResLevelLine, color.orange)
             line.set_style(bssResLevelLine, line.style_solid)
             line.set_width(bssResLevelLine, 3)
             line.set_extend(bssResLevelLine, extend.right)
 
         if na(bssSupLevelLine)
-            bssSupLevelLine := line.new(bar_index - 50, supportLevel, bar_index + 15, supportLevel, xloc=xloc.bar_index, extend=extend.right, color=colBssSup, width=3, style=line.style_solid)
+            bssSupLevelLine := line.new(bar_index - 50, supportLevel, bar_index + 15, supportLevel, xloc=xloc.bar_index, extend=extend.right, color=color.aqua, width=3, style=line.style_solid)
         else
             line.set_xy1(bssSupLevelLine, bar_index - 50, supportLevel)
             line.set_xy2(bssSupLevelLine, bar_index + 15, supportLevel)
-            line.set_color(bssSupLevelLine, colBssSup)
+            line.set_color(bssSupLevelLine, color.aqua)
             line.set_style(bssSupLevelLine, line.style_solid)
             line.set_width(bssSupLevelLine, 3)
             line.set_extend(bssSupLevelLine, extend.right)
 
         if na(bssResLbl)
-            bssResLbl := label.new(bar_index + 2, resistanceLevel, "LEVEL RES " + str.tostring(resistanceLevel, format.mintick), style=label.style_label_left, color=colBssRes, textcolor=colBssLabelText, size=size.normal)
+            bssResLbl := label.new(bar_index + 2, resistanceLevel, "LEVEL RES " + str.tostring(resistanceLevel, format.mintick), style=label.style_label_left, color=color.orange, textcolor=color.white, size=size.normal)
         else
             label.set_xy(bssResLbl, bar_index + 2, resistanceLevel)
             label.set_text(bssResLbl, "LEVEL RES " + str.tostring(resistanceLevel, format.mintick))
-            label.set_color(bssResLbl, colBssRes)
-            label.set_textcolor(bssResLbl, colBssLabelText)
 
         if na(bssSupLbl)
-            bssSupLbl := label.new(bar_index + 2, supportLevel, "LEVEL SUP " + str.tostring(supportLevel, format.mintick), style=label.style_label_left, color=colBssSup, textcolor=colBssLabelText, size=size.normal)
+            bssSupLbl := label.new(bar_index + 2, supportLevel, "LEVEL SUP " + str.tostring(supportLevel, format.mintick), style=label.style_label_left, color=color.aqua, textcolor=color.white, size=size.normal)
         else
             label.set_xy(bssSupLbl, bar_index + 2, supportLevel)
             label.set_text(bssSupLbl, "LEVEL SUP " + str.tostring(supportLevel, format.mintick))
-            label.set_color(bssSupLbl, colBssSup)
-            label.set_textcolor(bssSupLbl, colBssLabelText)
     else
         if not na(bssResLevelLine)
             line.delete(bssResLevelLine)
@@ -2492,14 +2510,14 @@ if showPreBreakout and preBreakoutAlert and not preBreakoutAlert[1]
     label.new(x=bar_index, y=low - atrOffset * 16, 
               text=preboText, 
               style=label.style_label_up, 
-              color=color.new(colBssPrebo, 80), 
-              textcolor=colBssLabelText, 
+              color=color.new(color.orange, 80), 
+              textcolor=color.white, 
               size=size.large)
     
     // خط مقاومة محدود (بدون extend.right الدائم) حتى تبقى مستويات LEVEL ظاهرة
     if bssShowLines
         line preboLn = line.new(x1=bar_index, y1=resistanceLevel, x2=bar_index + 25, y2=resistanceLevel, 
-                 color=colBssPrebo, width=2, style=line.style_dashed, extend=extend.none)
+                 color=color.orange, width=2, style=line.style_dashed, extend=extend.none)
         f_bssKeepLine(preboLn)
 
 // 🚀 EARLY BUY
@@ -2507,12 +2525,12 @@ if showEarlyBuy and earlyBuySignal and not earlyBuySignal[1]
     label.new(x=bar_index, y=low - atrOffset * 14, 
               text="🚀🚀 EARLY BUY\n" + earlyBuyReason + "\nسعر: " + str.tostring(close, "#.##"), 
               style=label.style_label_up, 
-              color=color.new(colBssEarly, 90), 
-              textcolor=colBssLabelText, 
+              color=color.new(color.purple, 90), 
+              textcolor=color.white, 
               size=size.large)
     
     if bssShowLines
-        line earlyLn = line.new(x1=bar_index, y1=low, x2=bar_index, y2=low - atrOffset * 12, color=colBssEarly, width=2, style=line.style_dashed)
+        line earlyLn = line.new(x1=bar_index, y1=low, x2=bar_index, y2=low - atrOffset * 12, color=color.purple, width=2, style=line.style_dashed)
         f_bssKeepLine(earlyLn)
 
 // 🔥 BREAKOUT
@@ -2520,8 +2538,8 @@ if showBreakout and isBreakout and volumeSpike and not isBreakout[1]
     label.new(x=bar_index, y=low - atrOffset * 10, 
               text="🔥 BREAKOUT\n" + str.tostring(math.round(breakoutRatio * 100) / 100) + "x ATR\nحجم: " + str.tostring(math.round(volume / volumeMa)) + "x", 
               style=label.style_label_up, 
-              color=color.new(colBssBreakout, 80), 
-              textcolor=colBssLabelText, 
+              color=color.new(color.blue, 80), 
+              textcolor=color.white, 
               size=size.normal)
 
 // 🟢 TREND BUY
@@ -2529,8 +2547,8 @@ if showTrendBuy and trend_buy_cond and not trend_buy_cond[1]
     label.new(x=bar_index, y=low - atrOffset * 12, 
               text="🟢🟢 TREND BUY\nConf: " + str.tostring(math.round(final_confidence)) + "%", 
               style=label.style_label_up, 
-              color=color.new(colBssTrendBuy, 90), 
-              textcolor=colBssLabelText, 
+              color=color.new(color.green, 90), 
+              textcolor=color.white, 
               size=size.large)
 
 // 🔴 TREND SELL
@@ -2538,8 +2556,8 @@ if showTrendSell and trend_sell_cond and not trend_sell_cond[1]
     label.new(x=bar_index, y=high + atrOffset * 12, 
               text="🔴🔴 TREND SELL\nConf: " + str.tostring(math.round(final_confidence)) + "%", 
               style=label.style_label_down, 
-              color=color.new(colBssTrendSell, 90), 
-              textcolor=colBssLabelText, 
+              color=color.new(color.red, 90), 
+              textcolor=color.white, 
               size=size.large)
 
 // 🟢 SCALP BUY
@@ -2547,8 +2565,8 @@ if showScalpBuy and scalp_buy_cond
     label.new(x=bar_index, y=low - atrOffset * 8, 
               text="🟢 SCALP", 
               style=label.style_label_up, 
-              color=color.new(colBssScalpBuy, 70), 
-              textcolor=colBssScalpBuyTxt, 
+              color=color.new(color.lime, 70), 
+              textcolor=color.black, 
               size=size.normal)
 
 // 🔴 SCALP SELL
@@ -2556,8 +2574,8 @@ if showScalpSell and scalp_sell_cond
     label.new(x=bar_index, y=high + atrOffset * 8, 
               text="🔴 SCALP", 
               style=label.style_label_down, 
-              color=color.new(colBssScalpSell, 70), 
-              textcolor=colBssLabelText, 
+              color=color.new(color.red, 70), 
+              textcolor=color.white, 
               size=size.normal)
 
 // ⭐ الإشارات المتقدمة
@@ -2582,8 +2600,8 @@ if showAdvanced and hasSignalNow
         label.new(x=bar_index, y=low - atrOffset * 20, 
                   text=bssLabelText, 
                   style=label.style_label_up, 
-                  color=color.new(colBssAdvBuy, 80), 
-                  textcolor=colBssLabelText, 
+                  color=color.new(color.green, 80), 
+                  textcolor=color.white, 
                   size=size.normal)
     
     if signal_type_adv == "بيع 🔴"
@@ -2600,55 +2618,60 @@ if showAdvanced and hasSignalNow
         label.new(x=bar_index, y=high + atrOffset * 16, 
                   text=bssLabelText, 
                   style=label.style_label_down, 
-                  color=color.new(colBssAdvSell, 80), 
-                  textcolor=colBssLabelText, 
+                  color=color.new(color.red, 80), 
+                  textcolor=color.white, 
                   size=size.normal)
 
 // ==========================================
 // 11. TABLES
 // ==========================================
 if bssShowTable
-    var table predTable = table.new(position.middle_right, 2, 10, bgcolor=color.new(colBssTblBg, 15), border_color=color.new(colBssTblBorder, 40))
+    var table predTable = table.new(position.middle_right, 2, 10, bgcolor=color.rgb(0,0,0,85), border_color=color.rgb(48,54,61,60))
 
     if barstate.islast
-        table.cell(predTable, 0, 0, "📊 BSS2000+ PreBO", bgcolor=colBssTblHeadBg, text_color=colBssTblHeader, text_size=size.large, text_halign=text.align_center)
-        table.cell(predTable, 1, 0, "VALUE", bgcolor=colBssTblHeadBg, text_color=colBssTblHeader, text_size=size.large, text_halign=text.align_center)
+        table.cell(predTable, 0, 0, "📊 BSS2000+ PreBO", bgcolor=color.rgb(26,26,26,100), text_color=color.rgb(255,204,0,100), text_size=size.large, text_halign=text.align_center)
+        table.cell(predTable, 1, 0, "VALUE", bgcolor=color.rgb(26,26,26,100), text_color=color.rgb(255,204,0,100), text_size=size.large, text_halign=text.align_center)
         
-        table.cell(predTable, 0, 1, "Signal", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
-        color predColor = signal_type_adv == "شراء 🟢" ? colBssAdvBuy : signal_type_adv == "بيع 🔴" ? colBssAdvSell : colBssLabelText
-        table.cell(predTable, 1, 1, signal_type_adv != "محايد" ? signal_type_adv : "Waiting", bgcolor=colBssTblRowBg, text_color=predColor)
+        table.cell(predTable, 0, 1, "Signal", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        color predColor = signal_type_adv == "شراء 🟢" ? color.green : signal_type_adv == "بيع 🔴" ? color.red : color.white
+        table.cell(predTable, 1, 1, signal_type_adv != "محايد" ? signal_type_adv : "Waiting", bgcolor=color.rgb(10,10,10,100), text_color=predColor)
         
-        table.cell(predTable, 0, 2, "Confidence", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
-        table.cell(predTable, 1, 2, str.tostring(final_confidence, "#.#") + "%", bgcolor=colBssTblRowBg, text_color=colBssTblConf)
+        table.cell(predTable, 0, 2, "Confidence", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 2, str.tostring(final_confidence, "#.#") + "%", bgcolor=color.rgb(10,10,10,100), text_color=color.yellow)
         
-        table.cell(predTable, 0, 3, "Votes", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
-        table.cell(predTable, 1, 3, "🟢" + str.tostring(bullish_signals) + " 🔴" + str.tostring(bearish_signals), bgcolor=colBssTblRowBg, text_color=colBssTblVotes)
+        table.cell(predTable, 0, 3, "Votes", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 3, "🟢" + str.tostring(bullish_signals) + " 🔴" + str.tostring(bearish_signals), bgcolor=color.rgb(10,10,10,100), text_color=color.rgb(0,170,255,100))
         
         // ⚡ صف Pre-Breakout الجديد
-        table.cell(predTable, 0, 4, "Pre-Breakout", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
+        table.cell(predTable, 0, 4, "Pre-Breakout", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
         preboStatus = preBreakoutAlert ? "⚡ " + preboStrength : "---"
-        preboColor = preBreakoutAlert ? colBssPrebo : colBssTblMuted
-        table.cell(predTable, 1, 4, preboStatus, bgcolor=colBssTblRowBg, text_color=preboColor)
+        preboColor = preBreakoutAlert ? color.orange : color.gray
+        table.cell(predTable, 1, 4, preboStatus, bgcolor=color.rgb(10,10,10,100), text_color=preboColor)
         
-        table.cell(predTable, 0, 5, "Pre-BO Score", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
-        table.cell(predTable, 1, 5, str.tostring(preboScore) + "/6", bgcolor=colBssTblRowBg, text_color=preboScore >= 4 ? colBssPrebo : colBssTblMuted)
+        table.cell(predTable, 0, 5, "Pre-BO Score", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 5, str.tostring(preboScore) + "/6", bgcolor=color.rgb(10,10,10,100), text_color=preboScore >= 4 ? color.orange : color.gray)
         
-        table.cell(predTable, 0, 6, "Breakout", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
-        table.cell(predTable, 1, 6, isBreakout ? "🔥 YES" : "---", bgcolor=colBssTblRowBg, text_color=isBreakout ? colBssBreakout : colBssTblMuted)
+        table.cell(predTable, 0, 6, "Breakout", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 6, isBreakout ? "🔥 YES" : "---", bgcolor=color.rgb(10,10,10,100), text_color=isBreakout ? color.blue : color.gray)
         
-        table.cell(predTable, 0, 7, "Early Buy", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
-        table.cell(predTable, 1, 7, earlyBuySignal ? "🚀 YES" : "---", bgcolor=colBssTblRowBg, text_color=earlyBuySignal ? colBssEarly : colBssTblMuted)
+        table.cell(predTable, 0, 7, "Early Buy", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 7, earlyBuySignal ? "🚀 YES" : "---", bgcolor=color.rgb(10,10,10,100), text_color=earlyBuySignal ? color.purple : color.gray)
         
-        table.cell(predTable, 0, 8, "RSI", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
-        table.cell(predTable, 1, 8, str.tostring(math.round(rsiVal)), bgcolor=colBssTblRowBg, text_color=rsiVal > 70 ? colBssTrendSell : rsiVal < 30 ? colBssTrendBuy : colBssTblMuted)
+        table.cell(predTable, 0, 8, "RSI", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 8, str.tostring(math.round(rsiVal)), bgcolor=color.rgb(10,10,10,100), text_color=rsiVal > 70 ? color.red : rsiVal < 30 ? color.green : color.gray)
         
-        table.cell(predTable, 0, 9, "Volume", bgcolor=colBssTblRowBg, text_color=colBssTblMuted)
-        table.cell(predTable, 1, 9, volumeSpike ? "🔥 SPIKE" : "Normal", bgcolor=colBssTblRowBg, text_color=volumeSpike ? colBssBreakout : colBssTblMuted)
+        table.cell(predTable, 0, 9, "Volume", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 9, volumeSpike ? "🔥 SPIKE" : "Normal", bgcolor=color.rgb(10,10,10,100), text_color=volumeSpike ? color.blue : color.gray)
 
 // ==========================================
 // 12. ALERTS
 // ==========================================
-// Alerts condensed (each alertcondition counts toward plot budget)
 alertcondition(showPreBreakout and preBreakoutAlert, "⚡ Pre-Breakout Alert", "Pre-Breakout Alert! السعر يستعد للاختراق!")
-alertcondition(showEarlyBuy and earlyBuySignal or showBreakout and isBreakout and volumeSpike or showTrendBuy and trend_buy_cond or showScalpBuy and scalp_buy_cond or showAdvanced and hasSignalNow and signal_type_adv == "شراء 🟢", "BSS Buy Bundle", "BSS buy-side signal")
-alertcondition(showTrendSell and trend_sell_cond or showScalpSell and scalp_sell_cond or showAdvanced and hasSignalNow and signal_type_adv == "بيع 🔴", "BSS Sell Bundle", "BSS sell-side signal")
+alertcondition(showEarlyBuy and earlyBuySignal, "🚀 EARLY BUY", "Early Buy Signal Detected!")
+alertcondition(showBreakout and isBreakout and volumeSpike, "🔥 BREAKOUT", "Breakout with Volume Spike!")
+alertcondition(showTrendBuy and trend_buy_cond, "Trend Buy", "Trend Buy Signal")
+alertcondition(showTrendSell and trend_sell_cond, "Trend Sell", "Trend Sell Signal")
+alertcondition(showScalpBuy and scalp_buy_cond, "Scalp Buy", "Scalp Buy Signal")
+alertcondition(showScalpSell and scalp_sell_cond, "Scalp Sell", "Scalp Sell Signal")
+alertcondition(showAdvanced and hasSignalNow and signal_type_adv == "شراء 🟢", "Advanced Buy", "Advanced Buy Signal")
+alertcondition(showAdvanced and hasSignalNow and signal_type_adv == "بيع 🔴", "Advanced Sell", "Advanced Sell Signal")
