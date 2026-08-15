@@ -611,19 +611,19 @@ getConfidence(int dir, int patIdx, bool isTrap) =>
         score += 14.0
     else if dir == -1 and trendBear
         score += 14.0
-    if (dir == 1 and close > kamaTrend) or (dir == -1 and close < kamaTrend)
+    if ((dir == 1 and close > kamaTrend) or (dir == -1 and close < kamaTrend))
         score += 3.0
-    if (dir == 1 and htf4hBull) or (dir == -1 and htf4hBear)
+    if ((dir == 1 and htf4hBull) or (dir == -1 and htf4hBear))
         score += 8.0
     if strongTrend
         score += 10.0
     else if adxVal >= 20
         score += 4.0
-    if (dir == 1 and dmiBull) or (dir == -1 and dmiBear)
+    if ((dir == 1 and dmiBull) or (dir == -1 and dmiBear))
         score += 6.0
-    if (dir == 1 and rsiVal > rsiOsInput and rsiVal < rsiPullHi) or (dir == -1 and rsiVal < rsiObInput and rsiVal > rsiPullLo)
+    if ((dir == 1 and rsiVal > rsiOsInput and rsiVal < rsiPullHi) or (dir == -1 and rsiVal < rsiObInput and rsiVal > rsiPullLo))
         score += 10.0
-    else if (dir == 1 and rsiVal > 50 and rsiVal < rsiObInput) or (dir == -1 and rsiVal < 50 and rsiVal > rsiOsInput)
+    else if ((dir == 1 and rsiVal > 50 and rsiVal < rsiObInput) or (dir == -1 and rsiVal < 50 and rsiVal > rsiOsInput))
         score += 4.0
     if hasVolume and volSma > 0 and volume > volSma * volMultInput and ((dir == 1 and obvRising) or (dir == -1 and obvFalling))
         score += 10.0
@@ -633,16 +633,16 @@ getConfidence(int dir, int patIdx, bool isTrap) =>
     if ftcVisible > 0
         score += math.min(12.0, (aligned / math.max(ftcVisible, 1)) * 12.0)
     if useSmcInput
-        if (dir == 1 and bullStruct) or (dir == -1 and bearStruct)
+        if ((dir == 1 and bullStruct) or (dir == -1 and bearStruct))
             score += 10.0
-        if (dir == 1 and inBullOB) or (dir == -1 and inBearOB)
+        if ((dir == 1 and inBullOB) or (dir == -1 and inBearOB))
             score += 6.0
-        if (dir == 1 and inFvgBull) or (dir == -1 and inFvgBear)
+        if ((dir == 1 and inFvgBull) or (dir == -1 and inFvgBear))
             score += 4.0
-        if (dir == 1 and sweepBull) or (dir == -1 and sweepBear)
+        if ((dir == 1 and sweepBull) or (dir == -1 and sweepBear))
             score += 6.0
     if useDivInput
-        if (dir == 1 and bullDivHTF) or (dir == -1 and bearDivHTF)
+        if ((dir == 1 and bullDivHTF) or (dir == -1 and bearDivHTF))
             score += 8.0
     if patMemoryInput and patIdx >= 0 and patIdx < patWinRates.size()
         float wr = patWinRates.get(patIdx)
@@ -658,23 +658,31 @@ getConfidence(int dir, int patIdx, bool isTrap) =>
 
 confluenceCount(int dir, bool viaTrap) =>
     int n = 0
-    if dir == 1 ? (mtfSlowBull and mtfFastBull) : (mtfSlowBear and mtfFastBear)
+    bool mtfHit = dir == 1 ? (mtfSlowBull and mtfFastBull) : (mtfSlowBear and mtfFastBear)
+    bool trendHit = dir == 1 ? trendBull : trendBear
+    bool structHit = dir == 1 ? bullStruct : bearStruct
+    bool obHit = dir == 1 ? inBullOB : inBearOB
+    bool fvgHit = dir == 1 ? inFvgBull : inFvgBear
+    bool sweepHit = dir == 1 ? sweepBull : sweepBear
+    bool dmiHit = dir == 1 ? dmiBull : dmiBear
+    bool volHit = (dir == 1 and hasVolume and obvRising) or (dir == -1 and hasVolume and obvFalling)
+    if mtfHit
         n += 1
-    if dir == 1 ? trendBull : trendBear
+    if trendHit
         n += 1
-    if dir == 1 ? bullStruct : bearStruct
+    if structHit
         n += 1
-    if dir == 1 ? inBullOB : inBearOB
+    if obHit
         n += 1
-    if dir == 1 ? inFvgBull : inFvgBear
+    if fvgHit
         n += 1
-    if dir == 1 ? sweepBull : sweepBear
+    if sweepHit
         n += 1
     if strongTrend
         n += 1
-    if (dir == 1 and hasVolume and obvRising) or (dir == -1 and hasVolume and obvFalling)
+    if volHit
         n += 1
-    if dir == 1 ? dmiBull : dmiBear
+    if dmiHit
         n += 1
     if viaTrap and trapQualityOk
         n += 1
@@ -819,14 +827,14 @@ if beInput and tp1FirstTouch and not beActive and activeDir != 0
 bool closeBySl = slHitRaw and not tp1FirstTouch and not tp3FirstTouch
 bool tradeWin  = false
 
-    if (tp3HitRaw or closeBySl) and activeDir != 0
-        tradeWin := tp1Reached
-        lastCloseWasLoss := not tradeWin
-        lastSignalBar := bar_index
-        if tradeWin
-            winCount += 1
-        else
-            lossCount += 1
+if ((tp3HitRaw or closeBySl) and activeDir != 0)
+    tradeWin := tp1Reached
+    lastCloseWasLoss := not tradeWin
+    lastSignalBar := bar_index
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
     array.push(tradeTimes, time)
     array.push(tradeWins, tradeWin)
     while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STAT_DAYS
