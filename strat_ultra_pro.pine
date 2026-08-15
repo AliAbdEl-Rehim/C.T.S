@@ -1,10 +1,10 @@
 //@version=6
 // ══════════════════════════════════════════════════════════
-// STRAT ULTRA PRO v3.0 — Smart Money + AI Confidence
-// Fixed Edition — Pine v6 named inputs + type/scope fixes
+// STRAT ULTRA PRO v3.1 — Smart Money + AI Confidence
+// Precision Edition — directional MTF, confluence, fewer false signals
 // ══════════════════════════════════════════════════════════
 indicator(
-     title            = "STRAT ULTRA PRO [SMC + AI]",
+     title            = "STRAT ULTRA PRO v3.1 [SMC + AI]",
      shorttitle       = "STRAT ULTRA",
      overlay          = true,
      max_bars_back    = 5000,
@@ -15,7 +15,7 @@ indicator(
 // ══════════════════════════════════════════════════════════
 // 1. CONSTANTS
 // ══════════════════════════════════════════════════════════
-string VERSION   = "3.0-ULTRA"
+string VERSION   = "3.1-PRECISION"
 string JSON_IND  = "STRAT-ULTRA"
 int    ST_IDLE   = 0
 int    ST_PEND   = 1
@@ -33,6 +33,7 @@ string GRP_AI  = "07 AI Confidence"
 string GRP_MTF = "08 Multi-Timeframe"
 string GRP_DSH = "09 Dashboard"
 string GRP_ALR = "10 Alerts"
+string GRP_PRC = "11 Precision (Accuracy)"
 
 // ══════════════════════════════════════════════════════════
 // 2. INPUTS  (named args — positional 5th of input.int is `step`, not group)
@@ -49,7 +50,7 @@ patMemoryInput     = input.bool(true, "Pattern Memory (Learning)", group = GRP_P
 expiryInput        = input.int(5, "Setup Expiry (bars)", minval = 1, maxval = 30, group = GRP_TRG)
 showLinesInput     = input.bool(true, "Trigger/Stop Lines", group = GRP_TRG)
 useConfirmInput    = input.bool(true, "Require Confirmation Bar", group = GRP_TRG)
-confirmTypeInput   = input.string("Close vs Open", "Confirmation Type", options = ["Close vs Close", "Close vs Open", "Body Break"], group = GRP_TRG)
+confirmTypeInput   = input.string("Body Break", "Confirmation Type", options = ["Close vs Close", "Close vs Open", "Body Break"], group = GRP_TRG)
 
 enableTradesInput  = input.bool(true, "Trade Engine", group = GRP_RSK)
 entryModeInput     = input.string("Both", "Entry Mode", options = ["Trap Bar", "STRAT Trigger", "Both"], group = GRP_RSK)
@@ -93,7 +94,7 @@ useVolRegimeInput   = input.bool(true, "Volatility Regime Filter", group = GRP_F
 vbbLenInput         = input.int(20, "BB Length", minval = 10, maxval = 50, group = GRP_FLT)
 vbbMultInput        = input.float(2.0, "BB Multiplier", minval = 1.0, maxval = 3.0, step = 0.1, group = GRP_FLT)
 
-minFtcInput         = input.int(2, "Min FTC Aligned", minval = 0, maxval = 8, group = GRP_FLT)
+minFtcInput         = input.int(3, "Min FTC Aligned", minval = 0, maxval = 8, group = GRP_FLT)
 
 useSmcInput         = input.bool(true, "Enable Smart Money", group = GRP_SMC)
 smcSwingInput       = input.int(5, "Swing Lookback", minval = 3, maxval = 20, group = GRP_SMC)
@@ -103,7 +104,7 @@ showFvgInput        = input.bool(true, "Show Fair Value Gaps", group = GRP_SMC)
 useSweepInput       = input.bool(true, "Liquidity Sweep Filter", group = GRP_SMC)
 
 useConfInput        = input.bool(true, "Enable Confidence Scoring", group = GRP_AI)
-minConfInput        = input.int(70, "Minimum Confidence", minval = 0, maxval = 100, group = GRP_AI)
+minConfInput        = input.int(78, "Minimum Confidence", minval = 0, maxval = 100, group = GRP_AI)
 showConfInput       = input.bool(true, "Show Confidence on Chart", group = GRP_AI)
 useDivInput         = input.bool(true, "MTF Divergence Check", group = GRP_AI)
 divTfInput          = input.string("60", "Divergence TF", options = ["15", "30", "60", "240"], group = GRP_AI)
@@ -118,6 +119,21 @@ dashSizeInput       = input.string("Small", "Size", options = ["Small", "Normal"
 
 enableAlertsInput   = input.bool(true, "Enable Alerts", group = GRP_ALR)
 alertFmtInput       = input.string("JSON", "Format", options = ["JSON", "Text"], group = GRP_ALR)
+
+precisionModeInput  = input.bool(true, "Precision Mode (fewer, higher-quality signals)", group = GRP_PRC)
+minConflInput       = input.int(5, "Min Confluence Score (0-10)", minval = 0, maxval = 10, group = GRP_PRC)
+requireLocationInput = input.bool(true, "Require Discount/Premium Location (OB/FVG/Sweep)", group = GRP_PRC)
+requireHtfBiasInput = input.bool(true, "Require 4H Close With Trade", group = GRP_PRC)
+requireFastMtfInput = input.bool(true, "Require Fast MTF With Trade", group = GRP_PRC)
+useExtFilterInput   = input.bool(true, "Block Extended Chase (xATR from EMA21)", group = GRP_PRC)
+maxExtAtrInput      = input.float(1.8, "Max Distance from EMA21 (xATR)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_PRC)
+blockChopInput      = input.bool(true, "Block High-Vol Chop (high BB + weak ADX)", group = GRP_PRC)
+useTrapQualityInput = input.bool(true, "Strict Trap Bars (wick + reclaim)", group = GRP_PRC)
+skipInsideInput     = input.bool(true, "Skip Inside-Bar Entries", group = GRP_PRC)
+cooldownBarsInput   = input.int(8, "Cooldown After Signal (bars)", minval = 0, maxval = 50, group = GRP_PRC)
+lossCooldownMultInput = input.float(2.0, "Extra Cooldown After Loss (x)", minval = 1.0, maxval = 5.0, step = 0.5, group = GRP_PRC)
+minPatWrInput       = input.float(0.45, "Min Pattern WinRate (after 3 samples)", minval = 0.0, maxval = 0.9, step = 0.05, group = GRP_PRC)
+rsiPullbackInput    = input.bool(true, "RSI Pullback Zone (buy dips / sell rallies)", group = GRP_PRC)
 
 // ══════════════════════════════════════════════════════════
 // 3. VALIDATION
@@ -379,7 +395,26 @@ float mtfSlowClose = request.security(syminfo.tickerid, mtfSlowTfInput, close)
 float mtfSlowOpen  = request.security(syminfo.tickerid, mtfSlowTfInput, open)
 bool mtfFastBull = nz(mtfFastClose) >= nz(mtfFastOpen)
 bool mtfSlowBull = nz(mtfSlowClose) >= nz(mtfSlowOpen)
-bool mtfAligned  = useMtfBiasInput ? (mtfFastBull and mtfSlowBull) or (not mtfFastBull and not mtfSlowBull) : true
+bool mtfFastBear = not mtfFastBull
+bool mtfSlowBear = not mtfSlowBull
+bool mtfAligned  = useMtfBiasInput ? (mtfFastBull and mtfSlowBull) or (mtfFastBear and mtfSlowBear) : true
+bool htf4hBull   = nz(c4h) >= nz(o4h)
+bool htf4hBear   = not htf4hBull
+
+float obvVal    = ta.obv
+bool  obvRising = ta.change(obvVal) > 0
+bool  obvFalling = ta.change(obvVal) < 0
+bool  choppyMarket = volRegime == 3 and not strongTrend
+
+bool trapLongRaw   = clsNow == -2 and close > open
+bool trapShortRaw  = clsNow == 2 and close < open
+bool trapWickOk    = rng > 0 and (trapLongRaw ? dnWick / rng >= 0.45 : trapShortRaw ? upWick / rng >= 0.45 : false)
+bool trapReclaimOk = trapLongRaw ? close > (high[1] + low[1]) * 0.5 : trapShortRaw ? close < (high[1] + low[1]) * 0.5 : false
+bool trapVolOk     = not hasVolume or volSma <= 0 or volume >= volSma
+bool trapQualityOk = (not trapLongRaw and not trapShortRaw) or (trapWickOk and trapReclaimOk and trapVolOk)
+
+float rsiPullHi = math.min(rsiObInput, 58.0)
+float rsiPullLo = math.max(rsiOsInput, 42.0)
 
 // ══════════════════════════════════════════════════════════
 // 9. PATTERN ENGINE WITH MEMORY
@@ -559,81 +594,171 @@ if fsmState == ST_PEND and not na(hiLn) and not na(loLn)
     line.set_x2(loLn, bar_index)
 
 // ══════════════════════════════════════════════════════════
-// 11. CONFIDENCE SCORE ENGINE
+// 11. CONFIDENCE + PRECISION GATES
 // ══════════════════════════════════════════════════════════
+var int  lastSignalBar    = -1
+var bool lastCloseWasLoss = false
+
 getConfidence(int dir, int patIdx, bool isTrap) =>
-    float score = 10.0
+    float score = 0.0
+    bool mtfWithTrade = dir == 1 ? (mtfSlowBull and mtfFastBull) : (mtfSlowBear and mtfFastBear)
+    bool mtfSlowOk    = dir == 1 ? mtfSlowBull : mtfSlowBear
+    if mtfWithTrade
+        score += 18.0
+    else if mtfSlowOk
+        score += 8.0
     if dir == 1 and trendBull
-        score += 20.0
+        score += 14.0
     else if dir == -1 and trendBear
-        score += 20.0
-    else if (dir == 1 and close > ema50) or (dir == -1 and close < ema50)
-        score += 10.0
-    if close > kamaTrend and dir == 1
+        score += 14.0
+    if (dir == 1 and close > kamaTrend) or (dir == -1 and close < kamaTrend)
         score += 3.0
-    else if close < kamaTrend and dir == -1
-        score += 3.0
+    if (dir == 1 and htf4hBull) or (dir == -1 and htf4hBear)
+        score += 8.0
     if strongTrend
-        score += 15.0
+        score += 10.0
     else if adxVal >= 20
-        score += 7.5
-    if dir == 1 and dmiBull
-        score += 3.0
-    else if dir == -1 and dmiBear
-        score += 3.0
-    if dir == 1 and rsiVal < 60
+        score += 4.0
+    if (dir == 1 and dmiBull) or (dir == -1 and dmiBear)
+        score += 6.0
+    if (dir == 1 and rsiVal > rsiOsInput and rsiVal < rsiPullHi) or (dir == -1 and rsiVal < rsiObInput and rsiVal > rsiPullLo)
         score += 10.0
-    else if dir == -1 and rsiVal > 40
+    else if (dir == 1 and rsiVal > 50 and rsiVal < rsiObInput) or (dir == -1 and rsiVal < 50 and rsiVal > rsiOsInput)
+        score += 4.0
+    if hasVolume and volSma > 0 and volume > volSma * volMultInput and ((dir == 1 and obvRising) or (dir == -1 and obvFalling))
         score += 10.0
-    else if dir == 1 and rsiVal < rsiObInput
-        score += 5.0
-    else if dir == -1 and rsiVal > rsiOsInput
-        score += 5.0
-    if hasVolume and volSma > 0 and volume > volSma * volMultInput
-        score += 10.0
-    else if hasVolume and volume > volSma
-        score += 5.0
+    else if hasVolume and volSma > 0 and volume > volSma
+        score += 4.0
     int aligned = dir == 1 ? ftcAlignedBull : ftcAlignedBear
     if ftcVisible > 0
-        score += math.min(15.0, (aligned / math.max(ftcVisible, 1)) * 15.0)
+        score += math.min(12.0, (aligned / math.max(ftcVisible, 1)) * 12.0)
     if useSmcInput
-        if dir == 1 and bullStruct
+        if (dir == 1 and bullStruct) or (dir == -1 and bearStruct)
             score += 10.0
-        else if dir == -1 and bearStruct
-            score += 10.0
-        if dir == 1 and inBullOB
-            score += 5.0
-        else if dir == -1 and inBearOB
-            score += 5.0
-        if dir == 1 and inFvgBull
-            score += 3.0
-        else if dir == -1 and inFvgBear
-            score += 3.0
-        if dir == 1 and sweepBull
-            score += 5.0
-        else if dir == -1 and sweepBear
-            score += 5.0
+        if (dir == 1 and inBullOB) or (dir == -1 and inBearOB)
+            score += 6.0
+        if (dir == 1 and inFvgBull) or (dir == -1 and inFvgBear)
+            score += 4.0
+        if (dir == 1 and sweepBull) or (dir == -1 and sweepBear)
+            score += 6.0
     if useDivInput
-        if dir == 1 and bullDivHTF
-            score += 10.0
-        else if dir == -1 and bearDivHTF
-            score += 10.0
-    if useMtfBiasInput and mtfAligned
-        if (dir == 1 and mtfFastBull and mtfSlowBull) or (dir == -1 and not mtfFastBull and not mtfSlowBull)
-            score += 10.0
-        else
-            score += 5.0
+        if (dir == 1 and bullDivHTF) or (dir == -1 and bearDivHTF)
+            score += 8.0
     if patMemoryInput and patIdx >= 0 and patIdx < patWinRates.size()
         float wr = patWinRates.get(patIdx)
         if wr >= 0.7
-            score += 10.0
+            score += 8.0
         else if wr >= 0.55
-            score += 5.0
+            score += 4.0
         else if wr < 0.4
-            score -= 10.0
-    if isTrap
-        score += 5.0
+            score -= 12.0
+    if isTrap and trapQualityOk
+        score += 6.0
     math.max(0.0, math.min(100.0, score))
+
+confluenceCount(int dir, bool viaTrap) =>
+    int n = 0
+    if dir == 1 ? (mtfSlowBull and mtfFastBull) : (mtfSlowBear and mtfFastBear)
+        n += 1
+    if dir == 1 ? trendBull : trendBear
+        n += 1
+    if dir == 1 ? bullStruct : bearStruct
+        n += 1
+    if dir == 1 ? inBullOB : inBearOB
+        n += 1
+    if dir == 1 ? inFvgBull : inFvgBear
+        n += 1
+    if dir == 1 ? sweepBull : sweepBear
+        n += 1
+    if strongTrend
+        n += 1
+    if (dir == 1 and hasVolume and obvRising) or (dir == -1 and hasVolume and obvFalling)
+        n += 1
+    if dir == 1 ? dmiBull : dmiBear
+        n += 1
+    if viaTrap and trapQualityOk
+        n += 1
+    n
+
+evalGates(int dir, int patIdx, bool viaTrap) =>
+    float conf  = getConfidence(dir, patIdx, viaTrap)
+    int   confl = confluenceCount(dir, viaTrap)
+    int extraCd = lastCloseWasLoss ? int(math.round(cooldownBarsInput * lossCooldownMultInput)) : cooldownBarsInput
+    bool inCooldown = lastSignalBar >= 0 and (bar_index - lastSignalBar) < extraCd
+    bool mtfSlowOk = dir == 1 ? mtfSlowBull : mtfSlowBear
+    bool mtfFastOk = dir == 1 ? mtfFastBull : mtfFastBear
+    bool mtfDirOk = not useMtfBiasInput or (precisionModeInput and requireFastMtfInput ? (mtfSlowOk and mtfFastOk) : mtfSlowOk)
+    bool trendDirOk = not useTrendFilterInput or (dir == 1 ? trendBull : trendBear)
+    if not precisionModeInput and useTrendFilterInput
+        trendDirOk := dir == 1 ? (trendBull or close > ema50) : (trendBear or close < ema50)
+    bool smcDirOk = not useSmcInput or (dir == 1 ? (bullStruct or inBullOB) : (bearStruct or inBearOB))
+    if precisionModeInput and useSmcInput
+        smcDirOk := dir == 1 ? (bullStruct and (inBullOB or inFvgBull or sweepBull)) : (bearStruct and (inBearOB or inFvgBear or sweepBear))
+    bool locOk = not (precisionModeInput and requireLocationInput) or (dir == 1 ? (inBullOB or inFvgBull or sweepBull) : (inBearOB or inFvgBear or sweepBear))
+    bool htfBiasOk = not (precisionModeInput and requireHtfBiasInput) or (dir == 1 ? htf4hBull : htf4hBear)
+    bool rsiDirOk = not useRsiFilterInput or (dir == 1 ? rsiOkLong : rsiOkShort)
+    if precisionModeInput and rsiPullbackInput and useRsiFilterInput
+        rsiDirOk := dir == 1 ? (rsiVal > rsiOsInput and rsiVal < rsiPullHi) : (rsiVal < rsiObInput and rsiVal > rsiPullLo)
+    bool extOk = not (precisionModeInput and useExtFilterInput) or riskAtr <= 0 or (dir == 1 ? close < ema21 + riskAtr * maxExtAtrInput : close > ema21 - riskAtr * maxExtAtrInput)
+    bool chopOk = not (precisionModeInput and blockChopInput and choppyMarket)
+    bool trapOk = not viaTrap or not (precisionModeInput and useTrapQualityInput) or trapQualityOk
+    bool insideOk = not (precisionModeInput and skipInsideInput and insideNow)
+    bool dmiOk = not precisionModeInput or (dir == 1 ? dmiBull : dmiBear)
+    bool volOk = not useVolFilterInput or not hasVolume or (volSma > 0 and volume > volSma * volMultInput)
+    if precisionModeInput and useVolFilterInput and hasVolume
+        volOk := volOk and (dir == 1 ? obvRising : obvFalling)
+    int alignedN = dir == 1 ? ftcAlignedBull : ftcAlignedBear
+    bool ftcOk = minFtcInput == 0 or alignedN >= math.min(minFtcInput, ftcVisible)
+    bool adxOk = not useAdxFilterInput or strongTrend
+    bool sessOk = not useSessionInput or inSession
+    bool confOk = not useConfInput or conf >= minConfInput
+    bool conflOk = not precisionModeInput or confl >= minConflInput
+    bool patWrOk = true
+    if precisionModeInput and patMemoryInput and patIdx >= 0 and patIdx < patCounts.size()
+        int samples = patCounts.get(patIdx)
+        if samples >= 3
+            patWrOk := patWinRates.get(patIdx) >= minPatWrInput
+    string reason = "OK"
+    if not mtfDirOk
+        reason := "MTF against"
+    else if not trendDirOk
+        reason := "Trend stack"
+    else if not smcDirOk
+        reason := "SMC weak"
+    else if not locOk
+        reason := "No OB/FVG/Sweep"
+    else if not htfBiasOk
+        reason := "4H against"
+    else if not rsiDirOk
+        reason := "RSI zone"
+    else if not extOk
+        reason := "Extended"
+    else if not chopOk
+        reason := "Chop"
+    else if not trapOk
+        reason := "Trap quality"
+    else if not insideOk
+        reason := "Inside bar"
+    else if not dmiOk
+        reason := "DMI against"
+    else if not patWrOk
+        reason := "Pattern WR"
+    else if inCooldown and cooldownBarsInput > 0
+        reason := "Cooldown"
+    else if not volOk
+        reason := "Volume"
+    else if not ftcOk
+        reason := "FTC"
+    else if not adxOk
+        reason := "ADX"
+    else if not sessOk
+        reason := "Session"
+    else if not confOk
+        reason := "Conf:" + str.tostring(conf, "#.")
+    else if not conflOk
+        reason := "Confl " + str.tostring(confl) + "/" + str.tostring(minConflInput)
+    bool pass = reason == "OK"
+    [pass, reason, conf, confl]
 
 // ══════════════════════════════════════════════════════════
 // 12. TRADE ENGINE
@@ -694,12 +819,14 @@ if beInput and tp1FirstTouch and not beActive and activeDir != 0
 bool closeBySl = slHitRaw and not tp1FirstTouch and not tp3FirstTouch
 bool tradeWin  = false
 
-if (tp3HitRaw or closeBySl) and activeDir != 0
-    tradeWin := tp1Reached
-    if tradeWin
-        winCount += 1
-    else
-        lossCount += 1
+    if (tp3HitRaw or closeBySl) and activeDir != 0
+        tradeWin := tp1Reached
+        lastCloseWasLoss := not tradeWin
+        lastSignalBar := bar_index
+        if tradeWin
+            winCount += 1
+        else
+            lossCount += 1
     array.push(tradeTimes, time)
     array.push(tradeWins, tradeWin)
     while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STAT_DAYS
@@ -750,14 +877,12 @@ if useTrailInput and activeDir != 0 and barstate.isconfirmed
 // ══════════════════════════════════════════════════════════
 // 13. ENTRY PROCESSING
 // ══════════════════════════════════════════════════════════
-bool trapShortBar = clsNow == 2 and close < open
-bool trapLongBar  = clsNow == -2 and close > open
-
 bool evLongEntry   = false
 bool evShortEntry  = false
 string entryPat    = ""
 int    entryPatIdx = -1
 float  entryConf   = 0.0
+int    entryConfl  = 0
 
 bool allowTrig = entryModeInput != "Trap Bar"
 bool allowTrap = entryModeInput != "STRAT Trigger"
@@ -784,16 +909,16 @@ if useConfirmInput and barstate.isconfirmed
 string diagReason = ""
 bool diagTriggered = false
 
-if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
-    int   tDir       = 0
-    float slAnchorPx = na
-    bool  viaTrap    = false
-    int   candPatIdx = -1
+int   tDir       = 0
+float slAnchorPx = na
+bool  viaTrap    = false
+int   candPatIdx = -1
 
-    if allowTrap and (trapLongBar or trapShortBar)
-        tDir       := trapLongBar ? 1 : -1
-        entryPat   := trapLongBar ? "Trap 2D" : "Trap 2U"
-        slAnchorPx := trapLongBar ? low : high
+if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
+    if allowTrap and (trapLongRaw or trapShortRaw)
+        tDir       := trapLongRaw ? 1 : -1
+        entryPat   := trapLongRaw ? "Trap 2D" : "Trap 2U"
+        slAnchorPx := trapLongRaw ? low : high
         viaTrap    := true
         candPatIdx := -1
     else if allowTrig and (trigBullSig or trigBearSig)
@@ -802,147 +927,93 @@ if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
         slAnchorPx   := resolveSlAnchor(tDir, slAnchorInput, trigLvl, trigStp, tDir == 1 ? lastSwingLow : lastSwingHigh)
         candPatIdx   := trigPatIdx
 
-    if tDir != 0 and useConfirmInput
-        rawSignalDir    := tDir
-        rawSignalBar    := bar_index
-        rawSignalPat    := entryPat
-        rawSignalLvl    := trigLvl
-        rawSignalSl     := trigStp
-        rawSignalAnchor := slAnchorPx
-        rawSignalIdx    := candPatIdx
-        rawSignalTrap   := viaTrap
+int confirmDir = (enableTradesInput and (confirmLong or confirmShort) and activeDir == 0 and riskAtr > 0) ? (confirmLong ? 1 : -1) : 0
+int biasDir    = trendBull ? 1 : trendBear ? -1 : (close >= ema50 ? 1 : -1)
+[gPass, gReason, gConf, gConfl] = evalGates(tDir != 0 ? tDir : biasDir, candPatIdx, viaTrap)
+[cPass, cReason, cConf, cConfl] = evalGates(confirmDir != 0 ? confirmDir : biasDir, confirmDir != 0 ? rawSignalIdx : -1, confirmDir != 0 ? rawSignalTrap : false)
+
+if tDir != 0
+    entryConf := gConf
+    entryConfl := gConfl
+    if not gPass
+        diagReason := gReason
+        diagTriggered := true
         tDir := 0
 
-    if tDir != 0
-        float conf = getConfidence(tDir, candPatIdx, viaTrap)
-        entryConf := conf
+if tDir != 0 and useConfirmInput
+    rawSignalDir    := tDir
+    rawSignalBar    := bar_index
+    rawSignalPat    := entryPat
+    rawSignalLvl    := trigLvl
+    rawSignalSl     := trigStp
+    rawSignalAnchor := slAnchorPx
+    rawSignalIdx    := candPatIdx
+    rawSignalTrap   := viaTrap
+    tDir := 0
 
-        bool volOk    = not useVolFilterInput or not hasVolume or (volSma > 0 and volume > volSma * volMultInput)
-        int alignedN = tDir == 1 ? ftcAlignedBull : ftcAlignedBear
-        bool ftcOk = minFtcInput == 0 or alignedN >= math.min(minFtcInput, ftcVisible)
-        bool trendOk = tDir == 1 ? (not useTrendFilterInput or trendBull or close > ema50) : (not useTrendFilterInput or trendBear or close < ema50)
-        bool adxOk   = not useAdxFilterInput or strongTrend
-        bool rsiOk   = tDir == 1 ? (not useRsiFilterInput or rsiOkLong) : (not useRsiFilterInput or rsiOkShort)
-        bool sessOk  = not useSessionInput or inSession
-        bool confOk  = not useConfInput or conf >= minConfInput
-        bool mtfOk   = not useMtfBiasInput or mtfAligned
-        bool smcOk   = not useSmcInput or (tDir == 1 ? bullStruct or inBullOB : bearStruct or inBearOB)
-
-        if not trendOk
-            diagReason := "Trend"
-        else if not adxOk
-            diagReason := "ADX"
-        else if not rsiOk
-            diagReason := "RSI"
-        else if not sessOk
-            diagReason := "Session"
-        else if not ftcOk
-            diagReason := "FTC"
-        else if not volOk
-            diagReason := "Volume"
-        else if not confOk
-            diagReason := "Conf:" + str.tostring(conf, "#.")
-        else if not mtfOk
-            diagReason := "MTF"
-        else if not smcOk
-            diagReason := "SMC"
-        if diagReason != ""
-            diagTriggered := true
-
-        if not (volOk and ftcOk and trendOk and adxOk and rsiOk and sessOk and confOk and mtfOk and smcOk)
-            tDir := 0
-
-    if tDir != 0
-        float slPx = na
-        if not viaTrap and slAnchorInput == "ATR"
-            slPx := tDir == 1 ? close - riskAtr * adaptSl : close + riskAtr * adaptSl
-        else
-            slPx := tDir == 1 ? math.min(slAnchorPx - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(slAnchorPx + riskAtr * slBufferInput, close + riskAtr * 0.5)
-        float riskPx = tDir == 1 ? close - slPx : slPx - close
-        bool riskOk = riskPx > 0 and (maxRiskAtrInput == 0.0 or riskPx <= riskAtr * maxRiskAtrInput)
-        if riskOk
-            activeEntry := close
-            activeSL    := slPx
-            activeTP1   := tDir == 1 ? close + riskPx * adaptT1 : close - riskPx * adaptT1
-            activeTP2   := tDir == 1 ? close + riskPx * adaptT2 : close - riskPx * adaptT2
-            activeTP3   := tDir == 1 ? close + riskPx * adaptT3 : close - riskPx * adaptT3
-            activeDir   := tDir
-            entryBarIdx := bar_index
-            tp1Reached  := false
-            tp2Reached  := false
-            tp3Reached  := false
-            beActive    := false
-            partial1Done:= false
-            partial2Done:= false
-            trailHighest:= na
-            trailLowest := na
-            trailStopPx := na
-            evLongEntry := tDir == 1
-            evShortEntry:= tDir == -1
-            entryPatIdx := candPatIdx
-        else
-            diagReason := "Risk"
-            diagTriggered := true
-
-if confirmLong or confirmShort
-    int tDir = confirmLong ? 1 : -1
-    entryPat := rawSignalPat
-    int candPatIdx = rawSignalIdx
-    float slAnchorPx = resolveSlAnchor(tDir, slAnchorInput, rawSignalLvl, rawSignalSl, tDir == 1 ? lastSwingLow : lastSwingHigh)
-    if na(slAnchorPx)
-        slAnchorPx := rawSignalAnchor
-
-    float conf = getConfidence(tDir, candPatIdx, rawSignalTrap)
-    entryConf := conf
-
-    bool volOk = not useVolFilterInput or not hasVolume or (volSma > 0 and volume > volSma * volMultInput)
-    int alignedN = tDir == 1 ? ftcAlignedBull : ftcAlignedBear
-    bool ftcOk = minFtcInput == 0 or alignedN >= math.min(minFtcInput, ftcVisible)
-    bool trendOk = tDir == 1 ? (not useTrendFilterInput or trendBull or close > ema50) : (not useTrendFilterInput or trendBear or close < ema50)
-    bool adxOk   = not useAdxFilterInput or strongTrend
-    bool rsiOk   = tDir == 1 ? (not useRsiFilterInput or rsiOkLong) : (not useRsiFilterInput or rsiOkShort)
-    bool sessOk  = not useSessionInput or inSession
-    bool confOk  = not useConfInput or conf >= minConfInput
-    bool mtfOk   = not useMtfBiasInput or mtfAligned
-    bool smcOk   = not useSmcInput or (tDir == 1 ? bullStruct or inBullOB : bearStruct or inBearOB)
-
-    if not trendOk
-        diagReason := "Trend"
-    else if not adxOk
-        diagReason := "ADX"
-    else if not rsiOk
-        diagReason := "RSI"
-    else if not sessOk
-        diagReason := "Session"
-    else if not ftcOk
-        diagReason := "FTC"
-    else if not volOk
-        diagReason := "Volume"
-    else if not confOk
-        diagReason := "Conf:" + str.tostring(conf, "#.")
-    else if not mtfOk
-        diagReason := "MTF"
-    else if not smcOk
-        diagReason := "SMC"
-    if diagReason != ""
+if tDir != 0 and enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
+    float slPx = na
+    if not viaTrap and slAnchorInput == "ATR"
+        slPx := tDir == 1 ? close - riskAtr * adaptSl : close + riskAtr * adaptSl
+    else
+        slPx := tDir == 1 ? math.min(slAnchorPx - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(slAnchorPx + riskAtr * slBufferInput, close + riskAtr * 0.5)
+    float riskPx = tDir == 1 ? close - slPx : slPx - close
+    bool riskOk = riskPx > 0 and (maxRiskAtrInput == 0.0 or riskPx <= riskAtr * maxRiskAtrInput)
+    if riskOk
+        activeEntry := close
+        activeSL    := slPx
+        activeTP1   := tDir == 1 ? close + riskPx * adaptT1 : close - riskPx * adaptT1
+        activeTP2   := tDir == 1 ? close + riskPx * adaptT2 : close - riskPx * adaptT2
+        activeTP3   := tDir == 1 ? close + riskPx * adaptT3 : close - riskPx * adaptT3
+        activeDir   := tDir
+        entryBarIdx := bar_index
+        lastSignalBar := bar_index
+        lastCloseWasLoss := false
+        tp1Reached  := false
+        tp2Reached  := false
+        tp3Reached  := false
+        beActive    := false
+        partial1Done:= false
+        partial2Done:= false
+        trailHighest:= na
+        trailLowest := na
+        trailStopPx := na
+        evLongEntry := tDir == 1
+        evShortEntry:= tDir == -1
+        entryPatIdx := candPatIdx
+    else
+        diagReason := "Risk"
         diagTriggered := true
 
-    if volOk and ftcOk and trendOk and adxOk and rsiOk and sessOk and confOk and mtfOk and smcOk
-        float slPx = na
+if confirmDir != 0
+    entryPat := rawSignalPat
+    float confSlAnchor = resolveSlAnchor(confirmDir, slAnchorInput, rawSignalLvl, rawSignalSl, confirmDir == 1 ? lastSwingLow : lastSwingHigh)
+    if na(confSlAnchor)
+        confSlAnchor := rawSignalAnchor
+    entryConf := cConf
+    entryConfl := cConfl
+    int confGo = cPass ? confirmDir : 0
+    if not cPass
+        diagReason := cReason
+        diagTriggered := true
+    if confGo != 0
+        float slPxC = na
         if slAnchorInput == "ATR"
-            slPx := tDir == 1 ? close - riskAtr * adaptSl : close + riskAtr * adaptSl
+            slPxC := confGo == 1 ? close - riskAtr * adaptSl : close + riskAtr * adaptSl
         else
-            slPx := tDir == 1 ? math.min(slAnchorPx - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(slAnchorPx + riskAtr * slBufferInput, close + riskAtr * 0.5)
-        float riskPx = tDir == 1 ? close - slPx : slPx - close
-        bool riskOk = riskPx > 0 and (maxRiskAtrInput == 0.0 or riskPx <= riskAtr * maxRiskAtrInput)
-        if riskOk
+            slPxC := confGo == 1 ? math.min(confSlAnchor - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(confSlAnchor + riskAtr * slBufferInput, close + riskAtr * 0.5)
+        float riskPxC = confGo == 1 ? close - slPxC : slPxC - close
+        bool riskOkC = riskPxC > 0 and (maxRiskAtrInput == 0.0 or riskPxC <= riskAtr * maxRiskAtrInput)
+        if riskOkC
             activeEntry := close
-            activeSL    := slPx
-            activeTP1   := tDir == 1 ? close + riskPx * adaptT1 : close - riskPx * adaptT1
-            activeTP2   := tDir == 1 ? close + riskPx * adaptT2 : close - riskPx * adaptT2
-            activeTP3   := tDir == 1 ? close + riskPx * adaptT3 : close - riskPx * adaptT3
-            activeDir   := tDir
+            activeSL    := slPxC
+            activeTP1   := confGo == 1 ? close + riskPxC * adaptT1 : close - riskPxC * adaptT1
+            activeTP2   := confGo == 1 ? close + riskPxC * adaptT2 : close - riskPxC * adaptT2
+            activeTP3   := confGo == 1 ? close + riskPxC * adaptT3 : close - riskPxC * adaptT3
+            activeDir   := confGo
             entryBarIdx := bar_index
+            lastSignalBar := bar_index
+            lastCloseWasLoss := false
             tp1Reached  := false
             tp2Reached  := false
             tp3Reached  := false
@@ -952,9 +1023,9 @@ if confirmLong or confirmShort
             trailHighest:= na
             trailLowest := na
             trailStopPx := na
-            evLongEntry := tDir == 1
-            evShortEntry:= tDir == -1
-            entryPatIdx := candPatIdx
+            evLongEntry := confGo == 1
+            evShortEntry:= confGo == -1
+            entryPatIdx := rawSignalIdx
         else
             diagReason := "Risk"
             diagTriggered := true
@@ -998,11 +1069,11 @@ if showFvgInput and fvgBear and not na(fvgBearTop)
 if evLongEntry
     color longCol = entryConf >= 85 ? VIP_COL : entryConf >= 70 ? BULL : color.new(BULL, 30)
     string longTxt = "LONG" + (showConfInput ? "\nConf: " + str.tostring(entryConf, "#.") + "%" : "")
-    lblFifo.push(label.new(bar_index, low, longTxt, style = label.style_label_up, color = longCol, textcolor = color.white, size = strSize(signalSizeInput), tooltip = entryPat + " #" + str.tostring(entryPatIdx)))
+    lblFifo.push(label.new(bar_index, low, longTxt, style = label.style_label_up, color = longCol, textcolor = color.white, size = strSize(signalSizeInput), tooltip = entryPat + "  Conf " + str.tostring(entryConf, "#.") + "  Confl " + str.tostring(entryConfl)))
 if evShortEntry
     color shortCol = entryConf >= 85 ? VIP_COL : entryConf >= 70 ? BEAR : color.new(BEAR, 30)
     string shortTxt = "SHORT" + (showConfInput ? "\nConf: " + str.tostring(entryConf, "#.") + "%" : "")
-    lblFifo.push(label.new(bar_index, high, shortTxt, style = label.style_label_down, color = shortCol, textcolor = color.white, size = strSize(signalSizeInput), tooltip = entryPat + " #" + str.tostring(entryPatIdx)))
+    lblFifo.push(label.new(bar_index, high, shortTxt, style = label.style_label_down, color = shortCol, textcolor = color.white, size = strSize(signalSizeInput), tooltip = entryPat + "  Conf " + str.tostring(entryConf, "#.") + "  Confl " + str.tostring(entryConfl)))
 
 var line entryLine = na
 var line slLine    = na
@@ -1064,25 +1135,33 @@ if diagTriggered and showConfInput
 // ══════════════════════════════════════════════════════════
 // 15. DASHBOARD
 // ══════════════════════════════════════════════════════════
+bool   qPass   = tDir != 0 ? gPass : (confirmDir != 0 ? cPass : gPass)
+string qReason = tDir != 0 ? gReason : (confirmDir != 0 ? cReason : gReason)
+float  qConf   = tDir != 0 ? gConf : (confirmDir != 0 ? cConf : gConf)
+int    qConfl  = tDir != 0 ? gConfl : (confirmDir != 0 ? cConfl : gConfl)
+
 var table dash = na
 if showDashInput and barstate.islast
     string dashPos = dashPosInput == "Top Left" ? position.top_left : dashPosInput == "Bottom Left" ? position.bottom_left : dashPosInput == "Bottom Right" ? position.bottom_right : position.top_right
     if na(dash)
-        dash := table.new(dashPos, 2, 10, bgcolor = PANEL_BG, frame_color = C_MUTED, frame_width = 1, border_color = color.new(C_TEXT, 90))
+        dash := table.new(dashPos, 2, 12, bgcolor = PANEL_BG, frame_color = C_MUTED, frame_width = 1, border_color = color.new(C_TEXT, 90))
 
     int totalTrades = winCount + lossCount
     float winRate = totalTrades > 0 ? winCount / totalTrades * 100.0 : 0.0
     string regimeStr = volRegime == 1 ? "LOW VOL" : volRegime == 3 ? "HIGH VOL" : "NORMAL"
     string trendStr = trendBull ? "BULLISH" : trendBear ? "BEARISH" : "NEUTRAL"
-    string confStrDash = activeDir != 0 ? str.tostring(entryConf, "#.") + "%" : "—"
+    float dashConf = activeDir != 0 ? entryConf : qConf
+    string confStrDash = str.tostring(dashConf, "#.") + "%"
     string smcStr = (sweepBull ? "Sweep+ " : "") + (sweepBear ? "Sweep- " : "") + (inBullOB ? "OB+ " : "") + (inBearOB ? "OB- " : "") + (inFvgBull ? "FVG+ " : "") + (inFvgBear ? "FVG-" : "")
     string ftcDash = str.tostring(math.max(ftcAlignedBull, ftcAlignedBear)) + "/" + str.tostring(ftcVisible)
     if ftcInsideN > 0
         ftcDash += " I" + str.tostring(ftcInsideN)
     if ftcOutsideN > 0
         ftcDash += " O" + str.tostring(ftcOutsideN)
+    string qualityStr = activeDir != 0 ? "IN TRADE" : rawSignalDir != 0 ? "WAIT CONFIRM" : qPass ? "READY" : qReason
+    int dashConfl = activeDir != 0 ? entryConfl : qConfl
 
-    table.cell(dash, 0, 0, "STRAT ULTRA v3.0", text_color = C_TEXT, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 0, "STRAT ULTRA v3.1", text_color = C_TEXT, text_size = strSize(dashSizeInput))
     table.cell(dash, 1, 0, ftcDash, text_color = C_MUTED, text_size = strSize(dashSizeInput))
     table.cell(dash, 0, 1, "Trend:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
     table.cell(dash, 1, 1, trendStr, text_color = trendBull ? BULL : trendBear ? BEAR : C_TEXT, text_size = strSize(dashSizeInput))
@@ -1099,9 +1178,13 @@ if showDashInput and barstate.islast
     table.cell(dash, 0, 7, "Active:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
     table.cell(dash, 1, 7, activeDir == 1 ? "LONG @ " + fmtP(activeEntry) : activeDir == -1 ? "SHORT @ " + fmtP(activeEntry) : "FLAT", text_color = activeDir == 1 ? BULL : activeDir == -1 ? BEAR : C_MUTED, text_size = strSize(dashSizeInput))
     table.cell(dash, 0, 8, "Confidence:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
-    table.cell(dash, 1, 8, confStrDash, text_color = entryConf >= 85 ? VIP_COL : entryConf >= 70 ? BULL : C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 8, confStrDash, text_color = dashConf >= 85 ? VIP_COL : dashConf >= 78 ? BULL : C_MUTED, text_size = strSize(dashSizeInput))
     table.cell(dash, 0, 9, "SMC:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
     table.cell(dash, 1, 9, smcStr, text_color = C_TEXT, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 10, "Confluence:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 10, str.tostring(dashConfl) + "/" + str.tostring(minConflInput), text_color = dashConfl >= minConflInput ? BULL : C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 11, "Quality:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 11, qualityStr, text_color = qualityStr == "READY" ? BULL : (qualityStr == "IN TRADE" or qualityStr == "WAIT CONFIRM" ? VIP_COL : DIAG_COL), text_size = strSize(dashSizeInput))
 else if not showDashInput and not na(dash)
     table.delete(dash)
     dash := na
@@ -1114,9 +1197,9 @@ if enableAlertsInput
         string action = evLongEntry ? "LONG" : "SHORT"
         string msg = ""
         if alertFmtInput == "JSON"
-            msg := '{"ind":"' + JSON_IND + '","v":"' + VERSION + '","sym":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","action":"' + action + '","pat":"' + entryPat + '","conf":' + str.tostring(entryConf) + ',"price":' + str.tostring(close) + '}'
+            msg := '{"ind":"' + JSON_IND + '","v":"' + VERSION + '","sym":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","action":"' + action + '","pat":"' + entryPat + '","conf":' + str.tostring(entryConf) + ',"confl":' + str.tostring(entryConfl) + ',"price":' + str.tostring(close) + '}'
         else
-            msg := "STRAT ULTRA " + action + " " + entryPat + " " + syminfo.ticker + " @ " + str.tostring(close, format.mintick) + " | Conf: " + str.tostring(entryConf, "#.") + "%"
+            msg := "STRAT ULTRA " + action + " " + entryPat + " " + syminfo.ticker + " @ " + str.tostring(close, format.mintick) + " | Conf: " + str.tostring(entryConf, "#.") + "% | Confl: " + str.tostring(entryConfl)
         alert(msg, alert.freq_once_per_bar)
 
     if beJustActivated
@@ -1146,7 +1229,7 @@ alertcondition(setupBearSig, "ULTRA Setup Short", "STRAT setup short")
 var label wm = na
 if showWatermarkInput and barstate.islast
     if na(wm)
-        wm := label.new(bar_index, high, "STRAT ULTRA PRO v3.0\nSmart Money + AI Confidence", style = label.style_label_center, color = color.new(C_TEXT, 100), textcolor = color.new(C_TEXT, 60), size = size.large, yloc = yloc.abovebar)
+        wm := label.new(bar_index, high, "STRAT ULTRA PRO v3.1\nPrecision + Smart Money + AI", style = label.style_label_center, color = color.new(C_TEXT, 100), textcolor = color.new(C_TEXT, 60), size = size.large, yloc = yloc.abovebar)
     label.set_x(wm, bar_index)
     label.set_y(wm, high)
 else if not showWatermarkInput and not na(wm)
