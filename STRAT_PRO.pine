@@ -3,8 +3,13 @@
 //
 // ══════════════════════════════════════════════════════════
 // STRAT TRAP & VWAP ENGINE PRO [WillyAlgoTrader]
-// Version: 3.0.1 — Smart Money & Confluence Edition
+// Version: 3.1.0 — Signal First
 // ══════════════════════════════════════════════════════════
+// v3.1.0  Signal-first rewrite: BUY/SELL arrows print from the
+//         engines, independent of Trade Engine / open trade.
+//         plotshape BUY/SELL, score grades (not a veto wall),
+//         trap no longer swallows a passing STRAT trigger,
+//         sweep reclaim + 2U/2D continuation, looser defaults.
 // v3.0.1  Compile-clean Pine v6: missing inputs restored, UDFs
 //         declared before use, ta.* called unconditionally,
 //         tuple unpack (no [0] index), plot() at global scope,
@@ -15,7 +20,7 @@
 
 //@version=6
 indicator(
-     title            = "STRAT PRO [SMC + Confluence Engine]",
+     title            = "STRAT PRO [Signal First]",
      shorttitle       = "STRAT PRO",
      overlay          = true,
      max_bars_back    = 5000,
@@ -26,7 +31,7 @@ indicator(
 // ══════════════════════════════════════════════════════════
 // 1. CONSTANTS & VERSION
 // ══════════════════════════════════════════════════════════
-string VERSION  = "3.0.1"
+string VERSION  = "3.1.0"
 string JSON_IND = "STRAT_PRO"
 int    ST_IDLE    = 0
 int    ST_PENDING = 1
@@ -50,6 +55,7 @@ string GRP_MOM = "⚡ Momentum & Divergence"
 string GRP_REG = "🌊 Market Regime"
 string GRP_VOL = "📊 Volume Analysis"
 string GRP_SES = "⏰ Session & Killzones"
+string GRP_SIG = "🎯 Signal Engine"
 string GRP_TRG = "🎯 Trigger Engine"
 string GRP_RSK = "🛡️ Risk Management"
 string GRP_FLT = "🔍 Confluence Filters"
@@ -63,10 +69,18 @@ string GRP_ALR = "🔔 Alerts"
 // ══════════════════════════════════════════════════════════
 // 2. INPUTS
 // ══════════════════════════════════════════════════════════
+signalProfileInput = input.string("More Signals", "Signal Profile", options = ["More Signals", "Balanced", "Strict"], group = GRP_SIG, tooltip = "More Signals (default): frequent BUY/SELL, light gates.\nBalanced: score ≥ 35, uses the filter checkboxes.\nStrict: score ≥ 50 + structure + PVTE.")
+showBuySellInput   = input.bool(true, "Show BUY / SELL Arrows", group = GRP_SIG, tooltip = "plotshape arrows on every engine signal. Independent of Trade Engine and of an open trade.")
+showSigLblInput    = input.bool(true, "Show Pattern + Score Labels", group = GRP_SIG)
+enableSweepInput   = input.bool(true, "Liquidity Sweep Reclaim Engine", group = GRP_SIG, tooltip = "Sweep of a swing low that closes back above it → BUY. Sweep of a swing high that closes back below it → SELL.")
+enableContInput    = input.bool(true, "2U / 2D Continuation Engine", group = GRP_SIG, tooltip = "Green 2U with EMA/RSI/structure agreement → BUY. Red 2D with agreement → SELL. Never fires on a trap bar.")
+cooldownBarsInput  = input.int(2, "Signal Cooldown (bars)", minval = 0, maxval = 50, group = GRP_SIG, tooltip = "Minimum bars between BUY/SELL prints. 0 = off.")
+
 themeInput         = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_APP)
 showWatermarkInput = input.bool(true, "Watermark", group = GRP_APP)
 colorBarsInput     = input.bool(false, "Color Bars by Type", group = GRP_APP)
 showBarNumInput    = input.bool(true, "Show Bar Numbers", group = GRP_APP)
+showEmaInput       = input.bool(true, "Show EMA 21 / 50 / 200", group = GRP_APP)
 signalSizeInput    = input.string("Small", "Signal Label Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_APP)
 
 extInput           = input.bool(true, "Extended Patterns", group = GRP_PAT)
@@ -114,7 +128,7 @@ expiryInput        = input.int(3, "Setup Expiry (bars)", minval = 1, maxval = 20
 showLinesInput     = input.bool(true, "Trigger / Stop Lines", group = GRP_TRG)
 showTrigLblInput   = input.bool(false, "Trigger Labels", group = GRP_TRG)
 
-enableTradesInput  = input.bool(true, "Trade Engine", group = GRP_RSK)
+enableTradesInput  = input.bool(true, "Trade Engine", group = GRP_RSK, tooltip = "Optional SL/TP manager. BUY/SELL arrows print even when this is OFF, and they keep printing while a trade is already open.")
 entryModeInput     = input.string("Both", "Entry Mode", options = ["Trap Bar", "STRAT Trigger", "Both"], group = GRP_RSK)
 atrLenRiskInput    = input.int(14, "ATR Length (Risk)", minval = 5, maxval = 50, group = GRP_RSK)
 riskPresetInput    = input.string("Balanced", "Risk Preset", options = ["Conservative", "Balanced", "Aggressive", "Scalping", "Custom"], group = GRP_RSK)
@@ -139,21 +153,21 @@ entryLineStyleInput  = input.string("Dotted", "Entry Line Style", options = ["So
 slLineStyleInput     = input.string("Solid", "SL Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RSK)
 tpLineStyleInput     = input.string("Dashed", "TP Line Style", options = ["Solid", "Dashed", "Dotted"], group = GRP_RSK)
 
-useConfScoreInput      = input.bool(true, "Enable Confidence Scoring", group = GRP_FLT)
-minConfScoreInput      = input.int(60, "Minimum Confidence Score", minval = 0, maxval = 100, group = GRP_FLT)
+useConfScoreInput      = input.bool(true, "Enable Confidence Scoring", group = GRP_FLT, tooltip = "Score is a grade. More Signals / Balanced use a low floor so a real STRAT/trap still prints. Strict uses 50.")
+minConfScoreInput      = input.int(32, "Minimum Confidence (Balanced override)", minval = 0, maxval = 100, group = GRP_FLT, tooltip = "Used only when Signal Profile = Balanced. More Signals ignores this (floor 28). Strict ignores this (floor 50).")
 useVolFilterInput      = input.bool(false, "Volume Confirmation", group = GRP_FLT)
 volFiltMultInput       = input.float(1.2, "Volume Threshold (×SMA)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_FLT)
 minFtcAlignInput       = input.int(0, "Min FTC Aligned", minval = 0, maxval = 8, group = GRP_FLT)
-requireStructureInput  = input.bool(true, "Require Structure Alignment", group = GRP_FLT, tooltip = "Longs blocked only in bearish structure, shorts only in bullish. Neutral (no BOS yet) is allowed.")
+requireStructureInput  = input.bool(false, "Require Structure Alignment", group = GRP_FLT, tooltip = "OFF by default so Neutral / first-break markets still print. Strict profile forces this ON. Longs blocked only in bearish structure, shorts only in bullish.")
 requireFVGInput        = input.bool(false, "Require FVG Confluence", group = GRP_FLT)
 requireOBInput         = input.bool(false, "Require OB Confluence", group = GRP_FLT)
 
-usePvteInput       = input.bool(true, "PVTE Regime Filter", group = GRP_PVT)
+usePvteInput       = input.bool(false, "PVTE Regime Filter", group = GRP_PVT, tooltip = "OFF by default so NEUTRAL markets still print arrows. Bands still draw. Strict profile forces this ON. Longs in BULL, shorts in BEAR.")
 pvteKernelInput    = input.string("EMA", "Basis Kernel", options = ["EMA", "DEMA", "HMA", "KAMA"], group = GRP_PVT)
 pvteBasisLenInput  = input.int(21, "Basis Length", minval = 2, maxval = 500, group = GRP_PVT)
 pvteAtrLenInput    = input.int(100, "ATR Length", minval = 1, maxval = 500, group = GRP_PVT)
 pvteAtrMultInput   = input.float(3.0, "ATR Multiplier (Outer)", minval = 0.5, step = 0.1, group = GRP_PVT)
-pvteNeutralInput   = input.string("Block", "In NEUTRAL Regime", options = ["Block", "Allow"], group = GRP_PVT)
+pvteNeutralInput   = input.string("Allow", "In NEUTRAL Regime", options = ["Block", "Allow"], group = GRP_PVT, tooltip = "Allow (default): NEUTRAL passes both directions. Block: no entries while Neutral.")
 showPvteBandsInput = input.bool(true, "Show Regime Bands", group = GRP_PVT)
 showAvwapInput     = input.bool(true, "Show Anchored VWAP", group = GRP_PVT)
 avwapPivotLenInput = input.int(13, "VWAP Pivot Length", minval = 1, maxval = 250, group = GRP_PVT)
@@ -234,6 +248,15 @@ color OB_BULL_COLOR  = isDark ? color.new(#2196F3, 70) : color.new(#1565C0, 70)
 color OB_BEAR_COLOR  = isDark ? color.new(#F44336, 70) : color.new(#C62828, 70)
 color LIQ_COLOR      = isDark ? color.new(#FFEB3B, 0)  : color.new(#F57F17, 0)
 color KZ_BG          = isDark ? color.new(#FFD54F, 92) : color.new(#FFF8E1, 70)
+color EMA21_C        = isDark ? #42A5F5 : #1565C0
+color EMA50_C        = isDark ? #FFA726 : #EF6C00
+color EMA200_C       = isDark ? #AB47BC : #6A1B9A
+
+bool  isMore   = signalProfileInput == "More Signals"
+bool  isStrict = signalProfileInput == "Strict"
+float effMinConf = isMore ? 28.0 : isStrict ? 50.0 : float(minConfScoreInput)
+bool  effUsePvte = isStrict or (not isMore and usePvteInput)
+bool  effNeedStruct = isStrict or (not isMore and requireStructureInput)
 
 // ══════════════════════════════════════════════════════════
 // 4. UTILITY FUNCTIONS  (all UDFs before first use)
@@ -681,6 +704,9 @@ nearUnmitOb(int dir) =>
 // ══════════════════════════════════════════════════════════
 float rsiVal = ta.rsi(close, rsiLenInput)
 [macdLine, macdSignal, macdHist] = ta.macd(close, macdFastInput, macdSlowInput, macdSigInput)
+float ema21  = ta.ema(close, 21)
+float ema50  = ta.ema(close, 50)
+float ema200 = ta.ema(close, 200)
 
 var float lastRsiHigh   = na
 var float lastRsiLow    = na
@@ -1014,57 +1040,90 @@ bool trapShortBar = clsNow == 2  and close < open
 bool trapLongBar  = clsNow == -2 and close > open
 
 // ══════════════════════════════════════════════════════════
-// 13. CONFIDENCE SCORING  (direction-aware, 0-100)
+// 13. CONFIDENCE SCORING  (engine-aware grade, not a veto wall)
 // ══════════════════════════════════════════════════════════
-calcConf(int dir) =>
+var int    lastSignalBar  = -1
+var string lastSigPat     = "—"
+var float  lastSigScore   = 0.0
+var int    lastSigDir     = 0
+
+calcConf(int dir, string engine) =>
     float s = 0.0
     if dir == 0
         s := 0.0
     else
-        s += 20.0
+        s += 22.0
+        if engine == "TRIGGER"
+            s += 28.0
+        else if engine == "TRAP"
+            s += 24.0
+        else if engine == "SWEEP"
+            s += 22.0
+        else if engine == "CONT"
+            s += 16.0
         int aligned = dir == 1 ? ftcAlignedBull : ftcAlignedBear
         if ftcVisible > 0
-            s += math.min(15.0, float(aligned) / float(ftcVisible) * 15.0)
+            s += math.min(10.0, float(aligned) / float(ftcVisible) * 10.0)
         if useSMCInput
             if (dir == 1 and marketStructure == 1) or (dir == -1 and marketStructure == -1)
-                s += 15.0
+                s += 10.0
             else if marketStructure == 0
-                s += 5.0
+                s += 4.0
+        if (dir == 1 and close > ema21) or (dir == -1 and close < ema21)
+            s += 6.0
+        if (dir == 1 and close > ema50) or (dir == -1 and close < ema50)
+            s += 3.0
         if useMomentumInput
             if dir == 1 and momScore > 20
-                s += math.min(10.0, momScore / 10.0)
+                s += math.min(8.0, momScore / 12.0)
             else if dir == -1 and momScore < -20
-                s += math.min(10.0, math.abs(momScore) / 10.0)
+                s += math.min(8.0, math.abs(momScore) / 12.0)
         if useMomentumInput and useDivergenceInput
             if (dir == 1 and bullDiv) or (dir == -1 and bearDiv)
-                s += 10.0
+                s += 8.0
         if useSMCInput and nearUnmitFvg(dir)
-            s += 10.0
+            s += 6.0
         if useSMCInput and nearUnmitOb(dir)
-            s += 10.0
+            s += 6.0
         if useVolEngineInput
             if volSpike
-                s += 5.0
+                s += 4.0
             else if volAboveAvg
-                s += 3.0
+                s += 2.0
         if inKillzone
+            s += 4.0
+        if (dir == 1 and pvteRegime == 1) or (dir == -1 and pvteRegime == -1)
             s += 5.0
-        if usePvteInput
-            if (dir == 1 and pvteRegime == 1) or (dir == -1 and pvteRegime == -1)
-                s += 5.0
         if useRegimeInput
             if isTrending
-                s += 5.0
+                s += 4.0
             else if not isRanging
-                s += 3.0
+                s += 2.0
+        if (dir == 1 and hammerNow) or (dir == -1 and shooterNow)
+            s += 3.0
     math.max(0.0, math.min(100.0, s))
 
-float confLong  = calcConf(1)
-float confShort = calcConf(-1)
+passesGates(int dir, float score) =>
+    bool volOk = not useVolFilterInput or not hasVolume or (volSma > 0 and volume > volSma * volFiltMultInput)
+    int alignedN = dir == 1 ? ftcAlignedBull : ftcAlignedBear
+    bool ftcOk = minFtcAlignInput == 0 or alignedN >= math.min(minFtcAlignInput, ftcVisible)
+    bool pvteOk = not effUsePvte or (dir == 1 ? pvteRegime == 1 : pvteRegime == -1) or (pvteRegime == 0 and pvteNeutralInput == "Allow")
+    bool structOk = not effNeedStruct or not useSMCInput or (dir == 1 and marketStructure >= 0) or (dir == -1 and marketStructure <= 0)
+    bool confOk = not useConfScoreInput or score >= effMinConf
+    bool fvgOk = not requireFVGInput or nearUnmitFvg(dir)
+    bool obOk = not requireOBInput or nearUnmitOb(dir)
+    bool cdOk = cooldownBarsInput == 0 or lastSignalBar < 0 or (bar_index - lastSignalBar) >= cooldownBarsInput
+    volOk and ftcOk and pvteOk and structOk and confOk and fvgOk and obOk and cdOk
+
+enginePri(string engine) =>
+    engine == "TRIGGER" ? 4 : engine == "TRAP" ? 3 : engine == "SWEEP" ? 2 : 1
+
+float confLong  = calcConf(1, "")
+float confShort = calcConf(-1, "")
 int   dashDir   = setupDir != 0 ? setupDir : (trapLongBar ? 1 : trapShortBar ? -1 : close >= open ? 1 : -1)
 float confScore = dashDir == 1 ? confLong : confShort
-bool  confPassedLong  = not useConfScoreInput or confLong  >= minConfScoreInput
-bool  confPassedShort = not useConfScoreInput or confShort >= minConfScoreInput
+bool  confPassedLong  = not useConfScoreInput or confLong  >= effMinConf
+bool  confPassedShort = not useConfScoreInput or confShort >= effMinConf
 
 // ══════════════════════════════════════════════════════════
 // 14. TRADE ENGINE
@@ -1197,68 +1256,152 @@ if ((tp3HitRaw or closeBySl) and activeDir != 0)
 bool evLongEntry   = false
 bool evShortEntry  = false
 bool openedByTrig  = false
+bool openedByTrap  = false
+bool openedBySweep = false
+bool openedByCont  = false
 string entryPat    = ""
 bool allowTrig = entryModeInput != "Trap Bar"
 bool allowTrap = entryModeInput != "STRAT Trigger"
 
-if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
-    int   tDir       = 0
-    float slAnchorPx = na
-    bool  viaTrap    = false
-    float candConf   = 0.0
+bool contAgreeLong  = close > ema21 or rsiVal > 50 or (useSMCInput and marketStructure == 1)
+bool contAgreeShort = close < ema21 or rsiVal < 50 or (useSMCInput and marketStructure == -1)
+bool contLong  = enableContInput and clsNow == 2  and close > open and not trapShortBar and contAgreeLong
+bool contShort = enableContInput and clsNow == -2 and close < open and not trapLongBar  and contAgreeShort
+bool sweepLong  = enableSweepInput and useSMCInput and sweepLow
+bool sweepShort = enableSweepInput and useSMCInput and sweepHigh
 
-    if allowTrap and (trapLongBar or trapShortBar)
-        tDir       := trapLongBar ? 1 : -1
-        entryPat   := trapLongBar ? "Trap 2D" : "Trap 2U"
-        slAnchorPx := trapLongBar ? low : high
-        viaTrap    := true
-    else if allowTrig and (trigBullSig or trigBearSig)
-        tDir         := trigBullSig ? 1 : -1
-        entryPat     := trigPat
-        slAnchorPx   := slAnchorInput == "Setup Bar" ? trigStp : slAnchorInput == "Wick-Anchored" ? (trigBullSig ? low : high) : slAnchorInput == "Swing Point" ? (trigBullSig ? lastSwingLow : lastSwingHigh) : trigLvl
-        openedByTrig := true
+int    sigDir     = 0
+string sigPat     = ""
+string sigEngine  = ""
+float  sigScore   = -1.0
+float  sigSlAnchor = na
+int    sigPri     = 0
 
-    if tDir != 0
-        candConf := tDir == 1 ? confLong : confShort
-        bool volOk = not useVolFilterInput or not hasVolume or (volSma > 0 and volume > volSma * volFiltMultInput)
-        int alignedN = tDir == 1 ? ftcAlignedBull : ftcAlignedBear
-        bool ftcOk = minFtcAlignInput == 0 or alignedN >= math.min(minFtcAlignInput, ftcVisible)
-        bool pvteOk = not usePvteInput or (tDir == 1 ? pvteRegime == 1 : pvteRegime == -1) or (pvteRegime == 0 and pvteNeutralInput == "Allow")
-        bool structOk = not requireStructureInput or not useSMCInput or (tDir == 1 and marketStructure >= 0) or (tDir == -1 and marketStructure <= 0)
-        bool confOk = not useConfScoreInput or candConf >= minConfScoreInput
-        bool fvgOk = not requireFVGInput or nearUnmitFvg(tDir)
-        bool obOk = not requireOBInput or nearUnmitOb(tDir)
-        if not (volOk and ftcOk and pvteOk and structOk and confOk and fvgOk and obOk)
-            tDir := 0
-            openedByTrig := false
+if barstate.isconfirmed
+    if allowTrig and trigBullSig
+        float sc = calcConf(1, "TRIGGER")
+        int pri = enginePri("TRIGGER")
+        if passesGates(1, sc) and (sc > sigScore or (sc == sigScore and pri > sigPri))
+            sigDir := 1
+            sigPat := trigPat
+            sigEngine := "TRIGGER"
+            sigScore := sc
+            sigPri := pri
+            sigSlAnchor := slAnchorInput == "Setup Bar" ? trigStp : slAnchorInput == "Wick-Anchored" ? low : slAnchorInput == "Swing Point" ? lastSwingLow : trigLvl
+    if allowTrig and trigBearSig
+        float sc2 = calcConf(-1, "TRIGGER")
+        int pri2 = enginePri("TRIGGER")
+        if passesGates(-1, sc2) and (sc2 > sigScore or (sc2 == sigScore and pri2 > sigPri))
+            sigDir := -1
+            sigPat := trigPat
+            sigEngine := "TRIGGER"
+            sigScore := sc2
+            sigPri := pri2
+            sigSlAnchor := slAnchorInput == "Setup Bar" ? trigStp : slAnchorInput == "Wick-Anchored" ? high : slAnchorInput == "Swing Point" ? lastSwingHigh : trigLvl
+    if allowTrap and trapLongBar
+        float sc3 = calcConf(1, "TRAP")
+        int pri3 = enginePri("TRAP")
+        if passesGates(1, sc3) and (sc3 > sigScore or (sc3 == sigScore and pri3 > sigPri))
+            sigDir := 1
+            sigPat := "Trap 2D"
+            sigEngine := "TRAP"
+            sigScore := sc3
+            sigPri := pri3
+            sigSlAnchor := low
+    if allowTrap and trapShortBar
+        float sc4 = calcConf(-1, "TRAP")
+        int pri4 = enginePri("TRAP")
+        if passesGates(-1, sc4) and (sc4 > sigScore or (sc4 == sigScore and pri4 > sigPri))
+            sigDir := -1
+            sigPat := "Trap 2U"
+            sigEngine := "TRAP"
+            sigScore := sc4
+            sigPri := pri4
+            sigSlAnchor := high
+    if sweepLong
+        float sc5 = calcConf(1, "SWEEP")
+        int pri5 = enginePri("SWEEP")
+        if passesGates(1, sc5) and (sc5 > sigScore or (sc5 == sigScore and pri5 > sigPri))
+            sigDir := 1
+            sigPat := "Sweep Reclaim"
+            sigEngine := "SWEEP"
+            sigScore := sc5
+            sigPri := pri5
+            sigSlAnchor := low
+    if sweepShort
+        float sc6 = calcConf(-1, "SWEEP")
+        int pri6 = enginePri("SWEEP")
+        if passesGates(-1, sc6) and (sc6 > sigScore or (sc6 == sigScore and pri6 > sigPri))
+            sigDir := -1
+            sigPat := "Sweep Reject"
+            sigEngine := "SWEEP"
+            sigScore := sc6
+            sigPri := pri6
+            sigSlAnchor := high
+    if contLong
+        float sc7 = calcConf(1, "CONT")
+        int pri7 = enginePri("CONT")
+        if passesGates(1, sc7) and (sc7 > sigScore or (sc7 == sigScore and pri7 > sigPri))
+            sigDir := 1
+            sigPat := "2U Cont"
+            sigEngine := "CONT"
+            sigScore := sc7
+            sigPri := pri7
+            sigSlAnchor := low
+    if contShort
+        float sc8 = calcConf(-1, "CONT")
+        int pri8 = enginePri("CONT")
+        if passesGates(-1, sc8) and (sc8 > sigScore or (sc8 == sigScore and pri8 > sigPri))
+            sigDir := -1
+            sigPat := "2D Cont"
+            sigEngine := "CONT"
+            sigScore := sc8
+            sigPri := pri8
+            sigSlAnchor := high
 
-    if tDir != 0
-        float slPx = na
-        if not viaTrap and slAnchorInput == "ATR"
-            slPx := tDir == 1 ? close - riskAtr * effSlMult : close + riskAtr * effSlMult
-        else
-            slPx := tDir == 1 ? math.min(slAnchorPx - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(slAnchorPx + riskAtr * slBufferInput, close + riskAtr * 0.5)
-        float riskPx = tDir == 1 ? close - slPx : slPx - close
-        bool riskOk = riskPx > 0 and not na(slPx) and (maxRiskAtrInput == 0.0 or riskPx <= riskAtr * maxRiskAtrInput)
-        if riskOk
-            activeEntry := close
-            activeSL    := slPx
-            activeTP1   := tDir == 1 ? close + riskPx * effTp1m : close - riskPx * effTp1m
-            activeTP2   := tDir == 1 ? close + riskPx * effTp2m : close - riskPx * effTp2m
-            activeTP3   := tDir == 1 ? close + riskPx * effTp3m : close - riskPx * effTp3m
-            activeDir   := tDir
-            entryBarIdx := bar_index
-            tp1Reached  := false
-            tp2Reached  := false
-            tp3Reached  := false
-            beActive    := false
-            trailStop   := na
-            trailActive := false
-            entryConf   := candConf
-            evLongEntry  := tDir == 1
-            evShortEntry := tDir == -1
-        else
-            openedByTrig := false
+bool sigLong  = sigDir == 1
+bool sigShort = sigDir == -1
+
+if sigDir != 0
+    lastSignalBar  := bar_index
+    lastSigPat     := sigPat
+    lastSigScore   := sigScore
+    lastSigDir     := sigDir
+    entryPat       := sigPat
+    entryConf      := sigScore
+    openedByTrig   := sigEngine == "TRIGGER"
+    openedByTrap   := sigEngine == "TRAP"
+    openedBySweep  := sigEngine == "SWEEP"
+    openedByCont   := sigEngine == "CONT"
+
+if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0 and sigDir != 0
+    float slPx = na
+    bool structStop = sigEngine != "TRIGGER"
+    if not structStop and slAnchorInput == "ATR"
+        slPx := sigDir == 1 ? close - riskAtr * effSlMult : close + riskAtr * effSlMult
+    else
+        slPx := sigDir == 1 ? math.min(sigSlAnchor - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(sigSlAnchor + riskAtr * slBufferInput, close + riskAtr * 0.5)
+    float riskPx = sigDir == 1 ? close - slPx : slPx - close
+    bool riskOk = riskPx > 0 and not na(slPx) and (maxRiskAtrInput == 0.0 or riskPx <= riskAtr * maxRiskAtrInput)
+    if riskOk
+        activeEntry := close
+        activeSL    := slPx
+        activeTP1   := sigDir == 1 ? close + riskPx * effTp1m : close - riskPx * effTp1m
+        activeTP2   := sigDir == 1 ? close + riskPx * effTp2m : close - riskPx * effTp2m
+        activeTP3   := sigDir == 1 ? close + riskPx * effTp3m : close - riskPx * effTp3m
+        activeDir   := sigDir
+        entryBarIdx := bar_index
+        tp1Reached  := false
+        tp2Reached  := false
+        tp3Reached  := false
+        beActive    := false
+        trailStop   := na
+        trailActive := false
+        entryConf   := sigScore
+        evLongEntry  := sigDir == 1
+        evShortEntry := sigDir == -1
+    else
+        openedByTrig := false
 
 // ══════════════════════════════════════════════════════════
 // 15. PLOTS  (global scope only)
@@ -1277,6 +1420,10 @@ plot(showPvteBandsInput ? pvtOuterDn : na, "PVTE Outer Dn", color = pvtBandCol, 
 plot(showPvteBandsInput ? pvtInnerUp : na, "PVTE Inner Up", color = color.new(pvtBandCol, 65), linewidth = 1)
 plot(showPvteBandsInput ? pvtInnerDn : na, "PVTE Inner Dn", color = color.new(pvtBandCol, 65), linewidth = 1)
 
+plot(showEmaInput ? ema21  : na, "EMA 21",  color = EMA21_C,  linewidth = 1)
+plot(showEmaInput ? ema50  : na, "EMA 50",  color = EMA50_C,  linewidth = 1)
+plot(showEmaInput ? ema200 : na, "EMA 200", color = EMA200_C, linewidth = 2)
+
 plot(useSessionInput and showSessionHLInput ? sessionHigh : na, "Session High", color = color.new(C_INSIDE, 50), style = plot.style_linebr)
 plot(useSessionInput and showSessionHLInput ? sessionLow  : na, "Session Low",  color = color.new(C_INSIDE, 50), style = plot.style_linebr)
 
@@ -1292,19 +1439,23 @@ levelLine(prevMonthInput and chartSec <= timeframe.in_seconds("M"), pmL, mStart,
 // ══════════════════════════════════════════════════════════
 plotshape(showCandleInput and hammerNow and barstate.isconfirmed,  "Hammer",  shape.triangleup,   location.belowbar, BULL, size = size.tiny)
 plotshape(showCandleInput and shooterNow and barstate.isconfirmed, "Shooter", shape.triangledown, location.abovebar, BEAR, size = size.tiny)
+plotshape(showBuySellInput and sigLong,  "BUY",  shape.labelup,   location.belowbar, BULL, size = size.small, text = "BUY",  textcolor = color.white)
+plotshape(showBuySellInput and sigShort, "SELL", shape.labeldown, location.abovebar, BEAR, size = size.small, text = "SELL", textcolor = color.white)
 
-if (evLongEntry or evShortEntry) and showEntryLblInput
-    string eTip = "Entry: " + fmtPrice(activeEntry) +
+if sigDir != 0 and showSigLblInput
+    string eTip = "Engine: " + sigEngine +
+         "\nPattern: " + sigPat +
+         "\nScore: " + str.tostring(sigScore, "#.#") + "/100" +
+         "\nProfile: " + signalProfileInput +
+         (evLongEntry or evShortEntry ? "\nEntry: " + fmtPrice(activeEntry) +
          "\nSL: "  + fmtPrice(activeSL) +
          "\nTP1: " + fmtPrice(activeTP1) +
          "\nTP2: " + fmtPrice(activeTP2) +
-         "\nTP3: " + fmtPrice(activeTP3) +
-         "\nRisk: " + fmtPrice(math.abs(activeEntry - activeSL)) +
-         "\nConfidence: " + str.tostring(entryConf, "#.#") + "/100"
-    label el = label.new(bar_index, evLongEntry ? low : high,
-         (evLongEntry ? "LONG · " : "SHORT · ") + entryPat + " · " + str.tostring(entryConf, "#.") + "%",
-         style = evLongEntry ? label.style_label_up : label.style_label_down,
-         color = evLongEntry ? BULL : BEAR, textcolor = isDark ? #0B0E11 : #FFFFFF,
+         "\nTP3: " + fmtPrice(activeTP3) : "\n(arrow only — trade not opened)")
+    label el = label.new(bar_index, sigLong ? low : high,
+         (sigLong ? "BUY · " : "SELL · ") + sigPat + " · " + str.tostring(sigScore, "#.") + "%",
+         style = sigLong ? label.style_label_up : label.style_label_down,
+         color = sigLong ? BULL : BEAR, textcolor = isDark ? #0B0E11 : #FFFFFF,
          size = signalSize, tooltip = eTip)
     lblFifo.push(el)
 if (trigBullSig or trigBearSig) and showTrigLblInput and not openedByTrig
@@ -1426,7 +1577,7 @@ var table dash = na
 if showDashInput and barstate.islast
     int marketRows = showMarketSecInput ? 6 : 0
     int smcRows    = showSMCSecInput and useSMCInput ? 5 : 0
-    int confRows   = showConfSecInput and useConfScoreInput ? 3 : 0
+    int confRows   = showConfSecInput and useConfScoreInput ? 4 : 0
     int tradeRows  = showTradeSecInput and enableTradesInput ? (activeDir != 0 ? 9 : 2) : 0
     int statsRows  = showStatsSecInput and enableTradesInput ? 6 : 0
     if not na(dash)
@@ -1480,8 +1631,8 @@ if showDashInput and barstate.islast
         table.cell(dash, 1, r, cndTxt, text_color = cndCol, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
         r += 1
         zeb := not zeb
-        string pvtTxt = not usePvteInput ? "Off" : pvteRegime == 1 ? "BULL" : pvteRegime == -1 ? "BEAR" : "NEUTRAL"
-        color  pvtClr = not usePvteInput ? C_MUTED : pvteRegime == 1 ? BULL : pvteRegime == -1 ? BEAR : C_INSIDE
+        string pvtTxt = not effUsePvte ? "Off" : pvteRegime == 1 ? "BULL" : pvteRegime == -1 ? "BEAR" : "NEUTRAL"
+        color  pvtClr = not effUsePvte ? C_MUTED : pvteRegime == 1 ? BULL : pvteRegime == -1 ? BEAR : C_INSIDE
         rb := zeb ? TABLE_ROW_ALT : PANEL_BG
         table.cell(dash, 0, r, "PVTE", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left)
         table.cell(dash, 1, r, pvtTxt, text_color = pvtClr, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
@@ -1536,6 +1687,14 @@ if showDashInput and barstate.islast
         table.cell(dash, 0, r, "Filter", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left)
         table.cell(dash, 1, r, dashPass ? "✓ PASSED" : "✗ BLOCKED", text_color = dashPass ? BULL : BEAR, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
         r += 1
+        zeb := not zeb
+        string lastTxt = lastSigDir == 0 ? "—" : (lastSigDir == 1 ? "BUY " : "SELL ") + lastSigPat + " " + str.tostring(lastSigScore, "#.") + "%"
+        color lastClr = lastSigDir == 1 ? BULL : lastSigDir == -1 ? BEAR : C_MUTED
+        rb := zeb ? TABLE_ROW_ALT : PANEL_BG
+        table.cell(dash, 0, r, "Last", text_color = C_MUTED, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_left)
+        table.cell(dash, 1, r, lastTxt, text_color = lastClr, bgcolor = rb, text_size = dashFontSize, text_halign = text.align_right)
+        r += 1
+        zeb := not zeb
         zeb := not zeb
 
     if showTradeSecInput and enableTradesInput
@@ -1676,9 +1835,16 @@ if evSlHit and slAlertInput
          ',"result":"' + (tradeWin ? "win" : "loss") + '"',
          " | " + (exitBeActive ? "BE stop-out" : "SL hit") + " @ " + str.tostring(nz(hitSL), format.mintick), buildFtc(fV, fG, FTC_LBL))
 
+if sigLong or sigShort
+    fireTradeAlert(sigLong ? "buy" : "sell", ',"pattern":"' + sigPat + '","engine":"' + sigEngine +
+         '","price":' + str.tostring(close) + ',"confidence":' + str.tostring(sigScore) +
+         ',"regime":' + str.tostring(pvteRegime),
+         " | " + sigPat + " @ " + str.tostring(close, format.mintick) +
+         " | Conf: " + str.tostring(sigScore, "#.") + "%", buildFtc(fV, fG, FTC_LBL))
+
 if trigBullSig or trigBearSig
     string trigAction = trigBullSig ? "trigger_bull" : "trigger_bear"
-    if openedByTrig
+    if openedByTrig and (evLongEntry or evShortEntry)
         if entryAlertInput
             fireTradeAlert(trigAction, ',"pattern":"' + trigPat + '","price":' + str.tostring(close) +
                  ',"entry":' + str.tostring(activeEntry) + ',"sl":' + str.tostring(activeSL) +
@@ -1688,11 +1854,12 @@ if trigBullSig or trigBearSig
                  " | " + trigPat + " @ " + str.tostring(close, format.mintick) +
                  " | SL " + fmtPrice(activeSL) + " TP1 " + fmtPrice(activeTP1) +
                  " TP2 " + fmtPrice(activeTP2) + " TP3 " + fmtPrice(activeTP3) + " | Conf: " + str.tostring(entryConf, "#.") + "%", buildFtc(fV, fG, FTC_LBL))
-    else if trigAlertInput
+    else if trigAlertInput and not (sigLong or sigShort)
         fireAlert(trigAction, trigPat, trigLvl, trigStp, buildFtc(fV, fG, FTC_LBL))
 
 if (evLongEntry or evShortEntry) and not openedByTrig and entryAlertInput
-    fireTradeAlert(evLongEntry ? "trap_long" : "trap_short", ',"pattern":"' + entryPat +
+    string extraAction = openedBySweep ? (evLongEntry ? "sweep_long" : "sweep_short") : openedByCont ? (evLongEntry ? "cont_long" : "cont_short") : (evLongEntry ? "trap_long" : "trap_short")
+    fireTradeAlert(extraAction, ',"pattern":"' + entryPat +
          '","price":' + str.tostring(close) +
          ',"entry":' + str.tostring(activeEntry) + ',"sl":' + str.tostring(activeSL) +
          ',"tp1":' + str.tostring(activeTP1) + ',"tp2":' + str.tostring(activeTP2) +
@@ -1712,8 +1879,11 @@ alertcondition(setupBullSig or setupBearSig, "STRAT PRO: Setup Any",      "STRAT
 alertcondition(trigBullSig,                  "STRAT PRO: Triggered Bull", "STRAT PRO bullish setup triggered")
 alertcondition(trigBearSig,                  "STRAT PRO: Triggered Bear", "STRAT PRO bearish setup triggered")
 alertcondition(trigBullSig or trigBearSig,   "STRAT PRO: Triggered Any",  "STRAT PRO setup triggered")
-alertcondition(evLongEntry,                  "STRAT PRO: LONG",           "STRAT PRO long opened")
-alertcondition(evShortEntry,                 "STRAT PRO: SHORT",          "STRAT PRO short opened")
+alertcondition(sigLong,                      "STRAT PRO: BUY",            "STRAT PRO BUY signal")
+alertcondition(sigShort,                     "STRAT PRO: SELL",           "STRAT PRO SELL signal")
+alertcondition(sigLong or sigShort,          "STRAT PRO: BUY or SELL",    "STRAT PRO BUY or SELL signal")
+alertcondition(evLongEntry,                  "STRAT PRO: LONG Trade",     "STRAT PRO long trade opened")
+alertcondition(evShortEntry,                 "STRAT PRO: SHORT Trade",    "STRAT PRO short trade opened")
 alertcondition(evLongEntry or evShortEntry,  "STRAT PRO: Trade Opened",   "STRAT PRO trade opened")
 alertcondition(tp1FirstTouch or tp2FirstTouch or tp3FirstTouch, "STRAT PRO: TP Hit", "STRAT PRO take-profit touched")
 alertcondition(evTp3Close or evSlHit,        "STRAT PRO: Trade Closed",   "STRAT PRO trade closed")

@@ -1,96 +1,88 @@
 # STRAT indicators (Pine v6)
 
-TradingView overlays. Copy a `.pine` file into TradingView → Pine Editor → Add to chart.
+TradingView overlays. Copy a `.pine` file into TradingView → Pine Editor → **Save** → Add to chart.
 
 | File | Version | Use when |
 |---|---|---|
-| **`STRAT_PRO.pine`** | 3.0.1 | Latest: SMC (BOS/CHoCH/FVG/OB), RSI divergence, regime, killzones, confidence score. **Compile-clean** |
-| `STRAT_Trap_VWAP_Engine.pine` | 2.0.0 IQ | Score-first confluence + Smart Mix engines on the v1.9 core |
+| **`STRAT_PRO.pine`** | **3.1.0 Signal First** | **Use this.** Visible BUY / SELL arrows from STRAT + trap + sweep + continuation |
+| `STRAT_Trap_VWAP_Engine.pine` | 2.1.0 IQ | Same signal-first fix on the v1.9 / Smart Mix core |
 | `statistical_model.pine` | snippet | Historical pattern-matching section only (not a full indicator) |
 
-## STRAT PRO v3.0.1 — what was broken and fixed
+## Why v3.0.1 / v2.0 printed nothing
 
-The v3.0.0 paste did not compile (~30 Pine errors). v3.0.1 keeps the same engines and fixes:
+The compile-clean scripts still hid arrows behind a **managed single trade** plus a wall of filters:
 
-1. Removed invalid `max_bars_back_bars` argument on `indicator()`
-2. Declared missing inputs: `beInput`, SL/TP line styles, label sizes, `showSlTpInput`, `showEntryLblInput`, `%` on labels
-3. Moved `levelLine()` **above** its 6 call sites (Pine has no forward references)
-4. `plot()` / `bgcolor()` only at global scope (session high/low were inside `if`)
-5. Unconditional `ta.*` calls (`ta.rsi`, `ta.macd`, `ta.dmi`, `ta.bb`)
-6. Unpack `ta.bb()` as `[middle, upper, lower]` — tuples cannot be indexed with `[0]`
-7. Replaced `ta.max` / `ta.min` / `ta.sum` / 4-arg `ta.adx` with `ta.highest`, `ta.lowest`, `math.sum`, `ta.dmi`
-8. Guarded `for i = 0 to size-1` so empty FVG/OB arrays do not loop `0 to -1`
-9. Killzones now read the session string inputs (London/NY/Asia) instead of ignored hardcoded hours
-10. BOS/CHoCH can start from a flat market (first break is CHoCH); RSI divergence uses the **prior** swing; trailing stop persists into `activeSL`
+1. No arrow unless `Trade Engine` was on **and** the book was flat
+2. No `plotshape` BUY/SELL — only easy-to-miss labels, capped by FIFO
+3. PVTE default ON + Neutral = **Block** (most bars are Neutral)
+4. Confidence floor 60 / 52 while a naked STRAT/trap often scored ~30
+5. `Require Structure Alignment` ON while the market had no BOS yet
+6. In “Both” mode a trap bar took the slot, then failed filters, and **swallowed** a valid STRAT trigger
 
-Copy `STRAT_PRO.pine` → Pine Editor → Save. If the chart is quiet, lower **Minimum Confidence Score** from 60 toward 45, or turn off **Require Structure Alignment**.
+v3.1.0 / v2.1.0 fix that the same way STRAT ULTRA v3.2 did: **signal first, trade optional**.
 
-## STRAT Trap IQ v2.0
+## STRAT PRO v3.1.0 — copy this file
 
-TradingView **Pine Script v6** overlay. Copy `STRAT_Trap_VWAP_Engine.pine` into TradingView → Pine Editor → Add to chart.
+Defaults are built to **print arrows**:
 
-نسخة أذكى من محرك STRAT Trap: إشارات شراء/بيع تُفتح فقط عندما يتفق أكثر من محرك (STRAT + نظام + زخم + سيولة)، مع الإبقاء على منطق v1.9 عند إيقاف المحرك الذكي.
-
-## What v2.0 adds
-
-The v1.9 STRAT FSM, trap bars, PVTE regime, anchored VWAP, FTC strip, risk engine, and alerts are intact. Intelligence sits **on top** as a score-first gate — not a wall of AND-vetoes (that pattern killed entries in earlier Ultra builds).
-
-| Layer | Role |
-|---|---|
-| **STRAT patterns** | 2-1-2, 3-2, 2-2 Rev/Cont, RevStrat, optional extended 2-2-2 / RJ / 3 RevStrat |
-| **Trap bars** | Failed 2U (red) → SHORT, failed 2D (green) → LONG |
-| **Smart Mix engines** | Trap + STRAT trigger + liquidity-sweep reclaim + EMA-21 pullback. Highest score wins; trap wins a tie |
-| **12-factor score** | PVTE, EMA 21/50/200, MACD, RSI, Supertrend, ADX/DMI, Stochastic, Volume/OBV, FTC, session VWAP, SMC (OB/FVG/sweep/structure), pattern memory |
-| **Grade** | A+ ≥80 · A ≥70 · B ≥60 · C ≥52 · D below. Labels show `LONG · 2-1-2 · 74% A` |
-| **PVTE** | Still the hard regime filter by default (longs in BULL, shorts in BEAR) |
-| **Risk** | Volatility-adaptive SL/TP, BE after TP1, chandelier trail after TP1 |
-
-Turn **Smart Confluence Engine** OFF to recover the exact v1.9.0 entry path.
-
-## Signal Profile (first thing to change)
+- Signal Profile = **More Signals** (floor 28)
+- BUY / SELL `plotshape` on every engine fire
+- Arrows print even if Trade Engine is off, and they keep printing while a trade is already open
+- PVTE filter **OFF** (bands still draw); Neutral = **Allow** if you turn it on
+- Structure alignment **OFF**
+- Trap and trigger are scored independently; a passing STRAT trigger is not swallowed
+- Extra engines: liquidity sweep reclaim, 2U / 2D continuation (EMA / RSI / structure agreement)
+- 2-bar cooldown only — not a stack of AND-vetoes
 
 | Profile | What you get |
 |---|---|
-| **More Signals** | Frequent arrows, light gates (confidence ≥ 40, confluence ≥ 1) |
-| **Balanced** (default) | Soft EMA trend + score ≥ 52 + confluence ≥ 2. Regular, higher-quality prints |
-| **Precision** | Full EMA stack, ADX, volume, FTC ≥ 2, chop block, location (OB/FVG/sweep), score ≥ 68 |
-| **Custom** | Uses the numeric thresholds and filter checkboxes as written |
+| **More Signals** (default) | Frequent BUY/SELL, light gates |
+| **Balanced** | Score ≥ 32 (the numeric input), uses the filter checkboxes |
+| **Strict** | Score ≥ 50 + structure + PVTE |
 
-Need more arrows → **More Signals**. Need fewer, cleaner ones → **Precision**.
+Fewer arrows → **Strict**. Still quiet after Save? Turn **Show BUY / SELL Arrows** on and leave profile on More Signals.
 
-## Suggested starting settings
+SMC (BOS/CHoCH/FVG/OB), RSI divergence, killzones, SL/TP manager, and the v3.0.1 compiler fixes are unchanged.
+
+## STRAT Trap IQ v2.1.0
+
+Same signal-first behaviour on the IQ core. Default profile is **More Signals**. Smart Mix still scores trap + trigger + sweep reclaim + EMA pullback; trigger wins a tie so a trap cannot eat a valid break.
+
+Turn **Smart Confluence Engine** OFF to recover the v1.9 path — triggers still print arrows even while a trade is open.
+
+## Suggested starting settings (PRO)
 
 1. Timeframe: 15m, 1H, or 4H
-2. Signal Profile: **Balanced**
-3. Entry Mode: **Smart Mix**
-4. Smart Confluence Engine: **ON**
-5. PVTE Regime Filter: **ON**
-6. Turn **Show Blocked-Signal Reasons** on if a chart looks quiet — gray `× Trend` / `× Conf 48` labels tell you why a bar was skipped
+2. Signal Profile: **More Signals**
+3. Entry Mode: **Both**
+4. Show BUY / SELL Arrows: **ON**
+5. Trade Engine: ON if you want SL/TP lines; OFF if you only want arrows
+6. After you see prints, move to **Balanced** if you want fewer, cleaner ones
 
 ## Chart
 
-- Green **LONG** / red **SHORT** (or شراء / بيع) with optional confidence grade. Gold label = A+ (≥80)
-- STRAT 1 / 2 / 3 bar numbers, optional setup ▲/▼ labels
-- EMA 21 / 50 / 200, Supertrend, session VWAP, PVTE bands, anchored VWAP
-- Order-block and FVG boxes, optional swing SH/SL
-- SL / TP1 / TP2 / TP3 lines while a trade is active (trail/BE annotated)
-- Dashboard: Market, Intelligence (grade/confluence/RSI/MACD/ADX/VWAP/last gate), Trade, Stats
+- Green **BUY** / red **SELL** labels on the bar (plus pattern + score text)
+- STRAT 1 / 2 / 3 bar numbers, EMA 21 / 50 / 200, PVTE bands, anchored VWAP
+- Order-block and FVG boxes, optional BOS/CHoCH
+- SL / TP1 / TP2 / TP3 lines only while a managed trade is active
+- Dashboard: last BUY/SELL, score, structure, PVTE, trade, stats
 
 ## Alerts
 
-Create a TradingView alert on this indicator with condition **Any alert() function call**, or use the fixed dropdown:
+Create a TradingView alert on the indicator with condition **Any alert() function call**, or use:
 
-- `STRAT: LONG` / `STRAT: SHORT` / `STRAT: Trade Opened`
-- `STRAT: Setup Bull/Bear/Any`
-- `STRAT: Triggered Bull/Bear/Any`
-- `STRAT: TP Hit` / `STRAT: Trade Closed`
+- `STRAT PRO: BUY` / `STRAT PRO: SELL` / `STRAT PRO: BUY or SELL`
+- `STRAT PRO: Trade Opened` / `TP Hit` / `Trade Closed`
+- Setup / Triggered Bull/Bear/Any
 
-JSON payloads keep `ind: STRAT` for existing bots and add `conf`, `confl`, `grade`. Extra actions: `sweep_long`, `sweep_short`, `pull_long`, `pull_short`.
+IQ uses the `STRAT: BUY` / `STRAT: SELL` names.
 
-## Honesty notes (same as v1.9)
+## Honesty notes
 
-- All entries fire on **bar close** (no intrabar repaint on the trade layer)
-- FTC alignment uses the **forming** higher-TF bar by design and can change until that HTF bar closes
+- All signals fire on **bar close** (no intrabar repaint on the signal layer)
+- FTC alignment uses the **forming** higher-TF bar and can change until that HTF bar closes
 - Stats / pattern memory reset on chart reload
 - Win = TP1 touched (optimistic same-bar TP-priority model)
 - This is a signal engine, not a broker. Size risk yourself.
+
+Pine cannot be compiled in this environment. After paste: Pine Editor → Save. If TradingView still shows an old version, remove the indicator from the chart and add it again so the new defaults load.

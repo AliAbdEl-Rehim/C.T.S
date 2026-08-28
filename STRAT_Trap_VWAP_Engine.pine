@@ -7,8 +7,12 @@
 // STRAT TRAP & VWAP ENGINE IQ [WillyAlgoTrader]
 // ──────────────────────────────────────────────────────────
 // Author:  Willy | WillyAlgoTrader
-// Version: 2.0.0
+// Version: 2.1.0
 //
+// v2.1.0  Signal-first: BUY/SELL arrows print independently of
+//         Trade Engine / open trade. Default profile More Signals,
+//         PVTE Neutral Allow, PVTE/trend/RSI hard gates OFF.
+//         plotshape BUY/SELL. Trap no longer swallows a passing trigger.
 // v2.0.0  Smart Confluence Engine on top of v1.9.0
 //         • 12-factor score (PVTE, EMA, MACD, RSI, Supertrend,
 //           ADX/DMI, Stochastic, Volume/OBV, FTC, VWAP, SMC, memory)
@@ -33,7 +37,7 @@ indicator(
 // ══════════════════════════════════════════════════════════
 // 2. CONSTANTS
 // ══════════════════════════════════════════════════════════
-string VERSION  = "2.0.0"
+string VERSION  = "2.1.0"
 string JSON_IND = "STRAT"
 int    ST_IDLE    = 0
 int    ST_PENDING = 1
@@ -67,9 +71,10 @@ string GRP_ALR = "🔔 Alerts"
 // ══════════════════════════════════════════════════════════
 // 3. INPUTS
 // ══════════════════════════════════════════════════════════
-useIntelInput     = input.bool(true, "Smart Confluence Engine", group = GRP_SIG, tooltip = "ON (default): 12-factor score + quality gates decide which STRAT/trap/sweep/pullback actually opens a trade. OFF: exact v1.9.0 entry path (PVTE / volume / FTC / max-risk only). Setups, triggers, lines and alerts still draw in both modes.")
-signalProfileInput = input.string("Balanced", "Signal Profile", options = ["More Signals", "Balanced", "Precision", "Custom"], group = GRP_SIG, tooltip = "More Signals = frequent LONG/SHORT, light gates.\nBalanced (default) = trend + score, regular arrows.\nPrecision = fewer, stricter setups.\nCustom = uses the numeric thresholds and filter checkboxes below.")
-entryModeInput    = input.string("Smart Mix", "Entry Mode", options = ["Trap Bar", "STRAT Trigger", "Both", "Smart Mix"], group = GRP_SIG, tooltip = "What can OPEN a managed trade:\n• Trap Bar: divergence candles (v1.9 default).\n• STRAT Trigger: confirmed break of the setup bar.\n• Both: trap first, else trigger.\n• Smart Mix (default): trap + trigger + liquidity-sweep reclaim + EMA-21 pullback. Highest score wins on the same bar; trap beats a tie.\nSTRAT setups/triggers keep drawing and alerting in every mode.")
+useIntelInput     = input.bool(true, "Smart Confluence Engine", group = GRP_SIG, tooltip = "ON (default): 12-factor score + quality gates grade which STRAT/trap/sweep/pullback prints BUY/SELL. OFF: v1.9.0 path (PVTE / volume / FTC only). Arrows print in both modes even while a trade is open.")
+signalProfileInput = input.string("More Signals", "Signal Profile", options = ["More Signals", "Balanced", "Precision", "Custom"], group = GRP_SIG, tooltip = "More Signals (default) = frequent BUY/SELL, light gates.\nBalanced = trend + score, regular arrows.\nPrecision = fewer, stricter setups.\nCustom = uses the numeric thresholds and filter checkboxes below.")
+showBuySellInput  = input.bool(true, "Show BUY / SELL Arrows", group = GRP_SIG, tooltip = "plotshape arrows on every engine signal. Independent of Trade Engine and of an open trade.")
+entryModeInput    = input.string("Smart Mix", "Entry Mode", options = ["Trap Bar", "STRAT Trigger", "Both", "Smart Mix"], group = GRP_SIG, tooltip = "What can fire a BUY/SELL (and open a managed trade while flat):\n• Trap Bar: divergence candles.\n• STRAT Trigger: confirmed break of the setup bar.\n• Both: trigger and trap; trigger wins if both pass on the same bar.\n• Smart Mix (default): trap + trigger + liquidity-sweep reclaim + EMA-21 pullback. Highest score wins; trigger wins a tie.")
 signalLangInput   = input.string("EN", "Signal Language", options = ["EN", "AR"], group = GRP_SIG)
 showConfInput     = input.bool(true, "Show Confidence on Labels", group = GRP_SIG)
 showBlockedInput  = input.bool(false, "Show Blocked-Signal Reasons", group = GRP_SIG, tooltip = "Gray label when a candidate existed but gates rejected it.")
@@ -94,7 +99,7 @@ expiryInput       = input.int(3, "Setup Expiry (bars)", minval = 1, maxval = 20,
 showLinesInput    = input.bool(true, "Trigger / Stop Lines", group = GRP_TRG, tooltip = "Solid line = trigger side (entry on break of the setup bar's high/low), dotted = stop side. Lines extend while pending, freeze on resolution, dim on invalidation.")
 showTrigLblInput  = input.bool(false, "Trigger Labels", group = GRP_TRG, tooltip = "▲ / ▼ + pattern name on the bar that confirms the break. All events fire on bar CLOSE (no intrabar repaint).")
 
-enableTradesInput = input.bool(true, "Trade Engine", group = GRP_RSK, tooltip = "Open a managed trade on every allowed entry while flat. An opposite or same-direction trigger while a trade is running is ignored by the trade layer (it is still drawn and alerted as a STRAT signal). Closures: TP3, SL, BE stop-out.")
+enableTradesInput = input.bool(true, "Trade Engine", group = GRP_RSK, tooltip = "Optional SL/TP manager. BUY/SELL arrows print even when this is OFF, and they keep printing while a trade is already open. Closures: TP3, SL, BE stop-out.")
 atrLenRiskInput   = input.int(14, "ATR Length (Risk)", minval = 5, maxval = 50, group = GRP_RSK, tooltip = "ATR period for the SL buffer and the minimum stop distance.")
 riskPresetInput   = input.string("Balanced", "Risk Preset", options = ["Conservative", "Balanced", "Aggressive", "Scalping", "Custom"], group = GRP_RSK, tooltip = "Quick presets (SL part applies to the ATR anchor mode):\n• Conservative: SL 2.5×ATR, TP 1R/2R/4R\n• Balanced: SL 1.5×ATR, TP 1R/2R/3R\n• Aggressive: SL 1.0×ATR, TP 1.5R/2.5R/4R\n• Scalping: SL 0.8×ATR, TP 0.8R/1.5R/2R\n• Custom: manual multipliers below")
 slAnchorInput     = input.string("Trigger Level", "SL Anchor", options = ["Trigger Level", "Setup Bar", "Wick-Anchored", "ATR"], group = GRP_RSK, tooltip = "Where the stop is anchored (trigger entries; a trap/sweep stop is ALWAYS the sweep extreme):\n• Trigger Level (default): just beyond the broken setup high/low — price trading back through the broken level means the breakout failed. Tight; risk = the breakout bar's extension, floored at 0.5×ATR.\n• Setup Bar: the opposite side of the setup bar (the S-line). Structural and wide.\n• Wick-Anchored (§22 standard): beyond the ENTRY bar's own wick + buffer.\n• ATR: fixed distance close ± SL Multiplier × ATR (preset-driven).")
@@ -121,11 +126,11 @@ tpLineStyleInput    = input.string("Dashed", "TP Line Style", options = ["Solid"
 useVolFilterInput = input.bool(false, "Volume Confirmation Filter", group = GRP_FLT, tooltip = "Require above-average volume on the entry bar (trap or trigger). Automatically bypassed on instruments without volume (some forex feeds). A filtered trigger still sends its plain trig/stop alert.")
 volFiltMultInput  = input.float(1.2, "Volume Threshold (×SMA20)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_FLT, tooltip = "Entry bar volume must exceed the 20-bar average times this factor.\n• 1.0 = any above-average volume\n• 1.5-2.0 = only strong participation")
 minFtcAlignInput  = input.int(0, "Min FTC Aligned", minval = 0, maxval = 8, group = GRP_FLT, tooltip = "Require at least this many VISIBLE higher timeframes green for longs / red for shorts at entry (the FTC strip). Clamped to the number of visible TFs (a monthly chart only sees Q). 0 = off. STRAT-native replacement for a single-EMA HTF bias.\nHONESTY NOTE: alignment is read from the FORMING higher-TF bars (FTC is a live-state concept). An entry allowed live can look filtered after a chart reload and vice versa — the only filter in this indicator with that property. PVTE and Volume filters are reload-stable.")
-useTrendFilterInput = input.bool(true, "EMA Trend Filter", group = GRP_FLT, tooltip = "Soft in Balanced (close vs EMA21/50). Full stack in Precision (21>50>200). Score always uses the stack.")
+useTrendFilterInput = input.bool(false, "EMA Trend Filter", group = GRP_FLT, tooltip = "OFF by default so arrows print. Soft in Balanced (close vs EMA21/50). Full stack in Precision (21>50>200). Score always uses the stack.")
 trendFastInput    = input.int(21, "Fast EMA", minval = 5, maxval = 200, group = GRP_FLT)
 trendSlowInput    = input.int(50, "Slow EMA", minval = 20, maxval = 500, group = GRP_FLT)
 trendTrendInput   = input.int(200, "Trend EMA", minval = 50, maxval = 1000, group = GRP_FLT)
-useRsiFilterInput = input.bool(true, "RSI Extreme Block", group = GRP_FLT, tooltip = "Block longs when RSI is overbought, shorts when oversold. Does NOT require RSI to be at an extreme to enter.")
+useRsiFilterInput = input.bool(false, "RSI Extreme Block", group = GRP_FLT, tooltip = "OFF by default. Block longs when RSI is overbought, shorts when oversold. Does NOT require RSI to be at an extreme to enter.")
 rsiLenInput       = input.int(14, "RSI Length", minval = 5, maxval = 50, group = GRP_FLT)
 rsiObInput        = input.int(80, "RSI Overbought Block", minval = 55, maxval = 95, group = GRP_FLT)
 rsiOsInput        = input.int(20, "RSI Oversold Block", minval = 5, maxval = 45, group = GRP_FLT)
@@ -134,12 +139,12 @@ adxLenInput       = input.int(14, "ADX Length", minval = 5, maxval = 50, group =
 adxThreshInput    = input.int(20, "ADX Minimum", minval = 10, maxval = 50, group = GRP_FLT)
 useSessionInput   = input.bool(false, "Session Filter", group = GRP_FLT)
 sessionStrInput   = input.string("0900-1600", "Trading Session", group = GRP_FLT)
-cooldownBarsInput = input.int(3, "Cooldown After Signal (bars)", minval = 0, maxval = 50, group = GRP_FLT)
+cooldownBarsInput = input.int(2, "Cooldown After Signal (bars)", minval = 0, maxval = 50, group = GRP_FLT)
 lossCooldownMultInput = input.float(1.5, "Extra Cooldown After Loss (×)", minval = 1.0, maxval = 5.0, step = 0.5, group = GRP_FLT)
 blockChopInput    = input.bool(false, "Block High-Vol Chop", group = GRP_FLT, tooltip = "Skip when BB-width is expanded AND ADX is weak. Precision forces this ON.")
 useExtFilterInput = input.bool(false, "Block Extended Chase (×ATR from EMA21)", group = GRP_FLT)
 maxExtAtrInput    = input.float(2.5, "Max Distance from EMA21 (×ATR)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_FLT)
-skipInsideInput   = input.bool(true, "Skip Inside-Bar Entries", group = GRP_FLT)
+skipInsideInput   = input.bool(false, "Skip Inside-Bar Entries", group = GRP_FLT)
 useTrapQualityInput = input.bool(true, "Prefer Quality Trap Bars", group = GRP_FLT, tooltip = "Quality trap = wick ≥ 35% of range, close reclaims the prior midpoint, volume not dead. Hard gate only in Precision; otherwise a score bonus.")
 minPatWrInput     = input.float(0.35, "Min Pattern WinRate (after 3 samples)", minval = 0.0, maxval = 0.9, step = 0.05, group = GRP_FLT)
 
@@ -153,12 +158,12 @@ stochSmoothInput  = input.int(3, "Stochastic Smooth", minval = 1, maxval = 10, g
 vbbLenInput       = input.int(20, "BB Width Length", minval = 10, maxval = 50, group = GRP_IQ)
 vbbMultInput      = input.float(2.0, "BB Width Multiplier", minval = 1.0, maxval = 3.0, step = 0.1, group = GRP_IQ)
 
-usePvteInput      = input.bool(true, "PVTE Regime Filter", group = GRP_PVT, tooltip = "3-state regime engine from the Pivot VWAP Trend Engine: longs only in BULL regime, shorts only in BEAR. Regime is entered on an outer-band close cross and exits to NEUTRAL on a close cross of the OPPOSITE inner band (hysteresis). Applies to trap and trigger entries; a filtered trigger still sends its plain alert.")
+usePvteInput      = input.bool(false, "PVTE Regime Filter", group = GRP_PVT, tooltip = "OFF by default so NEUTRAL markets still print arrows. Bands still draw. Precision / Custom can turn it on: longs only in BULL, shorts only in BEAR.")
 pvteKernelInput   = input.string("EMA", "Basis Kernel", options = ["EMA", "DEMA", "HMA", "KAMA"], group = GRP_PVT, tooltip = "Moving-average kernel for the regime baseline. EMA — classic; DEMA — reduced lag; HMA — fast & smooth; KAMA — adapts to efficiency ratio (slows in chop). All kernels are computed every bar; the switch only selects.")
 pvteBasisLenInput = input.int(21, "Basis Length", minval = 2, maxval = 500, group = GRP_PVT, tooltip = "Lookback period of the regime baseline kernel.")
 pvteAtrLenInput   = input.int(100, "ATR Length", minval = 1, maxval = 500, group = GRP_PVT, tooltip = "Volatility lookback used for band spacing.")
 pvteAtrMultInput  = input.float(3.0, "ATR Multiplier (Outer Band)", minval = 0.5, step = 0.1, group = GRP_PVT, tooltip = "Outer band = Basis ± ATR × Mult. Inner band = Basis ± ATR × (Mult − 1). With Mult ≤ 1 the inner band collapses onto the basis.")
-pvteNeutralInput  = input.string("Block", "In NEUTRAL Regime", options = ["Block", "Allow"], group = GRP_PVT, tooltip = "Block (default): no entries while the regime is NEUTRAL — the filter's whole point.\nAllow: NEUTRAL passes both directions; only an OPPOSITE regime blocks.")
+pvteNeutralInput  = input.string("Allow", "In NEUTRAL Regime", options = ["Block", "Allow"], group = GRP_PVT, tooltip = "Allow (default): NEUTRAL passes both directions; only an OPPOSITE regime blocks.\nBlock: no entries while the regime is NEUTRAL.")
 showPvteBandsInput = input.bool(true, "Show Regime Bands", group = GRP_PVT, tooltip = "Outer bands solid, inner bands faded, regime-colored.")
 showAvwapInput     = input.bool(true, "Show Anchored VWAP", group = GRP_PVT, tooltip = "PVTE anchored-VWAP trail (visual layer only — does NOT influence entries or filters). Anchored at the last confirmed structural pivot in the regime direction, backfilled on confirmation, re-anchored on every new in-regime pivot, reset on regime change. Honest lag: a pivot is only KNOWN Pivot Length bars after it forms — no repaint.")
 avwapPivotLenInput = input.int(13, "VWAP Pivot Length", minval = 1, maxval = 250, group = GRP_PVT, tooltip = "Bars required on each side to confirm the anchor pivot.")
@@ -248,8 +253,8 @@ bool isMore   = signalProfileInput == "More Signals"
 bool isPrec   = signalProfileInput == "Precision"
 bool isCustom = signalProfileInput == "Custom"
 
-float effMinConf  = isMore ? 40.0 : isPrec ? 68.0 : isCustom ? float(minConfInput) : 52.0
-int   effMinConfl = isMore ? 1 : isPrec ? 4 : isCustom ? minConflInput : 2
+float effMinConf  = isMore ? 24.0 : isPrec ? 55.0 : isCustom ? float(minConfInput) : 36.0
+int   effMinConfl = isMore ? 0 : isPrec ? 3 : isCustom ? minConflInput : 1
 bool  effNeedLoc  = isPrec or (isCustom and requireLocationInput)
 bool  effNeedAdx  = isPrec or (isCustom and useAdxFilterInput)
 bool  effNeedVol  = isPrec or (isCustom and useVolFilterInput)
@@ -1286,8 +1291,10 @@ bool openedByPull  = false
 string entryPat    = ""
 float  entryConf   = 0.0
 int    entryConfl  = 0
+bool sigLong  = false
+bool sigShort = false
 
-if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
+if barstate.isconfirmed
     int   tDir       = 0
     float slAnchorPx = na
     bool  viaTrap    = false
@@ -1300,17 +1307,17 @@ if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
     int    candConfl = 0
 
     if not useIntelInput
-        if allowTrap and (trapLongBar or trapShortBar)
-            tDir       := trapLongBar ? 1 : -1
-            entryPat   := trapLongBar ? "Trap 2D" : "Trap 2U"
-            slAnchorPx := trapLongBar ? low : high
-            viaTrap    := true
-        else if allowTrig and (trigBullSig or trigBearSig)
+        if allowTrig and (trigBullSig or trigBearSig)
             tDir         := trigBullSig ? 1 : -1
             entryPat     := trigPat
             slAnchorPx   := slAnchorInput == "Setup Bar" ? trigStp : slAnchorInput == "Wick-Anchored" ? (trigBullSig ? low : high) : trigLvl
             viaTrig      := true
             openedByTrig := true
+        if tDir == 0 and allowTrap and (trapLongBar or trapShortBar)
+            tDir       := trapLongBar ? 1 : -1
+            entryPat   := trapLongBar ? "Trap 2D" : "Trap 2U"
+            slAnchorPx := trapLongBar ? low : high
+            viaTrap    := true
         if tDir != 0
             bool volOk = not useVolFilterInput or not hasVolume or (volSma > 0 and volume > volSma * volFiltMultInput)
             int ftcAligned = tDir == 1 ? ftcAlignedBull : ftcAlignedBear
@@ -1327,7 +1334,7 @@ if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
             int d = trapLongBar ? 1 : -1
             string p = trapLongBar ? "Trap 2D" : "Trap 2U"
             [passT, reasonT, confT, conflT] = evalGates(d, p, true, false, false)
-            if passT and confT >= bestScore
+            if passT and confT > bestScore
                 bestScore := confT
                 tDir := d
                 entryPat := p
@@ -1347,9 +1354,7 @@ if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
             int d2 = trigBullSig ? 1 : -1
             string p2 = trigPat
             [passG, reasonG, confG, conflG] = evalGates(d2, p2, false, false, false)
-            bool beat = passG and confG > bestScore
-            bool tieTrap = passG and confG == bestScore and not viaTrap
-            if beat or tieTrap
+            if passG and confG >= bestScore
                 bestScore := confG
                 tDir := d2
                 entryPat := p2
@@ -1403,52 +1408,55 @@ if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
                 bestReason := reasonP
 
     if tDir != 0
-        float usedSlMult = useIntelInput ? adaptSl : effSlMult
-        float usedT1 = useIntelInput ? adaptT1 : effTp1m
-        float usedT2 = useIntelInput ? adaptT2 : effTp2m
-        float usedT3 = useIntelInput ? adaptT3 : effTp3m
-        float slPx = na
-        bool structStop = viaTrap or viaSweep or viaPull
-        if not structStop and slAnchorInput == "ATR"
-            slPx := tDir == 1 ? close - riskAtr * usedSlMult : close + riskAtr * usedSlMult
-        else
-            slPx := tDir == 1 ? math.min(slAnchorPx - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(slAnchorPx + riskAtr * slBufferInput, close + riskAtr * 0.5)
-        float riskPx = tDir == 1 ? close - slPx : slPx - close
-        bool riskOk = riskPx > 0 and (maxRiskAtrInput == 0.0 or riskPx <= riskAtr * maxRiskAtrInput)
-        if riskOk
-            activeEntry := close
-            activeSL    := slPx
-            activeTP1   := tDir == 1 ? close + riskPx * usedT1 : close - riskPx * usedT1
-            activeTP2   := tDir == 1 ? close + riskPx * usedT2 : close - riskPx * usedT2
-            activeTP3   := tDir == 1 ? close + riskPx * usedT3 : close - riskPx * usedT3
-            activeDir   := tDir
-            entryBarIdx := bar_index
-            tp1Reached  := false
-            tp2Reached  := false
-            tp3Reached  := false
-            beActive    := false
-            activePatName := entryPat
-            activeConf  := useIntelInput ? candConf : getConfidence(tDir, entryPat, viaTrap, viaSweep, viaPull)
-            activeConfl := useIntelInput ? candConfl : confluenceCount(tDir, viaTrap, viaSweep, viaPull)
-            entryConf   := activeConf
-            entryConfl  := activeConfl
-            evLongEntry  := tDir == 1
-            evShortEntry := tDir == -1
-            openedByTrig  := viaTrig
-            openedByTrap  := viaTrap
-            openedBySweep := viaSweep
-            openedByPull  := viaPull
-            lastSignalBar := bar_index
-            lastRejectReason := "OK"
-            lastScoreShown := activeConf
-            lastConflShown := activeConfl
-            trailHighest := na
-            trailLowest := na
-            trailStopPx := na
-        else
-            openedByTrig := false
-            lastRejectReason := "Max risk"
-            tDir := 0
+        sigLong  := tDir == 1
+        sigShort := tDir == -1
+        openedByTrig  := viaTrig
+        openedByTrap  := viaTrap
+        openedBySweep := viaSweep
+        openedByPull  := viaPull
+        lastSignalBar := bar_index
+        lastRejectReason := "OK"
+        candConf := useIntelInput ? candConf : getConfidence(tDir, entryPat, viaTrap, viaSweep, viaPull)
+        candConfl := useIntelInput ? candConfl : confluenceCount(tDir, viaTrap, viaSweep, viaPull)
+        entryConf  := candConf
+        entryConfl := candConfl
+        lastScoreShown := candConf
+        lastConflShown := candConfl
+        if enableTradesInput and activeDir == 0 and riskAtr > 0
+            float usedSlMult = useIntelInput ? adaptSl : effSlMult
+            float usedT1 = useIntelInput ? adaptT1 : effTp1m
+            float usedT2 = useIntelInput ? adaptT2 : effTp2m
+            float usedT3 = useIntelInput ? adaptT3 : effTp3m
+            float slPx = na
+            bool structStop = viaTrap or viaSweep or viaPull
+            if not structStop and slAnchorInput == "ATR"
+                slPx := tDir == 1 ? close - riskAtr * usedSlMult : close + riskAtr * usedSlMult
+            else
+                slPx := tDir == 1 ? math.min(slAnchorPx - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(slAnchorPx + riskAtr * slBufferInput, close + riskAtr * 0.5)
+            float riskPx = tDir == 1 ? close - slPx : slPx - close
+            bool riskOk = riskPx > 0 and (maxRiskAtrInput == 0.0 or riskPx <= riskAtr * maxRiskAtrInput)
+            if riskOk
+                activeEntry := close
+                activeSL    := slPx
+                activeTP1   := tDir == 1 ? close + riskPx * usedT1 : close - riskPx * usedT1
+                activeTP2   := tDir == 1 ? close + riskPx * usedT2 : close - riskPx * usedT2
+                activeTP3   := tDir == 1 ? close + riskPx * usedT3 : close - riskPx * usedT3
+                activeDir   := tDir
+                entryBarIdx := bar_index
+                tp1Reached  := false
+                tp2Reached  := false
+                tp3Reached  := false
+                beActive    := false
+                activePatName := entryPat
+                activeConf  := candConf
+                activeConfl := candConfl
+                evLongEntry  := tDir == 1
+                evShortEntry := tDir == -1
+                trailHighest := na
+                trailLowest := na
+                trailStopPx := na
+            else
+                lastRejectReason := "Max risk"
     else
         openedByTrig := false
         if bestReason != "—"
@@ -1500,22 +1508,24 @@ levelLine(prevMonthInput and chartSec <= timeframe.in_seconds("M"), pmL, mStart,
 // ══════════════════════════════════════════════════════════
 plotshape(showCandleInput and hammerNow and barstate.isconfirmed,  "Hammer",  shape.triangleup,   location.belowbar, BULL, size = size.tiny)
 plotshape(showCandleInput and shooterNow and barstate.isconfirmed, "Shooter", shape.triangledown, location.abovebar, BEAR, size = size.tiny)
+plotshape(showBuySellInput and sigLong,  "BUY",  shape.labelup,   location.belowbar, BULL, size = size.small, text = "BUY",  textcolor = color.white)
+plotshape(showBuySellInput and sigShort, "SELL", shape.labeldown, location.abovebar, BEAR, size = size.small, text = "SELL", textcolor = color.white)
 
-if (evLongEntry or evShortEntry) and showEntryLblInput
+if (sigLong or sigShort) and showEntryLblInput
     string gradeTxt = showConfInput ? " · " + str.tostring(entryConf, "#.") + "% " + gradeFromConf(entryConf) : ""
-    string eTip = "Entry: " + fmtPrice(activeEntry) +
+    string eTip = (evLongEntry or evShortEntry ? "Entry: " + fmtPrice(activeEntry) +
          "\nSL: "  + fmtPrice(activeSL) +
          "\nTP1: " + fmtPrice(activeTP1) +
          "\nTP2: " + fmtPrice(activeTP2) +
          "\nTP3: " + fmtPrice(activeTP3) +
-         "\nRisk: " + fmtPrice(math.abs(activeEntry - activeSL)) +
+         "\nRisk: " + fmtPrice(math.abs(activeEntry - activeSL)) : "arrow only — trade not opened") +
          "\nScore: " + str.tostring(entryConf, "#.#") + "  " + gradeFromConf(entryConf) +
          "\nConfluence: " + str.tostring(entryConfl) + "/10" +
          "\nProfile: " + signalProfileInput
-    label el = label.new(bar_index, evLongEntry ? low : high,
-         sigWord(evLongEntry ? 1 : -1) + " · " + entryPat + gradeTxt,
-         style = evLongEntry ? label.style_label_up : label.style_label_down,
-         color = entryConf >= 80 ? VIP_COL : evLongEntry ? BULL : BEAR, textcolor = isDark ? #0B0E11 : #FFFFFF,
+    label el = label.new(bar_index, sigLong ? low : high,
+         sigWord(sigLong ? 1 : -1) + " · " + entryPat + gradeTxt,
+         style = sigLong ? label.style_label_up : label.style_label_down,
+         color = entryConf >= 80 ? VIP_COL : sigLong ? BULL : BEAR, textcolor = isDark ? #0B0E11 : #FFFFFF,
          size = signalSize, tooltip = eTip)
     lblFifo.push(el)
 if (trigBullSig or trigBearSig) and showTrigLblInput and not openedByTrig
@@ -1882,9 +1892,15 @@ if evSlHit and slAlertInput
          ',"result":"' + (tradeWin ? "win" : "loss") + '"',
          " | " + (exitBeActive ? "BE stop-out" : "SL hit") + " @ " + str.tostring(nz(hitSL), format.mintick), buildFtc(fV, fG, FTC_LBL))
 
+if sigLong or sigShort
+    fireTradeAlert(sigLong ? "buy" : "sell", ',"pattern":"' + entryPat +
+         '","price":' + str.tostring(close) + iqJson,
+         " | " + entryPat + " @ " + str.tostring(close, format.mintick) +
+         " | " + str.tostring(entryConf, "#.") + "% " + gradeFromConf(entryConf), buildFtc(fV, fG, FTC_LBL))
+
 if trigBullSig or trigBearSig
     string trigAction = trigBullSig ? "trigger_bull" : "trigger_bear"
-    if openedByTrig
+    if openedByTrig and (evLongEntry or evShortEntry)
         if entryAlertInput
             fireTradeAlert(trigAction, ',"pattern":"' + trigPat + '","price":' + str.tostring(close) +
                  ',"entry":' + str.tostring(activeEntry) + ',"sl":' + str.tostring(activeSL) +
@@ -1894,7 +1910,7 @@ if trigBullSig or trigBearSig
                  " | SL " + fmtPrice(activeSL) + " TP1 " + fmtPrice(activeTP1) +
                  " TP2 " + fmtPrice(activeTP2) + " TP3 " + fmtPrice(activeTP3) +
                  " | " + str.tostring(entryConf, "#.") + "% " + gradeFromConf(entryConf), buildFtc(fV, fG, FTC_LBL))
-    else if trigAlertInput
+    else if trigAlertInput and not (sigLong or sigShort)
         fireAlert(trigAction, trigPat, trigLvl, trigStp, buildFtc(fV, fG, FTC_LBL))
 
 if (evLongEntry or evShortEntry) and not openedByTrig and entryAlertInput
@@ -1919,8 +1935,11 @@ alertcondition(setupBullSig or setupBearSig, "STRAT: Setup Any",     "STRAT setu
 alertcondition(trigBullSig,                 "STRAT: Triggered Bull", "STRAT bullish setup triggered (details in dynamic alert)")
 alertcondition(trigBearSig,                 "STRAT: Triggered Bear", "STRAT bearish setup triggered (details in dynamic alert)")
 alertcondition(trigBullSig or trigBearSig,  "STRAT: Triggered Any",  "STRAT setup triggered (details in dynamic alert)")
-alertcondition(evLongEntry,                 "STRAT: LONG",           "STRAT IQ long trade opened")
-alertcondition(evShortEntry,                "STRAT: SHORT",          "STRAT IQ short trade opened")
+alertcondition(sigLong,                     "STRAT: BUY",            "STRAT IQ BUY signal")
+alertcondition(sigShort,                    "STRAT: SELL",           "STRAT IQ SELL signal")
+alertcondition(sigLong or sigShort,         "STRAT: BUY or SELL",    "STRAT IQ BUY or SELL signal")
+alertcondition(evLongEntry,                 "STRAT: LONG Trade",     "STRAT IQ long trade opened")
+alertcondition(evShortEntry,                "STRAT: SHORT Trade",    "STRAT IQ short trade opened")
 alertcondition(evLongEntry or evShortEntry, "STRAT: Trade Opened",   "STRAT trade opened (details in dynamic alert)")
 alertcondition(tp1FirstTouch or tp2FirstTouch or tp3FirstTouch, "STRAT: TP Hit", "STRAT take-profit touched (details in dynamic alert)")
 alertcondition(evTp3Close or evSlHit,       "STRAT: Trade Closed",   "STRAT trade closed — TP3 / SL / BE stop-out (details in dynamic alert)")
