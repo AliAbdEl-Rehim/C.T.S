@@ -1,4 +1,31 @@
-# STRAT Trap & VWAP Engine IQ v2.0
+# STRAT indicators (Pine v6)
+
+TradingView overlays. Copy a `.pine` file into TradingView → Pine Editor → Add to chart.
+
+| File | Version | Use when |
+|---|---|---|
+| **`STRAT_PRO.pine`** | 3.0.1 | Latest: SMC (BOS/CHoCH/FVG/OB), RSI divergence, regime, killzones, confidence score. **Compile-clean** |
+| `STRAT_Trap_VWAP_Engine.pine` | 2.0.0 IQ | Score-first confluence + Smart Mix engines on the v1.9 core |
+| `statistical_model.pine` | snippet | Historical pattern-matching section only (not a full indicator) |
+
+## STRAT PRO v3.0.1 — what was broken and fixed
+
+The v3.0.0 paste did not compile (~30 Pine errors). v3.0.1 keeps the same engines and fixes:
+
+1. Removed invalid `max_bars_back_bars` argument on `indicator()`
+2. Declared missing inputs: `beInput`, SL/TP line styles, label sizes, `showSlTpInput`, `showEntryLblInput`, `%` on labels
+3. Moved `levelLine()` **above** its 6 call sites (Pine has no forward references)
+4. `plot()` / `bgcolor()` only at global scope (session high/low were inside `if`)
+5. Unconditional `ta.*` calls (`ta.rsi`, `ta.macd`, `ta.dmi`, `ta.bb`)
+6. Unpack `ta.bb()` as `[middle, upper, lower]` — tuples cannot be indexed with `[0]`
+7. Replaced `ta.max` / `ta.min` / `ta.sum` / 4-arg `ta.adx` with `ta.highest`, `ta.lowest`, `math.sum`, `ta.dmi`
+8. Guarded `for i = 0 to size-1` so empty FVG/OB arrays do not loop `0 to -1`
+9. Killzones now read the session string inputs (London/NY/Asia) instead of ignored hardcoded hours
+10. BOS/CHoCH can start from a flat market (first break is CHoCH); RSI divergence uses the **prior** swing; trailing stop persists into `activeSL`
+
+Copy `STRAT_PRO.pine` → Pine Editor → Save. If the chart is quiet, lower **Minimum Confidence Score** from 60 toward 45, or turn off **Require Structure Alignment**.
+
+## STRAT Trap IQ v2.0
 
 TradingView **Pine Script v6** overlay. Copy `STRAT_Trap_VWAP_Engine.pine` into TradingView → Pine Editor → Add to chart.
 
