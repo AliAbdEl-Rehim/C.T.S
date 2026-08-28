@@ -248,7 +248,7 @@ bool isMore   = signalProfileInput == "More Signals"
 bool isPrec   = signalProfileInput == "Precision"
 bool isCustom = signalProfileInput == "Custom"
 
-float effMinConf  = isMore ? 40.0 : isPrec ? 68.0 : isCustom ? minConfInput : 52.0
+float effMinConf  = isMore ? 40.0 : isPrec ? 68.0 : isCustom ? float(minConfInput) : 52.0
 int   effMinConfl = isMore ? 1 : isPrec ? 4 : isCustom ? minConflInput : 2
 bool  effNeedLoc  = isPrec or (isCustom and requireLocationInput)
 bool  effNeedAdx  = isPrec or (isCustom and useAdxFilterInput)
@@ -1068,7 +1068,7 @@ confluenceCount(int dir, bool viaTrap, bool viaSweep, bool viaPull) =>
         n += 1
     if viaPull
         n += 1
-    math.min(n, 10)
+    n > 10 ? 10 : n
 
 evalGates(int dir, string pat, bool viaTrap, bool viaSweep, bool viaPull) =>
     float conf  = getConfidence(dir, pat, viaTrap, viaSweep, viaPull)
