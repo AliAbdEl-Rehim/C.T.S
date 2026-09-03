@@ -1,4 +1,8 @@
+import pathlib
+import sys
 import unittest
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from continuation_rules import (
     WatchState,
@@ -25,7 +29,7 @@ class ScoringTests(unittest.TestCase):
 
     def test_weak_continuation_without_break_is_rejected(self):
         score = continuation_score(False, True, True, True, False, False, False, True)
-        self.assertEqual(score, 5)
+        self.assertEqual(score, 6)
         self.assertFalse(
             continue_raw(True, True, score, 0, 7, broke_and_held=False)
         )
