@@ -5,7 +5,6 @@ indicator(
      "Global Cash Market Open Close Handoff Sequence",
      shorttitle = "MktHandoff",
      overlay = true,
-     scale = scale.none,
      max_lines_count = 500,
      max_labels_count = 400,
      behind_chart = false)
@@ -18,10 +17,12 @@ indicator(
 // events are merged, and each timestamp can be classified by how the tracked
 // active-market set changes across it.
 //
-// An optional continuation engine then watches the first bars after a real
-// active-set change. It classifies a prior cash-session rise as either a
-// confirmed continuation or a confirmed failure. Confirmation means a closed
-// bar plus several independent filters, not a guaranteed outcome.
+// An optional continuation engine watches the first bars after a real
+// active-set change and also after an EMA pullback in an existing rise.
+// It classifies that rise as continuation or failure. Confirmation means a
+// closed bar plus confluence filters, not a guaranteed outcome. The default
+// profile is meant to print visible marks; tighten the signal group if the
+// chart becomes too busy.
 //
 // This script does not draw session backgrounds, price ranges, or volume
 // studies, and it does not make performance claims. Default schedules are
@@ -472,97 +473,116 @@ bool newYorkSegmentTwoEnabled = input.bool(false, "Use second segment", group = 
 string newYorkSegmentTwo = input.session("0000-0000", "Second segment", group = GROUP_NY, display = display.none, active = newYorkEnabled and newYorkSegmentTwoEnabled)
 color newYorkColor = input.color(color.rgb(255, 59, 92), "Color", group = GROUP_NY, display = display.none, active = newYorkEnabled)
 
-// Rise continuation / failure. Defaults stay selective so only closed-bar
-// confluence prints. These are research classifications, not sure trades.
+// Rise continuation / failure. The Visible default is chosen so marks can
+// actually appear on a normal intraday chart. Tighten these only after the
+// shapes are printing. These remain research classifications, not sure trades.
 bool enableContinuationSignals = input.bool(
      true,
      "Enable rise continuation signals",
-     tooltip = "Watches the bars after a real cash-market handoff. A prior rise can resolve as continuation or failure. Signals print only on confirmed bars.",
+     tooltip = "Prints continuation or failure after a cash-market handoff or an EMA pullback in an existing rise. Signals print on confirmed bars.",
      group = GROUP_SIGNALS,
      display = display.none)
+
+bool enableStructureSetups = input.bool(
+     true,
+     "Also signal EMA pullback continuations",
+     tooltip = "If the market is already rising and price pulls back into EMA21 then holds, start a watch even when no session handoff occurred. This is what makes marks visible between session events.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
 
 int impulseLookbackBars = input.int(
      8,
      "Impulse lookback (bars)",
      minval = 3,
      maxval = 30,
-     tooltip = "The rise must already exist before the handoff. Measured from the prior bar back through this window.",
+     tooltip = "The rise is measured from the prior bar back through this window.",
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
 
 float impulseAtrMult = input.float(
-     0.80,
-     "Minimum pre-handoff rise (ATR)",
-     minval = 0.30,
+     0.35,
+     "Minimum pre-setup rise (ATR)",
+     minval = 0.15,
      maxval = 3.00,
-     step = 0.10,
+     step = 0.05,
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
 
 int confirmWindowBars = input.int(
-     8,
+     16,
      "Confirmation window (bars)",
      minval = 3,
-     maxval = 20,
-     tooltip = "How many bars after the handoff the engine may confirm continuation or failure. No late weak signal is forced when the window expires.",
+     maxval = 40,
+     tooltip = "How many bars the engine may take to confirm continuation or failure. If the window ends without a new high, a failure mark is printed.",
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
 
 bool twoBarConfirmation = input.bool(
-     true,
+     false,
      "Require two-bar confirmation",
-     tooltip = "The trigger bar must be followed by a second closed bar that keeps the same verdict. This is the default for a stricter readout.",
+     tooltip = "Off by default so a valid closed trigger bar can print. Turn on after you are seeing marks and want fewer wicks.",
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
 
 bool requireTrendStack = input.bool(
-     true,
+     false,
      "Require EMA 9>21>50 stack",
+     tooltip = "Off by default. When off, a close above EMA21 is enough trend context.",
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
 
 bool requireVolumeConfirmation = input.bool(
-     true,
+     false,
      "Require volume above average",
+     tooltip = "Keep off on forex and CFD symbols where volume is missing or unreliable. Missing volume never blocks a signal.",
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
 
 bool requireMacdConfirmation = input.bool(
-     true,
+     false,
      "Require MACD histogram agreement",
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
 
 bool requireLiquidityForContinue = input.bool(
-     true,
+     false,
      "Continuation only when liquidity arrives",
-     tooltip = "Continuation needs ACTIVATION, OVERLAP BUILD, or HANDOFF. Failure may still print when liquidity leaves.",
+     tooltip = "When on, continuation needs ACTIVATION, OVERLAP BUILD, HANDOFF, or a structure pullback. Failure may still print when liquidity leaves.",
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
 
 int minContinueScore = input.int(
-     7,
+     4,
      "Minimum continuation score",
-     minval = 4,
+     minval = 3,
      maxval = 12,
-     tooltip = "Higher values print fewer continuation marks. Score is confluence, not a win-rate.",
+     tooltip = "Lower values print more continuation marks. Score is confluence, not a win-rate.",
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
 
 int minFailScore = input.int(
-     6,
+     3,
      "Minimum failure score",
-     minval = 4,
+     minval = 3,
      maxval = 12,
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool showWatchMarkers = input.bool(
+     true,
+     "Show watch markers at setup",
+     tooltip = "Yellow circles mark the bar where the engine starts watching a rise. Use this to confirm the script is armed even before CONT/FAIL.",
      group = GROUP_SIGNALS,
      display = display.none,
      active = enableContinuationSignals)
@@ -1011,6 +1031,19 @@ f_failureScore(
 f_signalConfidence(int score) =>
     math.min(50.0 + float(score) * 5.0, 95.0)
 
+f_volumeSupportive(float volumeValue, float volumeAverageValue, bool requireVolume) =>
+    bool volumeMissing = na(volumeValue) or na(volumeAverageValue) or volumeAverageValue <= 0
+    (not requireVolume) or volumeMissing or volumeValue > volumeAverageValue
+
+f_boundaryDuringBar(array<Market> markets, int barOpenTime, int barCloseTime) =>
+    int probeBefore = barOpenTime - 1
+    int probeAfter = barCloseTime > barOpenTime ? barCloseTime - 1 : barOpenTime
+    [beforeCount, beforeCodes] = f_activeState(markets, probeBefore)
+    [afterCount, afterCodes] = f_activeState(markets, probeAfter)
+    string role = f_transitionRole(beforeCount, beforeCodes, afterCount, afterCodes)
+    bool changed = beforeCount != afterCount or beforeCodes != afterCodes
+    [changed, role, beforeCodes, afterCodes]
+
 // =============================================================================
 // PERSISTENT STATE
 // =============================================================================
@@ -1069,6 +1102,7 @@ var string lastSignalKind = "NONE"
 var string lastSignalText = "None"
 var float lastSignalConfidence = 0.0
 var string lastSetupText = "No setup"
+var int lastSetupBarIndex = na
 
 var table boundaryStrip = table.new(
      f_tablePosition(boundaryStripPosition),
@@ -1445,9 +1479,9 @@ if rebuildRequired
 
 // =============================================================================
 // RISE CONTINUATION ENGINE
-// Watches the first confirmed bars after a real active-market set change.
-// A signal prints only when confluence on a closed bar beats the opposite
-// score. Two-bar confirmation is the default so one wick cannot decide.
+// Watches confirmed bars after a real active-market set change during the
+// current candle, or after an EMA21 pullback in an existing rise. A forming
+// candle cannot increment counters or print a mark that later disappears.
 // =============================================================================
 float atrValue = ta.atr(14)
 float emaFast = ta.ema(close, 9)
@@ -1460,36 +1494,38 @@ float priorSwingLow = ta.lowest(low, impulseLookbackBars)
 
 bool continueSignal = false
 bool failSignal = false
+bool watchMarker = false
 float barSignalConfidence = 0.0
 int barContinueScore = 0
 int barFailScore = 0
 
-// State mutations run only on confirmed bars so a forming candle cannot
-// increment the watch counters or print a signal that later disappears.
-if enableContinuationSignals and timeframe.isintraday and array.size(markets) > 0 and barstate.isconfirmed
-    [beforeCount, beforeCodes] = f_activeState(markets, time - 1)
-    [afterCount, afterCodes] = f_activeState(markets, time)
-    string barRole = f_transitionRole(beforeCount, beforeCodes, afterCount, afterCodes)
-    bool boundaryBar = beforeCount != afterCount or beforeCodes != afterCodes
+if enableContinuationSignals and array.size(markets) > 0 and barstate.isconfirmed
+    [boundaryBar, barRole, beforeCodes, afterCodes] = f_boundaryDuringBar(markets, time, time_close)
 
     bool priorTrendUp = (not requireTrendStack or (emaFast[1] > emaMid[1] and emaMid[1] > emaSlow[1])) and close[1] > emaMid[1]
-    bool priorImpulseUp = not na(atrValue[1]) and not na(priorSwingLow[1]) and (close[1] - priorSwingLow[1]) >= impulseAtrMult * atrValue[1] and close[1] > close[impulseLookbackBars]
-    bool setupReady = boundaryBar and priorTrendUp and priorImpulseUp and barRole != "INTERNAL BOUNDARY"
+    bool priorImpulseUp = not na(atrValue[1]) and not na(priorSwingLow[1]) and (close[1] - priorSwingLow[1]) >= impulseAtrMult * atrValue[1]
+    bool pulledIntoMid = low <= emaMid and close >= emaMid
+    bool cooldownOk = na(lastSetupBarIndex) or (bar_index - lastSetupBarIndex) >= math.max(3, int(confirmWindowBars / 2))
+    bool boundarySetup = boundaryBar and priorTrendUp and priorImpulseUp and barRole != "INTERNAL BOUNDARY"
+    bool structureSetup = enableStructureSetups and not boundaryBar and not watchingRise and cooldownOk and priorTrendUp and priorImpulseUp and pulledIntoMid
+    bool setupReady = boundarySetup or structureSetup
 
     if setupReady
         watchingRise := true
         watchAge := 0
-        watchHigh := math.max(high, high[1])
+        watchHigh := high
         watchLow := math.min(low, priorSwingLow[1])
         watchRsi := rsiValue[1]
         watchHist := macdHist[1]
-        watchRole := barRole
-        watchCodes := beforeCodes + " -> " + afterCodes
+        watchRole := boundarySetup ? barRole : "STRUCTURE PULLBACK"
+        watchCodes := boundarySetup ? beforeCodes + " -> " + afterCodes : "EMA21 hold"
         sawBreakHigh := false
         pendingContinue := false
         pendingFail := false
         pendingAge := 0
-        lastSetupText := barRole + " · " + watchCodes
+        lastSetupText := watchRole + " · " + watchCodes
+        lastSetupBarIndex := bar_index
+        watchMarker := true
 
     if watchingRise
         watchAge += 1
@@ -1498,19 +1534,19 @@ if enableContinuationSignals and timeframe.isintraday and array.size(markets) > 
 
         bool inConfirmWindow = watchAge >= 1 and watchAge <= confirmWindowBars
         bool brokeAndHeld = close > watchHigh
-        bool qualityBull = close > open and f_candleBodyRatio() >= 0.45
+        bool qualityBull = close > open and f_candleBodyRatio() >= 0.40
         bool trendHold = close > emaMid
         bool fastHold = close > emaFast
-        bool rsiSupportive = rsiValue > watchRsi and rsiValue >= 48.0 and rsiValue <= 72.0
-        bool macdSupportive = (not requireMacdConfirmation) or (macdHist > watchHist and macdHist > macdHist[1] and macdLine > macdSignal)
-        bool volumeSupportive = (not requireVolumeConfirmation) or volume > volumeAverage
-        bool liquidityArrives = f_liquidityArrives(watchRole)
+        bool rsiSupportive = rsiValue >= 45.0 and rsiValue <= 75.0
+        bool macdSupportive = (not requireMacdConfirmation) or (macdHist > macdHist[1] and macdLine > macdSignal)
+        bool volumeSupportive = f_volumeSupportive(volume, volumeAverage, requireVolumeConfirmation)
+        bool liquidityArrives = f_liquidityArrives(watchRole) or watchRole == "STRUCTURE PULLBACK"
         bool failedBreakout = sawBreakHigh and close < watchHigh
         bool lostMidTrend = close < emaMid
         bool lostWatchLow = close < watchLow
-        bool rejectWick = close < open and f_upperWickRatio() >= 1.40
+        bool rejectWick = close < open and f_upperWickRatio() >= 1.20
         bool bearishCandle = close < open
-        bool macdFading = (not requireMacdConfirmation) or (macdHist < watchHist and macdHist < macdHist[1] and macdLine < macdSignal)
+        bool macdFading = (not requireMacdConfirmation) or (macdHist < macdHist[1] and macdLine < macdSignal)
         bool liquidityLeaves = f_liquidityLeaves(watchRole)
 
         barContinueScore := f_continuationScore(brokeAndHeld, qualityBull, trendHold, fastHold, rsiSupportive, macdSupportive, volumeSupportive, liquidityArrives)
@@ -1562,6 +1598,13 @@ if enableContinuationSignals and timeframe.isintraday and array.size(markets) > 
             lastSignalText := continueSignal ? (useArabicSignalText ? "استكمال الصعود" : "Rise continuation") : (useArabicSignalText ? "فشل الصعود" : "Rise failure")
             lastSignalConfidence := barSignalConfidence
         else if watchAge > confirmWindowBars and not pendingContinue and not pendingFail
+            if not sawBreakHigh
+                failSignal := true
+                barFailScore := math.max(barFailScore, minFailScore)
+                barSignalConfidence := 60.0
+                lastSignalKind := "FAIL"
+                lastSignalText := useArabicSignalText ? "فشل الصعود" : "Rise failure"
+                lastSignalConfidence := barSignalConfidence
             watchingRise := false
 
 if showSignalLabels and (continueSignal or failSignal)
@@ -1591,23 +1634,34 @@ if showSignalLabels and (continueSignal or failSignal)
     array.push(signalLabels, signalLabel)
 
 plotshape(
+     showWatchMarkers and watchMarker,
+     title = "Rise watch",
+     style = shape.circle,
+     location = location.belowbar,
+     color = color.rgb(250, 204, 21),
+     size = size.tiny,
+     text = "W",
+     force_overlay = true)
+plotshape(
      showSignalShapes and continueSignal,
      title = "Rise continuation",
      style = shape.triangleup,
      location = location.belowbar,
      color = continueSignalColor,
-     size = size.small,
-     text = "CONT")
+     size = size.normal,
+     text = "CONT",
+     force_overlay = true)
 plotshape(
      showSignalShapes and failSignal,
      title = "Rise failure",
      style = shape.triangledown,
      location = location.abovebar,
      color = failSignalColor,
-     size = size.small,
-     text = "FAIL")
+     size = size.normal,
+     text = "FAIL",
+     force_overlay = true)
 plot(
-     continueSignal ? 1 : failSignal ? -1 : watchingRise ? 0.25 : 0,
+     continueSignal ? 1 : failSignal ? -1 : watchMarker ? 0.5 : watchingRise ? 0.25 : 0,
      title = "Continuation state",
      display = display.data_window)
 
@@ -1641,8 +1695,16 @@ if barstate.islast
         if not timeframe.isintraday
             table.cell(boundaryStrip, 0, 1, "!", bgcolor = keyBackground, text_color = color.rgb(253, 224, 71), text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
             table.cell(boundaryStrip, 1, 1, "STATUS", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
-            table.cell(boundaryStrip, 2, 1, "Intraday timeframe required", bgcolor = panelBackground, text_color = color.rgb(253, 224, 71), text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
-            for emptyRow = 2 to 8
+            table.cell(boundaryStrip, 2, 1, "Use an intraday chart for session lines. Rise signals still run.", bgcolor = panelBackground, text_color = color.rgb(253, 224, 71), text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+            string dailySignalText = lastSignalKind == "NONE" ? (watchingRise ? (useArabicSignalText ? "مراقبة الصعود" : "Watching rise") : (useArabicSignalText ? "لا إشارة بعد" : "No signal yet")) : lastSignalText + "  " + str.tostring(lastSignalConfidence, "#") + "%"
+            color dailySignalColor = lastSignalKind == "CONTINUE" ? continueSignalColor : lastSignalKind == "FAIL" ? failSignalColor : watchingRise ? color.rgb(253, 224, 71) : subduedText
+            table.cell(boundaryStrip, 0, 2, "▲", bgcolor = keyBackground, text_color = dailySignalColor, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 2, "SIGNAL", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 2, dailySignalText, bgcolor = panelBackground, text_color = dailySignalColor, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+            table.cell(boundaryStrip, 0, 3, "↳", bgcolor = keyBackground, text_color = subduedText, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 3, "SETUP", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 3, lastSetupText, bgcolor = panelBackground, text_color = subduedText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+            for emptyRow = 4 to 8
                 table.cell(boundaryStrip, 0, emptyRow, "", bgcolor = keyBackground)
                 table.cell(boundaryStrip, 1, emptyRow, "", bgcolor = keyBackground)
                 table.cell(boundaryStrip, 2, emptyRow, "", bgcolor = panelBackground)
