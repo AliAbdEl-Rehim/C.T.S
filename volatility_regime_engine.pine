@@ -1,0 +1,2580 @@
+//@version=6
+indicator("Volatility Regime Engine [TRADION]", shorttitle="VRE [TRADION]", overlay=false, precision=1, max_labels_count=400)
+
+//====================================================================
+// VOLATILITY REGIME ENGINE [TRADION]
+// V3.0 - BULL CONTINUATION FORECAST
+//
+// ✓ Symmetric Bull / Bear scoring
+// ✓ Breakout memory
+// ✓ One-shot ignition
+// ✓ Signal cooldown
+// ✓ Macro continuation lock
+// ✓ Minimum quality for continuation
+// ✓ Context-aware false expansion risk
+// ✓ HTF alignment risk modifier
+// ✓ Dominance risk modifier
+// ✓ Direction / cycle alignment modifier
+// ✓ Quality-aware follow through
+// ✓ Persistent event memory
+// ✓ Bar-close confirmed signals
+// ✓ Live bull continuation probability
+// ✓ Historical continuation hit-rate
+// ✓ Wave-based continuation re-arm
+// ✓ Projected upside target
+//====================================================================
+
+
+//====================================================================
+// 01 - GENERAL
+//====================================================================
+
+groupGeneral = "01 • GENERAL"
+
+showDashboard = input.bool(true, "Show Dashboard", group=groupGeneral)
+showSignals = input.bool(true, "Show Main Signals", group=groupGeneral)
+showInvalidations = input.bool(false, "Show Cycle Invalidations", group=groupGeneral)
+showContinuation = input.bool(true, "Show Continuation Signals", group=groupGeneral)
+showForecast = input.bool(true, "Show Continuation Forecast", group=groupGeneral)
+showBackground = input.bool(true, "Show Background", group=groupGeneral)
+
+confirmedSmoothLen = input.int(5, "Confirmed Score Smoothing", minval=1, maxval=30, group=groupGeneral)
+fastSmoothLen = input.int(3, "Fast Score Smoothing", minval=1, maxval=15, group=groupGeneral)
+
+
+//====================================================================
+// 02 - ATR ENGINE
+//====================================================================
+
+groupATR = "02 • ATR ENGINE"
+
+atrLen = input.int(14, "ATR Length", minval=2, group=groupATR)
+atrBaseLen = input.int(50, "ATR Baseline", minval=10, group=groupATR)
+
+fastAtrLen = input.int(7, "Fast ATR", minval=2, maxval=30, group=groupATR)
+fastAtrBaseLen = input.int(21, "Fast ATR Baseline", minval=5, maxval=100, group=groupATR)
+
+atrNormLen = input.int(100, "ATR Normalization", minval=30, maxval=500, group=groupATR)
+
+
+//====================================================================
+// 03 - COMPRESSION ENGINE
+//====================================================================
+
+groupCompression = "03 • COMPRESSION ENGINE"
+
+bbLen = input.int(20, "Bollinger Length", minval=5, group=groupCompression)
+bbMult = input.float(2.0, "Bollinger Multiplier", minval=0.5, maxval=5.0, step=0.1, group=groupCompression)
+
+kcLen = input.int(20, "Keltner Length", minval=5, group=groupCompression)
+kcMult = input.float(1.5, "Keltner Multiplier", minval=0.5, maxval=5.0, step=0.1, group=groupCompression)
+
+bandNormLen = input.int(100, "Bandwidth Normalization", minval=30, maxval=500, group=groupCompression)
+minCompressionBars = input.int(3, "Minimum Compression Bars", minval=1, maxval=30, group=groupCompression)
+
+
+//====================================================================
+// 04 - HISTORICAL VOLATILITY
+//====================================================================
+
+groupHV = "04 • HISTORICAL VOLATILITY"
+
+hvLen = input.int(20, "HV Length", minval=5, group=groupHV)
+hvNormLen = input.int(100, "HV Normalization", minval=30, maxval=500, group=groupHV)
+
+
+//====================================================================
+// 05 - RELATIVE VOLUME
+//====================================================================
+
+groupVolume = "05 • RELATIVE VOLUME"
+
+volumeLen = input.int(20, "Volume Average", minval=5, group=groupVolume)
+
+fastBreakoutRVOL = input.float(1.15, "Fast Breakout RVOL", minval=0.5, maxval=5.0, step=0.05, group=groupVolume)
+confirmedRVOL = input.float(1.30, "Confirmed RVOL", minval=0.5, maxval=5.0, step=0.05, group=groupVolume)
+
+
+//====================================================================
+// 06 - DIRECTION / PRICE ACTION
+//====================================================================
+
+groupDirection = "06 • DIRECTION / PRICE ACTION"
+
+emaFastLen = input.int(21, "Fast EMA", minval=2, group=groupDirection)
+emaSlowLen = input.int(55, "Slow EMA", minval=5, group=groupDirection)
+
+rocLen = input.int(10, "ROC Length", minval=2, group=groupDirection)
+
+microBreakoutLen = input.int(5, "Micro Breakout Length", minval=2, maxval=30, group=groupDirection)
+breakoutMemoryBars = input.int(6, "Breakout Memory Bars", minval=1, maxval=20, group=groupDirection)
+
+impulseATR = input.float(0.40, "Impulse Body / ATR", minval=0.10, maxval=3.0, step=0.05, group=groupDirection)
+
+
+//====================================================================
+// 07 - REGIME LEVELS
+//====================================================================
+
+groupRegime = "07 • REGIME LEVELS"
+
+compressionLevel = input.float(30.0, "Compression Level", minval=10, maxval=45, step=1, group=groupRegime)
+earlyLevel = input.float(38.0, "Ignition Armed Level", minval=20, maxval=60, step=1, group=groupRegime)
+fastBreakoutLevel = input.float(58.0, "Fast Breakout Level", minval=40, maxval=80, step=1, group=groupRegime)
+expansionLevel = input.float(60.0, "Confirmed Expansion", minval=45, maxval=80, step=1, group=groupRegime)
+extremeLevel = input.float(80.0, "Extreme Expansion", minval=60, maxval=95, step=1, group=groupRegime)
+
+
+//====================================================================
+// 08 - STATE MACHINE
+//====================================================================
+
+groupState = "08 • STATE MACHINE"
+
+normalIgnitionPoints = input.int(5, "Normal Ignition Confirmations", minval=3, maxval=8, group=groupState)
+
+setupDominance = input.float(12.0, "Setup Dominance Required", minval=0, maxval=50, step=1, group=groupState)
+reversalSetupMinimum = input.float(58.0, "Reversal Setup Minimum", minval=30, maxval=90, step=1, group=groupState)
+
+signalCooldownBars = input.int(12, "Same Direction Signal Cooldown", minval=3, maxval=50, group=groupState)
+
+continuationMinBars = input.int(5, "Continuation Minimum Bars", minval=2, maxval=30, group=groupState)
+continuationScoreMin = input.float(55.0, "Continuation Fast Score", minval=30, maxval=90, step=1, group=groupState)
+continuationSetupMin = input.float(58.0, "Continuation Setup Score", minval=30, maxval=90, step=1, group=groupState)
+continuationDominanceMin = input.float(20.0, "Continuation Dominance", minval=5, maxval=60, step=1, group=groupState)
+continuationQualityMin = input.float(50.0, "Continuation Minimum Quality", minval=40, maxval=90, step=5, group=groupState)
+
+resetFastLevel = input.float(32.0, "Reset Fast Score", minval=10, maxval=50, step=1, group=groupState)
+resetConfirmedLevel = input.float(38.0, "Reset Confirmed Score", minval=10, maxval=55, step=1, group=groupState)
+
+resetBarsRequired = input.int(4, "Reset Confirmation Bars", minval=2, maxval=20, group=groupState)
+minimumCycleBars = input.int(5, "Minimum Bars Between Ignitions", minval=1, maxval=50, group=groupState)
+
+
+//====================================================================
+// 09 - HTF
+//====================================================================
+
+groupHTF = "09 • HIGHER TIMEFRAME"
+
+useHTF = input.bool(true, "Use HTF Confirmation", group=groupHTF)
+
+higherTF = input.timeframe("240", "Higher Timeframe", group=groupHTF)
+
+htfExpansionBonus = input.float(10.0, "HTF Expansion Quality Bonus", minval=0, maxval=25, step=1, group=groupHTF)
+htfCompressionPenalty = input.float(5.0, "HTF Compression Quality Penalty", minval=0, maxval=25, step=1, group=groupHTF)
+
+
+//====================================================================
+// 10 - CONTEXT AWARE RISK
+//====================================================================
+
+groupRisk = "10 • CONTEXT-AWARE RISK"
+
+riskHTFExpansionReduction = input.int(2, "HTF Expansion Risk Reduction", minval=0, maxval=5, group=groupRisk)
+riskStrongDominanceReduction = input.int(1, "Strong Dominance Risk Reduction", minval=0, maxval=5, group=groupRisk)
+riskDirectionAlignmentReduction = input.int(1, "Direction Alignment Risk Reduction", minval=0, maxval=5, group=groupRisk)
+riskBreakoutAlignmentReduction = input.int(1, "Recent Breakout Risk Reduction", minval=0, maxval=5, group=groupRisk)
+
+strongDominanceRiskLevel = input.float(30.0, "Strong Dominance Threshold", minval=10, maxval=80, step=5, group=groupRisk)
+
+
+//====================================================================
+// 11 - BULL CONTINUATION FORECAST
+//====================================================================
+
+groupForecast = "11 • BULL CONTINUATION FORECAST"
+
+allowWaveContinuation = input.bool(true, "Allow Wave Continuations", group=groupForecast)
+resetLockOnWave = input.bool(true, "Reset Macro Lock On Pullback", group=groupForecast)
+waveResetGap = input.float(6.0, "Wave Reset Score Gap", minval=2, maxval=20, step=1, group=groupForecast)
+
+forecastStrongLevel = input.float(75.0, "Strong Continue Level", minval=55, maxval=95, step=1, group=groupForecast)
+forecastContinueLevel = input.float(60.0, "Continue Level", minval=40, maxval=85, step=1, group=groupForecast)
+forecastHoldLevel = input.float(45.0, "Hold / Watch Level", minval=25, maxval=70, step=1, group=groupForecast)
+
+forecastLookforward = input.int(10, "Historical Lookforward Bars", minval=4, maxval=40, group=groupForecast)
+forecastMinSamples = input.int(6, "Minimum Historical Samples", minval=2, maxval=40, group=groupForecast)
+forecastSampleCap = input.int(180, "Max Stored Samples", minval=40, maxval=400, group=groupForecast)
+forecastMinATRMove = input.float(0.35, "Continuation ATR Threshold", minval=0.10, maxval=2.0, step=0.05, group=groupForecast)
+forecastStatWeight = input.float(30.0, "Historical Weight %", minval=0, maxval=60, step=5, group=groupForecast)
+
+forecastTargetATR = input.float(1.20, "Projected Target ATR Mult", minval=0.40, maxval=4.0, step=0.10, group=groupForecast)
+showForecastLabel = input.bool(true, "Show Overlay Forecast Label", group=groupForecast)
+
+
+//====================================================================
+// 12 - COLORS
+//====================================================================
+
+bullColor = color.rgb(0, 235, 140)
+bullStrong = color.rgb(0, 255, 80)
+
+bearColor = color.rgb(255, 75, 95)
+bearStrong = color.rgb(255, 35, 55)
+
+compressionColor = color.rgb(175, 80, 255)
+earlyColor = color.rgb(255, 210, 0)
+expansionColor = color.rgb(0, 190, 255)
+extremeColor = color.rgb(255, 150, 0)
+orangeColor = color.rgb(255, 135, 0)
+neutralColor = color.rgb(135, 150, 175)
+forecastColor = color.rgb(0, 220, 255)
+
+panelBG = color.rgb(16, 22, 31)
+panelBG2 = color.rgb(23, 30, 41)
+borderColor = color.rgb(65, 80, 100)
+
+
+//====================================================================
+// 13 - HELPER
+//====================================================================
+
+f_norm(float value, int length) =>
+    float lo = ta.lowest(value, length)
+    float hi = ta.highest(value, length)
+    float rg = hi - lo
+    float result = rg > 0 ? 100.0 * (value - lo) / rg : 50.0
+    math.max(0.0, math.min(100.0, result))
+
+
+type ContSample
+    int barNum
+    float px
+    float fast
+    float setup
+    float dom
+    float qual
+    int htfCode
+    bool resolved
+    bool win
+
+
+//====================================================================
+// 14 - ATR CORE
+//====================================================================
+
+atr = ta.atr(atrLen)
+atrBase = ta.sma(atr, atrBaseLen)
+
+atrRatio = atrBase > 0 ? atr / atrBase : 1.0
+
+atrScore = f_norm(atrRatio, atrNormLen)
+
+fastATR = ta.atr(fastAtrLen)
+fastATRBase = ta.sma(fastATR, fastAtrBaseLen)
+
+fastATRRatio = fastATRBase > 0 ? fastATR / fastATRBase : 1.0
+
+fastATRScore = f_norm(fastATRRatio, fastAtrBaseLen)
+
+
+//====================================================================
+// 15 - ATR ACCELERATION
+//====================================================================
+
+atrDelta = atrRatio - atrRatio[1]
+atrPrevDelta = atrRatio[1] - atrRatio[2]
+
+atrRising = atrDelta > 0
+atrAccelerating = atrDelta > 0 and atrDelta > atrPrevDelta
+atrTurningUp = atrDelta > 0 and atrPrevDelta <= 0
+
+fastATRExpansion = fastATRRatio > fastATRRatio[1]
+
+
+//====================================================================
+// 16 - BOLLINGER / BANDWIDTH
+//====================================================================
+
+bbBasis = ta.sma(close, bbLen)
+
+bbDev = ta.stdev(close, bbLen) * bbMult
+
+bbUpper = bbBasis + bbDev
+bbLower = bbBasis - bbDev
+
+bbWidth = bbBasis != 0 ? (bbUpper - bbLower) / math.abs(bbBasis) : 0.0
+
+bbScore = f_norm(bbWidth, bandNormLen)
+fastBBScore = f_norm(bbWidth, 30)
+
+bbDelta = bbWidth - bbWidth[1]
+bbPrevDelta = bbWidth[1] - bbWidth[2]
+
+bandwidthRising = bbDelta > 0
+bandwidthAccelerating = bbDelta > 0 and bbDelta > bbPrevDelta
+bandwidthTurningUp = bbDelta > 0 and bbPrevDelta <= 0
+
+
+//====================================================================
+// 17 - KELTNER / SQUEEZE
+//====================================================================
+
+kcBasis = ta.ema(close, kcLen)
+kcATR = ta.atr(kcLen)
+
+kcUpper = kcBasis + kcATR * kcMult
+kcLower = kcBasis - kcATR * kcMult
+
+squeezeOn = bbUpper < kcUpper and bbLower > kcLower
+
+
+//====================================================================
+// 18 - HISTORICAL VOLATILITY
+//====================================================================
+
+safePrevClose = close[1] > 0 ? close[1] : close
+
+logReturn = math.log(close / safePrevClose)
+
+historicalVolatility = ta.stdev(logReturn, hvLen) * math.sqrt(365.0) * 100.0
+
+hvScore = f_norm(historicalVolatility, hvNormLen)
+
+
+//====================================================================
+// 19 - RVOL
+//====================================================================
+
+volumeAverage = ta.sma(volume, volumeLen)
+
+rvol = volumeAverage > 0 ? volume / volumeAverage : 0.0
+
+float rvolScore = 0.0
+
+if rvol >= 2.0
+    rvolScore := 100.0
+else if rvol >= confirmedRVOL
+    rvolScore := 80.0
+else if rvol >= 1.0
+    rvolScore := 60.0
+else if rvol >= 0.75
+    rvolScore := 40.0
+else
+    rvolScore := math.max(0.0, rvol * 40.0)
+
+
+//====================================================================
+// 20 - DIRECTION
+//====================================================================
+
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+roc = ta.roc(close, rocLen)
+rocDelta = roc - roc[1]
+
+bullMomentumAcceleration = roc > roc[1] and rocDelta > 0
+bearMomentumAcceleration = roc < roc[1] and rocDelta < 0
+
+bullTrend = close > emaFast and emaFast > emaSlow
+bearTrend = close < emaFast and emaFast < emaSlow
+
+bullDirection = bullTrend and roc > 0
+bearDirection = bearTrend and roc < 0
+
+fastEMARising = emaFast > emaFast[1]
+fastEMAFalling = emaFast < emaFast[1]
+
+
+//====================================================================
+// 21 - PRICE IMPULSE
+//====================================================================
+
+bodySize = math.abs(close - open)
+
+bodyATR = atr > 0 ? bodySize / atr : 0.0
+
+bullImpulse = close > open and close > emaFast and bodyATR >= impulseATR
+bearImpulse = close < open and close < emaFast and bodyATR >= impulseATR
+
+strongBullImpulse = bullImpulse and close > high[1]
+strongBearImpulse = bearImpulse and close < low[1]
+
+
+//====================================================================
+// 22 - MICRO BREAKOUT
+//====================================================================
+
+microResistance = ta.highest(high, microBreakoutLen)[1]
+microSupport = ta.lowest(low, microBreakoutLen)[1]
+
+bullMicroBreakout = barstate.isconfirmed and not na(microResistance) and close > microResistance and close > emaFast and fastEMARising
+
+bearMicroBreakout = barstate.isconfirmed and not na(microSupport) and close < microSupport and close < emaFast and fastEMAFalling
+
+
+//====================================================================
+// 23 - BREAKOUT MEMORY
+//====================================================================
+
+bullBreakoutBars = ta.barssince(bullMicroBreakout)
+bearBreakoutBars = ta.barssince(bearMicroBreakout)
+
+bullBreakoutRecent = not na(bullBreakoutBars) and bullBreakoutBars <= breakoutMemoryBars
+bearBreakoutRecent = not na(bearBreakoutBars) and bearBreakoutBars <= breakoutMemoryBars
+
+
+//====================================================================
+// 24 - CONFIRMED SCORE
+//====================================================================
+
+float confirmedAccelerationScore = 0.0
+
+if atrAccelerating and bandwidthAccelerating
+    confirmedAccelerationScore := 100.0
+else if atrRising and bandwidthRising
+    confirmedAccelerationScore := 60.0
+
+confirmedScoreRaw =
+     atrScore * 0.30 +
+     bbScore * 0.25 +
+     hvScore * 0.20 +
+     rvolScore * 0.15 +
+     confirmedAccelerationScore * 0.10
+
+confirmedScore = math.max(0.0, math.min(100.0, confirmedScoreRaw))
+
+confirmedSignal = ta.ema(confirmedScore, confirmedSmoothLen)
+
+
+//====================================================================
+// 25 - FAST SCORE
+//====================================================================
+
+float impulseScore = 0.0
+
+if strongBullImpulse or strongBearImpulse
+    impulseScore := 100.0
+else if bullImpulse or bearImpulse
+    impulseScore := 70.0
+else if bodyATR >= 0.30
+    impulseScore := 40.0
+
+
+float momentumAccelerationScore = 0.0
+
+if bullMomentumAcceleration or bearMomentumAcceleration
+    momentumAccelerationScore := 100.0
+else if math.abs(roc) > math.abs(roc[1])
+    momentumAccelerationScore := 60.0
+
+
+float atrEarlyScore = fastATRScore
+
+if atrTurningUp
+    atrEarlyScore := math.max(atrEarlyScore, 70.0)
+
+if atrAccelerating
+    atrEarlyScore := math.max(atrEarlyScore, 85.0)
+
+if fastATRExpansion
+    atrEarlyScore := math.max(atrEarlyScore, 65.0)
+
+
+float bandwidthEarlyScore = fastBBScore
+
+if bandwidthTurningUp
+    bandwidthEarlyScore := math.max(bandwidthEarlyScore, 70.0)
+
+if bandwidthAccelerating
+    bandwidthEarlyScore := math.max(bandwidthEarlyScore, 85.0)
+
+
+float breakoutScore = 0.0
+
+if bullMicroBreakout or bearMicroBreakout
+    breakoutScore := 100.0
+else if bullBreakoutRecent or bearBreakoutRecent
+    breakoutScore := 60.0
+
+
+fastScoreRaw =
+     atrEarlyScore * 0.20 +
+     bandwidthEarlyScore * 0.20 +
+     impulseScore * 0.20 +
+     momentumAccelerationScore * 0.15 +
+     breakoutScore * 0.15 +
+     rvolScore * 0.10
+
+fastScore = math.max(0.0, math.min(100.0, fastScoreRaw))
+
+fastSignal = ta.ema(fastScore, fastSmoothLen)
+
+
+//====================================================================
+// 26 - COMPRESSION
+//====================================================================
+
+statisticalCompression = atrScore < 35 and bbScore < 30
+
+scoreCompression = confirmedScore < compressionLevel
+
+compressionActive = squeezeOn or statisticalCompression or scoreCompression
+
+var int compressionBars = 0
+
+if compressionActive
+    compressionBars += 1
+else
+    compressionBars := 0
+
+var int lastCompressionDuration = 0
+
+if compressionActive
+    lastCompressionDuration := compressionBars
+
+compressionExit =
+     barstate.isconfirmed and
+     not compressionActive and
+     compressionActive[1] and
+     lastCompressionDuration >= minCompressionBars
+
+
+//====================================================================
+// 27 - BULL / BEAR SETUP SCORES
+//====================================================================
+
+float bullSetupRaw = 0.0
+float bearSetupRaw = 0.0
+
+
+if close > emaFast
+    bullSetupRaw += 12.0
+
+if close < emaFast
+    bearSetupRaw += 12.0
+
+
+if emaFast > emaSlow
+    bullSetupRaw += 12.0
+
+if emaFast < emaSlow
+    bearSetupRaw += 12.0
+
+
+if fastEMARising
+    bullSetupRaw += 8.0
+
+if fastEMAFalling
+    bearSetupRaw += 8.0
+
+
+if roc > 0
+    bullSetupRaw += 10.0
+
+if roc < 0
+    bearSetupRaw += 10.0
+
+
+if bullMomentumAcceleration
+    bullSetupRaw += 12.0
+
+if bearMomentumAcceleration
+    bearSetupRaw += 12.0
+
+
+if bullImpulse
+    bullSetupRaw += 10.0
+
+if bearImpulse
+    bearSetupRaw += 10.0
+
+
+if bullMicroBreakout
+    bullSetupRaw += 18.0
+else if bullBreakoutRecent
+    bullSetupRaw += 10.0
+
+
+if bearMicroBreakout
+    bearSetupRaw += 18.0
+else if bearBreakoutRecent
+    bearSetupRaw += 10.0
+
+
+if fastScore >= earlyLevel
+
+    if bullDirection or bullMomentumAcceleration
+        bullSetupRaw += 8.0
+
+    if bearDirection or bearMomentumAcceleration
+        bearSetupRaw += 8.0
+
+
+if rvol >= fastBreakoutRVOL
+
+    if close >= open
+        bullSetupRaw += 5.0
+
+    if close <= open
+        bearSetupRaw += 5.0
+
+
+if atrRising and bandwidthRising
+
+    if bullMomentumAcceleration
+        bullSetupRaw += 5.0
+
+    if bearMomentumAcceleration
+        bearSetupRaw += 5.0
+
+
+bullSetupScore = math.max(0.0, math.min(100.0, bullSetupRaw))
+bearSetupScore = math.max(0.0, math.min(100.0, bearSetupRaw))
+
+
+//====================================================================
+// 28 - DOMINANCE
+//====================================================================
+
+setupDifference = bullSetupScore - bearSetupScore
+
+bullDominant = setupDifference >= setupDominance
+bearDominant = setupDifference <= -setupDominance
+
+dominanceAbs = math.abs(setupDifference)
+
+string dominanceText = "NEUTRAL"
+
+if bullDominant
+    dominanceText := "+" + str.tostring(dominanceAbs, "#") + " BULL"
+else if bearDominant
+    dominanceText := "-" + str.tostring(dominanceAbs, "#") + " BEAR"
+
+
+//====================================================================
+// 29 - HTF ENGINE
+//====================================================================
+
+f_htfScore() =>
+    float _atr = ta.atr(atrLen)
+    float _atrBase = ta.sma(_atr, atrBaseLen)
+    float _atrRatio = _atrBase > 0 ? _atr / _atrBase : 1.0
+    float _atrScore = f_norm(_atrRatio, atrNormLen)
+
+    float _bbBasis = ta.sma(close, bbLen)
+    float _bbDev = ta.stdev(close, bbLen) * bbMult
+    float _bbUpper = _bbBasis + _bbDev
+    float _bbLower = _bbBasis - _bbDev
+    float _bbWidth = _bbBasis != 0 ? (_bbUpper - _bbLower) / math.abs(_bbBasis) : 0.0
+    float _bbScore = f_norm(_bbWidth, bandNormLen)
+
+    float _safePrev = close[1] > 0 ? close[1] : close
+    float _ret = math.log(close / _safePrev)
+    float _hv = ta.stdev(_ret, hvLen) * math.sqrt(365.0) * 100.0
+    float _hvScore = f_norm(_hv, hvNormLen)
+
+    float _volMA = ta.sma(volume, volumeLen)
+    float _rvol = _volMA > 0 ? volume / _volMA : 0.0
+
+    float _rvolScore = 0.0
+
+    if _rvol >= 2.0
+        _rvolScore := 100.0
+    else if _rvol >= confirmedRVOL
+        _rvolScore := 80.0
+    else if _rvol >= 1.0
+        _rvolScore := 60.0
+    else
+        _rvolScore := 40.0
+
+    float _score =
+         _atrScore * 0.35 +
+         _bbScore * 0.30 +
+         _hvScore * 0.20 +
+         _rvolScore * 0.15
+
+    math.max(0.0, math.min(100.0, _score))
+
+
+htfScore =
+     request.security(
+         syminfo.tickerid,
+         higherTF,
+         f_htfScore()[1],
+         gaps=barmerge.gaps_off,
+         lookahead=barmerge.lookahead_on
+     )
+
+
+string htfRegime = "OFF"
+
+if useHTF
+    if htfScore >= extremeLevel
+        htfRegime := "EXTREME"
+    else if htfScore >= expansionLevel
+        htfRegime := "EXPANSION"
+    else if htfScore < compressionLevel
+        htfRegime := "COMPRESSION"
+    else
+        htfRegime := "NORMAL"
+
+
+int htfCode = 0
+
+if useHTF
+    if htfRegime == "EXTREME"
+        htfCode := 4
+    else if htfRegime == "EXPANSION"
+        htfCode := 3
+    else if htfRegime == "COMPRESSION"
+        htfCode := 1
+    else
+        htfCode := 2
+
+
+//====================================================================
+// 30 - BASE FALSE EXPANSION RISK
+//====================================================================
+
+int baseFalseRiskPoints = 0
+
+baseFalseRiskPoints += rvol < 0.80 ? 2 : 0
+baseFalseRiskPoints += not atrRising ? 2 : 0
+baseFalseRiskPoints += not bandwidthRising ? 2 : 0
+baseFalseRiskPoints += bodyATR < 0.30 ? 1 : 0
+baseFalseRiskPoints += confirmedScore < compressionLevel ? 2 : 0
+baseFalseRiskPoints += not bullBreakoutRecent and not bearBreakoutRecent ? 1 : 0
+
+
+//====================================================================
+// 31 - CONTEXT-AWARE RISK REDUCTION
+//====================================================================
+
+int riskReduction = 0
+
+
+htfSupportsExpansion =
+     useHTF and
+     (
+         htfRegime == "EXPANSION" or
+         htfRegime == "EXTREME"
+     )
+
+
+strongDominance =
+     dominanceAbs >= strongDominanceRiskLevel
+
+
+bullContextAligned =
+     bullDirection and
+     bullDominant
+
+
+bearContextAligned =
+     bearDirection and
+     bearDominant
+
+
+directionContextAligned =
+     bullContextAligned or
+     bearContextAligned
+
+
+breakoutContextAligned =
+     (
+         bullContextAligned and bullBreakoutRecent
+     ) or
+     (
+         bearContextAligned and bearBreakoutRecent
+     )
+
+
+if htfSupportsExpansion
+    riskReduction += riskHTFExpansionReduction
+
+
+if strongDominance
+    riskReduction += riskStrongDominanceReduction
+
+
+if directionContextAligned
+    riskReduction += riskDirectionAlignmentReduction
+
+
+if breakoutContextAligned
+    riskReduction += riskBreakoutAlignmentReduction
+
+
+falseRiskPoints =
+     math.max(
+         0,
+         baseFalseRiskPoints - riskReduction
+     )
+
+
+//====================================================================
+// 32 - FINAL FALSE EXPANSION RISK
+//====================================================================
+
+string falseRisk = "LOW"
+
+if falseRiskPoints >= 8
+    falseRisk := "VERY HIGH"
+else if falseRiskPoints >= 5
+    falseRisk := "HIGH"
+else if falseRiskPoints >= 3
+    falseRisk := "MEDIUM"
+
+
+riskAllowsContinuation =
+     falseRisk == "LOW" or
+     falseRisk == "MEDIUM"
+
+
+//====================================================================
+// 33 - IGNITION POINTS
+//====================================================================
+
+int bullPoints = 0
+
+bullPoints += atrRising ? 1 : 0
+bullPoints += bandwidthRising ? 1 : 0
+bullPoints += bullImpulse ? 1 : 0
+bullPoints += bullMomentumAcceleration ? 1 : 0
+bullPoints += bullBreakoutRecent ? 1 : 0
+bullPoints += fastScore >= earlyLevel ? 1 : 0
+bullPoints += close > emaFast ? 1 : 0
+bullPoints += compressionExit ? 1 : 0
+
+
+int bearPoints = 0
+
+bearPoints += atrRising ? 1 : 0
+bearPoints += bandwidthRising ? 1 : 0
+bearPoints += bearImpulse ? 1 : 0
+bearPoints += bearMomentumAcceleration ? 1 : 0
+bearPoints += bearBreakoutRecent ? 1 : 0
+bearPoints += fastScore >= earlyLevel ? 1 : 0
+bearPoints += close < emaFast ? 1 : 0
+bearPoints += compressionExit ? 1 : 0
+
+
+//====================================================================
+// 34 - STATE VARIABLES
+//====================================================================
+
+var int cycleState = 0
+var int cycleDirection = 0
+
+var int lastIgnitionBar = na
+
+var int lastBullSignalBar = na
+var int lastBearSignalBar = na
+
+var int resetCounter = 0
+var int invalidationBar = na
+
+var bool continuationFired = false
+
+var int macroContinuationLock = 0
+
+var string activeEvent = "WAITING"
+var color activeEventColor = neutralColor
+
+var int continuationWave = 0
+var int lastContinuationBar = na
+
+
+//====================================================================
+// 35 - MACRO CONTINUATION LOCK
+//====================================================================
+
+macroBullCondition =
+     bullDirection and
+     bullDominant
+
+
+macroBearCondition =
+     bearDirection and
+     bearDominant
+
+
+if macroContinuationLock == 1 and macroBearCondition
+    macroContinuationLock := 0
+
+
+if macroContinuationLock == -1 and macroBullCondition
+    macroContinuationLock := 0
+
+
+//====================================================================
+// 36 - SIGNAL COOLDOWN
+//====================================================================
+
+bullCooldownOK =
+     na(lastBullSignalBar) or
+     bar_index - lastBullSignalBar >= signalCooldownBars
+
+
+bearCooldownOK =
+     na(lastBearSignalBar) or
+     bar_index - lastBearSignalBar >= signalCooldownBars
+
+
+//====================================================================
+// 37 - HARD RESET
+//====================================================================
+
+resetCondition =
+     fastScore < resetFastLevel and
+     confirmedScore < resetConfirmedLevel and
+     not bullBreakoutRecent and
+     not bearBreakoutRecent
+
+
+if resetCondition
+    resetCounter += 1
+else
+    resetCounter := 0
+
+
+minimumCycleAgeOK =
+     na(lastIgnitionBar) or
+     bar_index - lastIgnitionBar >= minimumCycleBars
+
+
+hardReset =
+     resetCounter >= resetBarsRequired and
+     minimumCycleAgeOK
+
+
+if hardReset
+
+    cycleState := 0
+    cycleDirection := 0
+
+    continuationFired := false
+    continuationWave := 0
+
+    activeEvent := "RESET / WAITING"
+    activeEventColor := neutralColor
+
+
+//====================================================================
+// 38 - OPPOSITE CYCLE INVALIDATION
+//====================================================================
+
+bullCycleInvalidation =
+     barstate.isconfirmed and
+     cycleState < 0 and
+     bullSetupScore >= reversalSetupMinimum and
+     bullDominant and
+     bullBreakoutRecent and
+     fastScore >= earlyLevel and
+     falseRisk != "VERY HIGH"
+
+
+bearCycleInvalidation =
+     barstate.isconfirmed and
+     cycleState > 0 and
+     bearSetupScore >= reversalSetupMinimum and
+     bearDominant and
+     bearBreakoutRecent and
+     fastScore >= earlyLevel and
+     falseRisk != "VERY HIGH"
+
+
+if bullCycleInvalidation
+
+    cycleState := 0
+    cycleDirection := 0
+
+    resetCounter := 0
+    continuationFired := false
+    continuationWave := 0
+
+    invalidationBar := bar_index
+
+    activeEvent := "BEAR CYCLE INVALIDATED"
+    activeEventColor := bullColor
+
+
+if bearCycleInvalidation
+
+    cycleState := 0
+    cycleDirection := 0
+
+    resetCounter := 0
+    continuationFired := false
+    continuationWave := 0
+
+    invalidationBar := bar_index
+
+    activeEvent := "BULL CYCLE INVALIDATED"
+    activeEventColor := bearColor
+
+
+canArmThisBar =
+     na(invalidationBar) or
+     bar_index > invalidationBar
+
+
+//====================================================================
+// 39 - ARMED
+//====================================================================
+
+bullArmedCondition =
+     barstate.isconfirmed and
+     canArmThisBar and
+     cycleState == 0 and
+     bullCooldownOK and
+     fastScore >= earlyLevel and
+     bullSetupScore >= 50 and
+     bullDominant and
+     (
+         bullMomentumAcceleration or
+         bullBreakoutRecent or
+         bullDirection
+     )
+
+
+bearArmedCondition =
+     barstate.isconfirmed and
+     canArmThisBar and
+     cycleState == 0 and
+     bearCooldownOK and
+     fastScore >= earlyLevel and
+     bearSetupScore >= 50 and
+     bearDominant and
+     (
+         bearMomentumAcceleration or
+         bearBreakoutRecent or
+         bearDirection
+     )
+
+
+if bullArmedCondition
+
+    cycleState := 1
+    cycleDirection := 1
+
+    activeEvent := "BULL ARMED"
+    activeEventColor := earlyColor
+
+
+if bearArmedCondition
+
+    cycleState := -1
+    cycleDirection := -1
+
+    activeEvent := "BEAR ARMED"
+    activeEventColor := earlyColor
+
+
+//====================================================================
+// 40 - IGNITION
+//====================================================================
+
+fastCrossEarly =
+     ta.crossover(
+         fastScore,
+         earlyLevel
+     )
+
+
+normalBullIgnition =
+     barstate.isconfirmed and
+     cycleState == 1 and
+     bullCooldownOK and
+     bullPoints >= normalIgnitionPoints and
+     bullDominant and
+     falseRisk != "VERY HIGH" and
+     (
+         bullBreakoutRecent or
+         compressionExit or
+         fastCrossEarly
+     )
+
+
+normalBearIgnition =
+     barstate.isconfirmed and
+     cycleState == -1 and
+     bearCooldownOK and
+     bearPoints >= normalIgnitionPoints and
+     bearDominant and
+     falseRisk != "VERY HIGH" and
+     (
+         bearBreakoutRecent or
+         compressionExit or
+         fastCrossEarly
+     )
+
+
+fastBullIgnition =
+     barstate.isconfirmed and
+     cycleState == 1 and
+     bullCooldownOK and
+     fastScore >= fastBreakoutLevel and
+     bullSetupScore >= 60 and
+     bullDominant and
+     rvol >= fastBreakoutRVOL and
+     bullBreakoutRecent and
+     falseRisk != "VERY HIGH"
+
+
+fastBearIgnition =
+     barstate.isconfirmed and
+     cycleState == -1 and
+     bearCooldownOK and
+     fastScore >= fastBreakoutLevel and
+     bearSetupScore >= 60 and
+     bearDominant and
+     rvol >= fastBreakoutRVOL and
+     bearBreakoutRecent and
+     falseRisk != "VERY HIGH"
+
+
+bullIgnition =
+     normalBullIgnition or
+     fastBullIgnition
+
+
+bearIgnition =
+     normalBearIgnition or
+     fastBearIgnition
+
+
+if bullIgnition
+
+    cycleState := 2
+    cycleDirection := 1
+
+    lastIgnitionBar := bar_index
+    lastBullSignalBar := bar_index
+
+    continuationFired := false
+    continuationWave := 0
+
+    activeEvent :=
+         fastBullIgnition
+         ? "FAST BULL IGNITION"
+         : "BULL IGNITION"
+
+    activeEventColor := bullStrong
+
+
+if bearIgnition
+
+    cycleState := -2
+    cycleDirection := -1
+
+    lastIgnitionBar := bar_index
+    lastBearSignalBar := bar_index
+
+    continuationFired := false
+    continuationWave := 0
+
+    activeEvent :=
+         fastBearIgnition
+         ? "FAST BEAR IGNITION"
+         : "BEAR IGNITION"
+
+    activeEventColor := bearStrong
+
+
+//====================================================================
+// 41 - RELEASE
+//====================================================================
+
+bullRelease =
+     barstate.isconfirmed and
+     cycleState == 2 and
+     confirmedScore >= expansionLevel and
+     bullSetupScore >= bearSetupScore and
+     (
+         bullDirection or
+         bullBreakoutRecent
+     )
+
+
+bearRelease =
+     barstate.isconfirmed and
+     cycleState == -2 and
+     confirmedScore >= expansionLevel and
+     bearSetupScore >= bullSetupScore and
+     (
+         bearDirection or
+         bearBreakoutRecent
+     )
+
+
+if bullRelease
+
+    cycleState := 3
+
+    activeEvent := "BULL RELEASE CONFIRMED"
+    activeEventColor := bullColor
+
+
+if bearRelease
+
+    cycleState := -3
+
+    activeEvent := "BEAR RELEASE CONFIRMED"
+    activeEventColor := bearColor
+
+
+//====================================================================
+// 42 - RELEASE QUALITY
+//====================================================================
+
+int bullQualityPoints = 0
+
+bullQualityPoints += fastScore >= fastBreakoutLevel ? 2 : 0
+bullQualityPoints += confirmedScore >= expansionLevel ? 2 : 0
+bullQualityPoints += atrAccelerating ? 1 : 0
+bullQualityPoints += bandwidthAccelerating ? 1 : 0
+bullQualityPoints += rvol >= fastBreakoutRVOL ? 1 : 0
+bullQualityPoints += bullBreakoutRecent ? 1 : 0
+bullQualityPoints += bullDirection ? 1 : 0
+bullQualityPoints += bullDominant ? 1 : 0
+
+
+int bearQualityPoints = 0
+
+bearQualityPoints += fastScore >= fastBreakoutLevel ? 2 : 0
+bearQualityPoints += confirmedScore >= expansionLevel ? 2 : 0
+bearQualityPoints += atrAccelerating ? 1 : 0
+bearQualityPoints += bandwidthAccelerating ? 1 : 0
+bearQualityPoints += rvol >= fastBreakoutRVOL ? 1 : 0
+bearQualityPoints += bearBreakoutRecent ? 1 : 0
+bearQualityPoints += bearDirection ? 1 : 0
+bearQualityPoints += bearDominant ? 1 : 0
+
+
+bullBaseQuality =
+     math.min(
+         100.0,
+         bullQualityPoints * 10.0
+     )
+
+
+bearBaseQuality =
+     math.min(
+         100.0,
+         bearQualityPoints * 10.0
+     )
+
+
+baseReleaseQuality =
+     bullSetupScore > bearSetupScore
+     ? bullBaseQuality
+     : bearSetupScore > bullSetupScore
+     ? bearBaseQuality
+     : math.max(
+         bullBaseQuality,
+         bearBaseQuality
+     )
+
+
+//====================================================================
+// 43 - HTF QUALITY MODIFIER
+//====================================================================
+
+float htfModifier = 0.0
+
+if useHTF
+
+    if htfRegime == "EXPANSION" or htfRegime == "EXTREME"
+        htfModifier := htfExpansionBonus
+
+    else if htfRegime == "COMPRESSION"
+        htfModifier := -htfCompressionPenalty
+
+
+releaseQuality =
+     math.max(
+         0.0,
+         math.min(
+             100.0,
+             baseReleaseQuality + htfModifier
+         )
+     )
+
+
+//====================================================================
+// 44 - QUALITY GRADE
+//====================================================================
+
+string qualityGrade = "C"
+
+if releaseQuality >= 80
+    qualityGrade := "A+"
+else if releaseQuality >= 65
+    qualityGrade := "A"
+else if releaseQuality >= 50
+    qualityGrade := "B"
+
+
+qualityAllowsContinuation =
+     releaseQuality >= continuationQualityMin
+
+
+//====================================================================
+// 45 - CONTINUATION ENGINE
+//====================================================================
+
+barsSinceIgnition =
+     na(lastIgnitionBar)
+     ? 100000
+     : bar_index - lastIgnitionBar
+
+
+bullScoreReacceleration =
+     fastScore > fastScore[1] and
+     fastSignal >= fastSignal[1]
+
+
+bearScoreReacceleration =
+     fastScore > fastScore[1] and
+     fastSignal >= fastSignal[1]
+
+
+bullSetupReacceleration =
+     bullSetupScore > bullSetupScore[1]
+
+
+bearSetupReacceleration =
+     bearSetupScore > bearSetupScore[1]
+
+
+if allowWaveContinuation and continuationFired
+
+    if cycleDirection == 1 and (fastScore < continuationScoreMin - waveResetGap or close < emaFast)
+        continuationFired := false
+        if resetLockOnWave
+            macroContinuationLock := 0
+
+    if cycleDirection == -1 and (fastScore < continuationScoreMin - waveResetGap or close > emaFast)
+        continuationFired := false
+        if resetLockOnWave
+            macroContinuationLock := 0
+
+
+bullMacroLockOK =
+     allowWaveContinuation or
+     macroContinuationLock != 1
+
+
+bearMacroLockOK =
+     allowWaveContinuation or
+     macroContinuationLock != -1
+
+
+bullContinuation =
+     barstate.isconfirmed and
+     showContinuation and
+     cycleDirection == 1 and
+     not continuationFired and
+     bullMacroLockOK and
+     barsSinceIgnition >= continuationMinBars and
+     fastScore >= continuationScoreMin and
+     bullSetupScore >= continuationSetupMin and
+     setupDifference >= continuationDominanceMin and
+     bullDominant and
+     bullDirection and
+     close > emaFast and
+     bullScoreReacceleration and
+     bullSetupReacceleration and
+     qualityAllowsContinuation and
+     riskAllowsContinuation and
+     not bullIgnition and
+     not bullRelease
+
+
+bearContinuation =
+     barstate.isconfirmed and
+     showContinuation and
+     cycleDirection == -1 and
+     not continuationFired and
+     bearMacroLockOK and
+     barsSinceIgnition >= continuationMinBars and
+     fastScore >= continuationScoreMin and
+     bearSetupScore >= continuationSetupMin and
+     setupDifference <= -continuationDominanceMin and
+     bearDominant and
+     bearDirection and
+     close < emaFast and
+     bearScoreReacceleration and
+     bearSetupReacceleration and
+     qualityAllowsContinuation and
+     riskAllowsContinuation and
+     not bearIgnition and
+     not bearRelease
+
+
+bullContinuationEvent =
+     bullContinuation
+
+
+bearContinuationEvent =
+     bearContinuation
+
+
+if bullContinuationEvent
+
+    continuationFired := true
+    continuationWave += 1
+    lastContinuationBar := bar_index
+    macroContinuationLock := 1
+
+    activeEvent := continuationWave > 1 ? "BULL CONT WAVE " + str.tostring(continuationWave) : "BULL CONTINUATION"
+    activeEventColor := bullColor
+
+
+if bearContinuationEvent
+
+    continuationFired := true
+    continuationWave += 1
+    lastContinuationBar := bar_index
+    macroContinuationLock := -1
+
+    activeEvent := continuationWave > 1 ? "BEAR CONT WAVE " + str.tostring(continuationWave) : "BEAR CONTINUATION"
+    activeEventColor := bearColor
+
+
+//====================================================================
+// 46 - EXPANSION STATE
+//====================================================================
+
+bullExpansionEvent =
+     barstate.isconfirmed and
+     cycleState == 3 and
+     confirmedScore >= expansionLevel
+
+
+bearExpansionEvent =
+     barstate.isconfirmed and
+     cycleState == -3 and
+     confirmedScore >= expansionLevel
+
+
+if bullExpansionEvent
+
+    cycleState := 4
+
+    if not bullContinuationEvent
+        activeEvent := "BULL EXPANSION"
+        activeEventColor := bullColor
+
+
+if bearExpansionEvent
+
+    cycleState := -4
+
+    if not bearContinuationEvent
+        activeEvent := "BEAR EXPANSION"
+        activeEventColor := bearColor
+
+
+//====================================================================
+// 47 - EXTREME
+//====================================================================
+
+bullExtremeEvent =
+     barstate.isconfirmed and
+     cycleDirection == 1 and
+     confirmedScore >= extremeLevel and
+     confirmedScore[1] < extremeLevel
+
+
+bearExtremeEvent =
+     barstate.isconfirmed and
+     cycleDirection == -1 and
+     confirmedScore >= extremeLevel and
+     confirmedScore[1] < extremeLevel
+
+
+if bullExtremeEvent
+
+    cycleState := 5
+
+    activeEvent := "BULL EXTREME EXPANSION"
+    activeEventColor := extremeColor
+
+
+if bearExtremeEvent
+
+    cycleState := -5
+
+    activeEvent := "BEAR EXTREME EXPANSION"
+    activeEventColor := extremeColor
+
+
+//====================================================================
+// 48 - EXHAUSTION
+//====================================================================
+
+scoreRollingOver =
+     confirmedScore < confirmedScore[1] and
+     confirmedScore[1] < confirmedScore[2]
+
+
+bandwidthRollingOver =
+     bbWidth < bbWidth[1]
+
+
+volatilityExhaustion =
+     barstate.isconfirmed and
+     confirmedScore[1] >= extremeLevel and
+     scoreRollingOver and
+     bandwidthRollingOver
+
+
+if volatilityExhaustion
+
+    activeEvent := "VOLATILITY EXHAUSTION"
+    activeEventColor := orangeColor
+
+
+//====================================================================
+// 49 - REGIME
+//====================================================================
+
+string regime = "NORMAL"
+
+if compressionActive
+    regime := "COMPRESSION"
+else if confirmedScore >= extremeLevel
+    regime := "EXTREME EXPANSION"
+else if confirmedScore >= expansionLevel
+    regime := "EXPANSION"
+else if fastScore >= earlyLevel
+    regime := "EARLY EXPANSION"
+
+
+//====================================================================
+// 50 - DIRECTION / BIAS
+//====================================================================
+
+string directionText = "NEUTRAL"
+
+if bullDirection
+    directionText := "BULLISH"
+else if bearDirection
+    directionText := "BEARISH"
+else if bullDominant
+    directionText := "EARLY BULL"
+else if bearDominant
+    directionText := "EARLY BEAR"
+
+
+string setupBias = "NEUTRAL"
+
+if bullDominant
+    setupBias := "BULL"
+else if bearDominant
+    setupBias := "BEAR"
+
+
+string cycleBias = "NEUTRAL"
+
+if cycleDirection == 1
+    cycleBias := "BULL"
+else if cycleDirection == -1
+    cycleBias := "BEAR"
+
+
+//====================================================================
+// 51 - CYCLE STATE TEXT
+//====================================================================
+
+string cycleStateText = "WAITING"
+
+if cycleState == 1
+    cycleStateText := "BULL ARMED"
+else if cycleState == -1
+    cycleStateText := "BEAR ARMED"
+else if cycleState == 2
+    cycleStateText := "BULL IGNITION"
+else if cycleState == -2
+    cycleStateText := "BEAR IGNITION"
+else if cycleState == 3
+    cycleStateText := "BULL RELEASE"
+else if cycleState == -3
+    cycleStateText := "BEAR RELEASE"
+else if cycleState == 4
+    cycleStateText := "BULL EXPANSION"
+else if cycleState == -4
+    cycleStateText := "BEAR EXPANSION"
+else if cycleState == 5
+    cycleStateText := "BULL EXTREME"
+else if cycleState == -5
+    cycleStateText := "BEAR EXTREME"
+
+
+//====================================================================
+// 52 - BULL CONTINUATION FORECAST
+//====================================================================
+
+higherHigh = close > ta.highest(close, 5)[1]
+higherLow = low > ta.lowest(low, 8)[1]
+structureIntact = close > emaFast and emaFast > emaSlow
+shallowPullback = close >= emaFast - atr * 0.35
+
+float liveBullProb = 0.0
+
+if cycleState >= 5
+    liveBullProb += 22.0
+else if cycleState >= 4
+    liveBullProb += 20.0
+else if cycleState >= 3
+    liveBullProb += 17.0
+else if cycleState >= 2
+    liveBullProb += 13.0
+else if cycleState >= 1
+    liveBullProb += 8.0
+else if bullDominant and close > emaFast
+    liveBullProb += 5.0
+
+liveBullProb += bullSetupScore * 0.18
+liveBullProb += bullDominant ? math.min(12.0, dominanceAbs * 0.22) : 0.0
+liveBullProb += bullDirection ? 6.0 : close > emaFast ? 3.0 : 0.0
+liveBullProb += bullMomentumAcceleration ? 4.0 : roc > 0 ? 2.0 : 0.0
+liveBullProb += fastEMARising ? 2.0 : 0.0
+liveBullProb += atrRising ? 4.0 : 0.0
+liveBullProb += bandwidthRising ? 4.0 : 0.0
+liveBullProb += not scoreRollingOver ? 3.0 : 0.0
+liveBullProb += rvol >= confirmedRVOL ? 7.0 : rvol >= 1.0 ? 4.0 : rvol >= 0.80 ? 2.0 : 0.0
+liveBullProb += releaseQuality * 0.08
+liveBullProb += htfSupportsExpansion ? 7.0 : 0.0
+liveBullProb += structureIntact ? 5.0 : close > emaFast ? 2.0 : 0.0
+liveBullProb += bullBreakoutRecent ? 4.0 : 0.0
+liveBullProb += higherHigh ? 3.0 : 0.0
+liveBullProb += higherLow ? 2.0 : 0.0
+liveBullProb += shallowPullback ? 2.0 : 0.0
+liveBullProb += continuationWave > 0 ? 2.0 : 0.0
+
+if htfRegime == "COMPRESSION"
+    liveBullProb -= 6.0
+
+if falseRisk == "VERY HIGH"
+    liveBullProb -= 16.0
+else if falseRisk == "HIGH"
+    liveBullProb -= 9.0
+else if falseRisk == "MEDIUM"
+    liveBullProb -= 3.0
+
+if volatilityExhaustion
+    liveBullProb -= 14.0
+
+if cycleState == 5 and scoreRollingOver
+    liveBullProb -= 8.0
+
+if close < emaSlow
+    liveBullProb -= 10.0
+
+if cycleDirection == -1
+    liveBullProb -= 18.0
+
+if bearDominant and not bullDominant
+    liveBullProb -= 8.0
+
+liveBullProb := math.max(0.0, math.min(100.0, liveBullProb))
+
+
+var array<ContSample> contHistory = array.new<ContSample>()
+
+if barstate.isconfirmed and array.size(contHistory) > 0
+    int histSize = array.size(contHistory)
+    for i = 0 to histSize - 1
+        ContSample sample = array.get(contHistory, i)
+        if not sample.resolved and bar_index - sample.barNum >= forecastLookforward
+            float needed = sample.px + forecastMinATRMove * atr
+            sample.win := high >= needed or close > sample.px
+            sample.resolved := true
+            array.set(contHistory, i, sample)
+
+
+if barstate.isconfirmed and cycleDirection == 1 and bullDominant and close > emaFast and bar_index % 2 == 0
+    ContSample fresh = ContSample.new(bar_index, close, fastScore, bullSetupScore, dominanceAbs, releaseQuality, htfCode, false, false)
+    array.push(contHistory, fresh)
+    if array.size(contHistory) > forecastSampleCap
+        array.remove(contHistory, 0)
+
+
+int histWins = 0
+int histTotal = 0
+
+if array.size(contHistory) > 0
+    int matchSize = array.size(contHistory)
+    for j = 0 to matchSize - 1
+        ContSample past = array.get(contHistory, j)
+        if past.resolved and past.barNum != bar_index
+            bool fastMatch = math.abs(past.fast - fastScore) <= 12.0
+            bool setupMatch = math.abs(past.setup - bullSetupScore) <= 12.0
+            bool domMatch = math.abs(past.dom - dominanceAbs) <= 15.0
+            bool htfMatch = past.htfCode == htfCode or math.abs(past.htfCode - htfCode) <= 1
+            if fastMatch and setupMatch and domMatch and htfMatch
+                histTotal += 1
+                if past.win
+                    histWins += 1
+
+
+float histHitRate = histTotal > 0 ? 100.0 * histWins / histTotal : na
+
+float statBlend = 0.0
+
+if not na(histHitRate)
+    if histTotal >= forecastMinSamples
+        statBlend := forecastStatWeight / 100.0
+    else if histTotal >= 3
+        statBlend := (forecastStatWeight / 100.0) * 0.45
+
+
+bullContForecastProb =
+     math.max(
+         0.0,
+         math.min(
+             100.0,
+             na(histHitRate)
+             ? liveBullProb
+             : liveBullProb * (1.0 - statBlend) + histHitRate * statBlend
+         )
+     )
+
+
+string bullForecastText = "NO BULL SETUP"
+
+if volatilityExhaustion or (cycleState == 5 and scoreRollingOver and not atrRising)
+    bullForecastText := "EXHAUST / FADE"
+else if cycleDirection == -1 and not bullDominant
+    bullForecastText := "BEAR CYCLE"
+else if bullContForecastProb >= forecastStrongLevel
+    bullForecastText := "STRONG CONTINUE"
+else if bullContForecastProb >= forecastContinueLevel
+    bullForecastText := "CONTINUE"
+else if bullContForecastProb >= forecastHoldLevel
+    bullForecastText := "HOLD / WATCH"
+else if bullDominant or cycleDirection == 1 or close > emaFast
+    bullForecastText := "WEAKENING"
+else
+    bullForecastText := "NO BULL SETUP"
+
+
+float forecastMoveATR =
+     forecastTargetATR * (0.55 + bullContForecastProb / 200.0)
+
+projectedBullTarget = close + atr * forecastMoveATR
+
+bullForecastUpgrade =
+     barstate.isconfirmed and
+     showForecast and
+     (
+         bullForecastText == "STRONG CONTINUE" or
+         bullForecastText == "CONTINUE"
+     ) and
+     (
+         bullForecastText[1] != "STRONG CONTINUE" and
+         bullForecastText[1] != "CONTINUE"
+     )
+
+
+bullForecastFade =
+     barstate.isconfirmed and
+     showForecast and
+     (
+         bullForecastText == "EXHAUST / FADE" or
+         bullForecastText == "WEAKENING"
+     ) and
+     (
+         bullForecastText[1] == "STRONG CONTINUE" or
+         bullForecastText[1] == "CONTINUE" or
+         bullForecastText[1] == "HOLD / WATCH"
+     )
+
+
+string histHitText =
+     histTotal > 0
+     ? str.tostring(histWins) + "/" + str.tostring(histTotal) + " (" + str.tostring(histHitRate, "#") + "%)"
+     : "N/A"
+
+
+string waveText =
+     continuationWave > 0
+     ? "WAVE " + str.tostring(continuationWave)
+     : "NONE"
+
+
+//====================================================================
+// 53 - FOLLOW THROUGH
+//====================================================================
+
+string followThrough = "WEAK"
+
+
+if falseRisk == "VERY HIGH"
+    followThrough := "CAUTION"
+
+else if falseRisk == "HIGH"
+    followThrough := "CAUTION"
+
+else if bullForecastText == "STRONG CONTINUE"
+    followThrough := "CONTINUATION"
+
+else if bullForecastText == "CONTINUE" and releaseQuality >= 50
+    followThrough := "CONFIRMED"
+
+else if releaseQuality < 50
+    followThrough := "WEAK"
+
+else if cycleState == 5 or cycleState == -5
+    followThrough :=
+         releaseQuality >= 65
+         ? "EXTREME"
+         : "CAUTION"
+
+else if continuationFired and releaseQuality >= 65
+    followThrough := "CONTINUATION"
+
+else if continuationFired and releaseQuality >= 50
+    followThrough := "CONFIRMED"
+
+else if cycleState == 4 or cycleState == -4
+    followThrough :=
+         releaseQuality >= 65
+         ? "STRONG"
+         : "CONFIRMED"
+
+else if cycleState == 3 or cycleState == -3
+    followThrough := "CONFIRMED"
+
+else if cycleState == 2 or cycleState == -2
+    followThrough := "BUILDING"
+
+else if cycleState == 1 or cycleState == -1
+    followThrough := "ARMED"
+
+
+//====================================================================
+// 54 - OSCILLATOR COLORS
+//====================================================================
+
+color regimeColor = neutralColor
+
+if compressionActive
+    regimeColor := compressionColor
+
+else if confirmedScore >= extremeLevel
+    regimeColor := extremeColor
+
+else if confirmedScore >= expansionLevel
+    regimeColor :=
+         bullDominant
+         ? bullColor
+         : bearDominant
+         ? bearColor
+         : expansionColor
+
+else if fastScore >= earlyLevel
+    regimeColor :=
+         bullDominant
+         ? bullColor
+         : bearDominant
+         ? bearColor
+         : earlyColor
+
+
+color fastLineColor = neutralColor
+
+if bullDominant
+    fastLineColor := bullColor
+else if bearDominant
+    fastLineColor := bearColor
+else if fastScore >= earlyLevel
+    fastLineColor := earlyColor
+
+
+color forecastLineColor = neutralColor
+
+if bullForecastText == "STRONG CONTINUE"
+    forecastLineColor := bullStrong
+else if bullForecastText == "CONTINUE"
+    forecastLineColor := forecastColor
+else if bullForecastText == "HOLD / WATCH"
+    forecastLineColor := earlyColor
+else if bullForecastText == "EXHAUST / FADE" or bullForecastText == "WEAKENING"
+    forecastLineColor := orangeColor
+
+
+//====================================================================
+// 55 - OSCILLATOR
+//====================================================================
+
+plot(
+     confirmedScore,
+     title="Confirmed Volatility Score",
+     style=plot.style_columns,
+     color=regimeColor,
+     linewidth=2
+)
+
+plot(
+     confirmedSignal,
+     title="Confirmed Score Signal",
+     color=color.white,
+     linewidth=2
+)
+
+plot(
+     fastSignal,
+     title="Fast Regime Score",
+     color=fastLineColor,
+     linewidth=2
+)
+
+plot(
+     showForecast ? bullContForecastProb : na,
+     title="Bull Continuation Forecast",
+     color=forecastLineColor,
+     linewidth=2
+)
+
+
+//====================================================================
+// 56 - LEVELS
+//====================================================================
+
+hline(
+     extremeLevel,
+     "Extreme Expansion",
+     color=color.new(extremeColor, 20),
+     linestyle=hline.style_dashed
+)
+
+hline(
+     expansionLevel,
+     "Expansion",
+     color=color.new(expansionColor, 20),
+     linestyle=hline.style_dashed
+)
+
+hline(
+     earlyLevel,
+     "Ignition",
+     color=color.new(earlyColor, 10),
+     linestyle=hline.style_dotted
+)
+
+hline(
+     compressionLevel,
+     "Compression",
+     color=color.new(compressionColor, 20),
+     linestyle=hline.style_dashed
+)
+
+hline(
+     forecastContinueLevel,
+     "Continue Forecast",
+     color=color.new(forecastColor, 45),
+     linestyle=hline.style_dotted
+)
+
+
+//====================================================================
+// 57 - BACKGROUND
+//====================================================================
+
+color paneBackground = na
+
+
+if showBackground
+
+    if compressionActive
+        paneBackground := color.new(compressionColor, 94)
+
+    else if showForecast and bullForecastText == "STRONG CONTINUE"
+        paneBackground := color.new(bullStrong, 92)
+
+    else if showForecast and bullForecastText == "CONTINUE"
+        paneBackground := color.new(forecastColor, 93)
+
+    else if cycleState == 1
+        paneBackground := color.new(bullColor, 95)
+
+    else if cycleState == -1
+        paneBackground := color.new(bearColor, 95)
+
+    else if cycleState == 2
+        paneBackground := color.new(bullColor, 89)
+
+    else if cycleState == -2
+        paneBackground := color.new(bearColor, 89)
+
+    else if cycleState == 3 or cycleState == 4
+        paneBackground := color.new(bullColor, 94)
+
+    else if cycleState == -3 or cycleState == -4
+        paneBackground := color.new(bearColor, 94)
+
+    else if cycleState == 5 or cycleState == -5
+        paneBackground := color.new(extremeColor, 92)
+
+
+bgcolor(paneBackground)
+
+
+//====================================================================
+// 58 - SIGNALS
+//====================================================================
+
+plotshape(
+     showSignals and bullIgnition,
+     title="Bull Ignition",
+     text="BULL\nIGNITION",
+     style=shape.labelup,
+     location=location.bottom,
+     color=bullStrong,
+     textcolor=color.black,
+     size=size.small
+)
+
+plotshape(
+     showSignals and bearIgnition,
+     title="Bear Ignition",
+     text="BEAR\nIGNITION",
+     style=shape.labeldown,
+     location=location.top,
+     color=bearStrong,
+     textcolor=color.white,
+     size=size.small
+)
+
+plotshape(
+     showSignals and bullRelease,
+     title="Bull Release",
+     text="BULL\nRELEASE",
+     style=shape.labelup,
+     location=location.bottom,
+     color=bullColor,
+     textcolor=color.black,
+     size=size.tiny
+)
+
+plotshape(
+     showSignals and bearRelease,
+     title="Bear Release",
+     text="BEAR\nRELEASE",
+     style=shape.labeldown,
+     location=location.top,
+     color=bearColor,
+     textcolor=color.white,
+     size=size.tiny
+)
+
+
+//====================================================================
+// 59 - CONTINUATION
+//====================================================================
+
+plotshape(
+     showContinuation and bullContinuationEvent,
+     title="Bull Continuation",
+     text="BULL\nCONT",
+     style=shape.circle,
+     location=location.bottom,
+     color=bullColor,
+     textcolor=color.black,
+     size=size.tiny
+)
+
+plotshape(
+     showContinuation and bearContinuationEvent,
+     title="Bear Continuation",
+     text="BEAR\nCONT",
+     style=shape.circle,
+     location=location.top,
+     color=bearColor,
+     textcolor=color.white,
+     size=size.tiny
+)
+
+plotshape(
+     showForecast and bullForecastUpgrade,
+     title="Bull Continue Forecast",
+     text="CONT\nFORECAST",
+     style=shape.triangleup,
+     location=location.bottom,
+     color=forecastColor,
+     textcolor=color.black,
+     size=size.tiny
+)
+
+plotshape(
+     showForecast and bullForecastFade,
+     title="Bull Forecast Fade",
+     text="FADE",
+     style=shape.triangledown,
+     location=location.top,
+     color=orangeColor,
+     textcolor=color.black,
+     size=size.tiny
+)
+
+
+//====================================================================
+// 60 - EXTREME / EXHAUSTION
+//====================================================================
+
+plotshape(
+     showSignals and
+     (
+         bullExtremeEvent or
+         bearExtremeEvent
+     ),
+     title="Extreme Expansion",
+     text="EXTREME",
+     style=shape.diamond,
+     location=location.top,
+     color=extremeColor,
+     textcolor=color.black,
+     size=size.tiny
+)
+
+plotshape(
+     showSignals and volatilityExhaustion,
+     title="Volatility Exhaustion",
+     text="EXHAUST",
+     style=shape.labeldown,
+     location=location.top,
+     color=orangeColor,
+     textcolor=color.black,
+     size=size.tiny
+)
+
+
+//====================================================================
+// 61 - OPTIONAL INVALIDATIONS
+//====================================================================
+
+plotshape(
+     showInvalidations and bullCycleInvalidation,
+     title="Bear Cycle Invalidated",
+     text="BEAR\nINVALID",
+     style=shape.labelup,
+     location=location.bottom,
+     color=bullColor,
+     textcolor=color.black,
+     size=size.tiny
+)
+
+plotshape(
+     showInvalidations and bearCycleInvalidation,
+     title="Bull Cycle Invalidated",
+     text="BULL\nINVALID",
+     style=shape.labeldown,
+     location=location.top,
+     color=bearColor,
+     textcolor=color.white,
+     size=size.tiny
+)
+
+
+//====================================================================
+// 62 - OVERLAY FORECAST LABEL
+//====================================================================
+
+var label forecastLabel = na
+
+if showForecast and showForecastLabel and barstate.islast
+    string forecastLabelText =
+         "BULL CONT " + str.tostring(bullContForecastProb, "#") + "%\n" +
+         bullForecastText + "\n" +
+         "TGT " + str.tostring(projectedBullTarget, format.mintick)
+
+    color forecastLabelColor =
+         bullForecastText == "STRONG CONTINUE"
+         ? color.new(bullStrong, 10)
+         : bullForecastText == "CONTINUE"
+         ? color.new(forecastColor, 10)
+         : bullForecastText == "HOLD / WATCH"
+         ? color.new(earlyColor, 15)
+         : color.new(orangeColor, 15)
+
+    if na(forecastLabel)
+        forecastLabel := label.new(
+             bar_index,
+             close,
+             forecastLabelText,
+             xloc=xloc.bar_index,
+             yloc=yloc.price,
+             style=label.style_label_left,
+             color=forecastLabelColor,
+             textcolor=color.black,
+             size=size.small,
+             force_overlay=true
+         )
+    else
+        label.set_xy(forecastLabel, bar_index, close)
+        label.set_text(forecastLabel, forecastLabelText)
+        label.set_color(forecastLabel, forecastLabelColor)
+
+
+//====================================================================
+// 63 - PANEL VALUES
+//====================================================================
+
+string atrRegimeText = "NORMAL"
+
+if atrScore >= 80
+    atrRegimeText := "EXTREME"
+else if atrScore >= 60
+    atrRegimeText := "HIGH"
+else if atrScore <= 25
+    atrRegimeText := "LOW"
+
+
+string bandwidthText = "STABLE"
+
+if bandwidthAccelerating
+    bandwidthText := "ACCELERATING"
+else if bandwidthRising
+    bandwidthText := "EXPANDING"
+else if bbWidth < bbWidth[1]
+    bandwidthText := "CONTRACTING"
+
+
+string breakoutMemoryText =
+     bullBreakoutRecent
+     ? "BULL RECENT"
+     : bearBreakoutRecent
+     ? "BEAR RECENT"
+     : "NONE"
+
+
+string htfModifierText =
+     htfModifier > 0
+     ? "+" + str.tostring(htfModifier, "#")
+     : str.tostring(htfModifier, "#")
+
+
+string continuationText = "WAITING"
+
+if macroContinuationLock == 1
+    continuationText := "BULL LOCKED"
+else if macroContinuationLock == -1
+    continuationText := "BEAR LOCKED"
+else if cycleDirection != 0
+    continuationText := "ARMED"
+
+
+string riskAdjustmentText =
+     riskReduction > 0
+     ? "-" + str.tostring(riskReduction)
+     : "0"
+
+
+//====================================================================
+// 64 - PANEL COLORS
+//====================================================================
+
+color scoreColor = neutralColor
+
+if confirmedScore >= extremeLevel
+    scoreColor := extremeColor
+else if confirmedScore >= expansionLevel
+    scoreColor := expansionColor
+else if confirmedScore < compressionLevel
+    scoreColor := compressionColor
+
+
+color directionColor =
+     bullDominant
+     ? bullColor
+     : bearDominant
+     ? bearColor
+     : neutralColor
+
+
+color cycleColor =
+     cycleDirection == 1
+     ? bullColor
+     : cycleDirection == -1
+     ? bearColor
+     : neutralColor
+
+
+color dominanceColor =
+     bullDominant
+     ? bullStrong
+     : bearDominant
+     ? bearStrong
+     : neutralColor
+
+
+color riskColor = bullColor
+
+if falseRisk == "VERY HIGH"
+    riskColor := bearStrong
+else if falseRisk == "HIGH"
+    riskColor := bearColor
+else if falseRisk == "MEDIUM"
+    riskColor := orangeColor
+
+
+color gradeColor = neutralColor
+
+if qualityGrade == "A+"
+    gradeColor := bullStrong
+else if qualityGrade == "A"
+    gradeColor := bullColor
+else if qualityGrade == "B"
+    gradeColor := extremeColor
+
+
+color followColor = neutralColor
+
+if followThrough == "EXTREME"
+    followColor := extremeColor
+else if followThrough == "STRONG" or followThrough == "CONTINUATION"
+    followColor := bullColor
+else if followThrough == "CONFIRMED"
+    followColor := expansionColor
+else if followThrough == "BUILDING" or followThrough == "ARMED"
+    followColor := earlyColor
+else if followThrough == "CAUTION"
+    followColor := bearColor
+
+
+color forecastDashColor = forecastLineColor
+
+
+//====================================================================
+// 65 - DASHBOARD
+//====================================================================
+
+var table dashboard =
+     table.new(
+         position.top_right,
+         2,
+         29,
+         bgcolor=panelBG,
+         frame_color=borderColor,
+         frame_width=1,
+         border_color=borderColor,
+         border_width=1,
+         force_overlay=true
+     )
+
+
+if barstate.islast
+
+    if showDashboard
+
+        table.cell(dashboard, 0, 0, "VOLATILITY REGIME ENGINE", bgcolor=panelBG2, text_color=expansionColor)
+        table.cell(dashboard, 1, 0, "TRADION V3.0", bgcolor=panelBG2, text_color=color.white)
+
+
+        table.cell(dashboard, 0, 1, "REGIME", text_color=neutralColor)
+        table.cell(dashboard, 1, 1, regime, text_color=regimeColor)
+
+
+        table.cell(dashboard, 0, 2, "FAST SCORE", text_color=neutralColor)
+        table.cell(dashboard, 1, 2, str.tostring(fastScore, "#.0") + " / 100", text_color=fastScore >= earlyLevel ? earlyColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 3, "CONFIRMED SCORE", text_color=neutralColor)
+        table.cell(dashboard, 1, 3, str.tostring(confirmedScore, "#.0") + " / 100", text_color=scoreColor)
+
+
+        table.cell(dashboard, 0, 4, "ATR REGIME", text_color=neutralColor)
+        table.cell(dashboard, 1, 4, atrRegimeText, text_color=atrScore >= 60 ? extremeColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 5, "BANDWIDTH", text_color=neutralColor)
+        table.cell(dashboard, 1, 5, bandwidthText, text_color=bandwidthRising ? expansionColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 6, "RVOL", text_color=neutralColor)
+        table.cell(dashboard, 1, 6, str.tostring(rvol, "#.##") + "x", text_color=rvol >= fastBreakoutRVOL ? bullColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 7, "DIRECTION", text_color=neutralColor)
+        table.cell(dashboard, 1, 7, directionText, text_color=directionColor)
+
+
+        table.cell(dashboard, 0, 8, "SETUP BIAS", text_color=neutralColor)
+        table.cell(dashboard, 1, 8, setupBias, text_color=directionColor)
+
+
+        table.cell(dashboard, 0, 9, "BULL / BEAR SETUP", text_color=neutralColor)
+        table.cell(dashboard, 1, 9, str.tostring(bullSetupScore, "#") + " / " + str.tostring(bearSetupScore, "#"), text_color=directionColor)
+
+
+        table.cell(dashboard, 0, 10, "DOMINANCE", text_color=neutralColor)
+        table.cell(dashboard, 1, 10, dominanceText, text_color=dominanceColor)
+
+
+        table.cell(dashboard, 0, 11, "BREAKOUT MEMORY", text_color=neutralColor)
+        table.cell(dashboard, 1, 11, breakoutMemoryText, text_color=bullBreakoutRecent ? bullColor : bearBreakoutRecent ? bearColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 12, "CYCLE BIAS", text_color=neutralColor)
+        table.cell(dashboard, 1, 12, cycleBias, text_color=cycleColor)
+
+
+        table.cell(dashboard, 0, 13, "CYCLE STATE", text_color=neutralColor)
+        table.cell(dashboard, 1, 13, cycleStateText, text_color=cycleColor)
+
+
+        table.cell(dashboard, 0, 14, "IGNITION B / S", text_color=neutralColor)
+        table.cell(dashboard, 1, 14, str.tostring(bullPoints) + " / " + str.tostring(bearPoints), text_color=bullPoints > bearPoints ? bullColor : bearPoints > bullPoints ? bearColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 15, "MACRO CONTINUATION", text_color=neutralColor)
+        table.cell(dashboard, 1, 15, continuationText, text_color=macroContinuationLock == 1 ? bullColor : macroContinuationLock == -1 ? bearColor : earlyColor)
+
+
+        table.cell(dashboard, 0, 16, "CONT WAVE", text_color=neutralColor)
+        table.cell(dashboard, 1, 16, waveText, text_color=continuationWave > 0 ? bullColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 17, "BULL CONT PROB", text_color=neutralColor)
+        table.cell(dashboard, 1, 17, str.tostring(bullContForecastProb, "#.0") + " / 100", text_color=forecastDashColor)
+
+
+        table.cell(dashboard, 0, 18, "BULL FORECAST", text_color=neutralColor)
+        table.cell(dashboard, 1, 18, bullForecastText, text_color=forecastDashColor)
+
+
+        table.cell(dashboard, 0, 19, "HIST CONT HIT RATE", text_color=neutralColor)
+        table.cell(dashboard, 1, 19, histHitText, text_color=not na(histHitRate) and histHitRate >= 60 ? bullColor : orangeColor)
+
+
+        table.cell(dashboard, 0, 20, "PROJECTED TARGET", text_color=neutralColor)
+        table.cell(dashboard, 1, 20, str.tostring(projectedBullTarget, format.mintick), text_color=forecastColor)
+
+
+        table.cell(dashboard, 0, 21, "RELEASE QUALITY", text_color=neutralColor)
+        table.cell(dashboard, 1, 21, str.tostring(releaseQuality, "#") + " / 100", text_color=gradeColor)
+
+
+        table.cell(dashboard, 0, 22, "QUALITY GRADE", text_color=neutralColor)
+        table.cell(dashboard, 1, 22, qualityGrade, text_color=gradeColor)
+
+
+        table.cell(dashboard, 0, 23, "FOLLOW THROUGH", text_color=neutralColor)
+        table.cell(dashboard, 1, 23, followThrough, text_color=followColor)
+
+
+        table.cell(dashboard, 0, 24, "HTF REGIME", text_color=neutralColor)
+        table.cell(dashboard, 1, 24, useHTF ? htfRegime : "OFF", text_color=useHTF and htfScore >= expansionLevel ? expansionColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 25, "HTF QUALITY MOD", text_color=neutralColor)
+        table.cell(dashboard, 1, 25, useHTF ? htfModifierText : "0", text_color=htfModifier > 0 ? bullColor : htfModifier < 0 ? orangeColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 26, "RISK ADJUSTMENT", text_color=neutralColor)
+        table.cell(dashboard, 1, 26, riskAdjustmentText, text_color=riskReduction > 0 ? bullColor : neutralColor)
+
+
+        table.cell(dashboard, 0, 27, "FALSE EXPANSION RISK", text_color=neutralColor)
+        table.cell(dashboard, 1, 27, falseRisk, text_color=riskColor)
+
+
+        table.cell(dashboard, 0, 28, "ACTIVE EVENT", bgcolor=panelBG2, text_color=neutralColor)
+        table.cell(dashboard, 1, 28, activeEvent, bgcolor=panelBG2, text_color=activeEventColor)
+
+
+    else
+
+        table.clear(dashboard, 0, 0, 1, 28)
+
+
+//====================================================================
+// 66 - ALERTS
+//====================================================================
+
+alertcondition(
+     bullIgnition,
+     title="TRADION Bull Ignition",
+     message="Volatility Regime Engine [TRADION] V3.0: BULL IGNITION confirmed at candle close."
+)
+
+alertcondition(
+     bearIgnition,
+     title="TRADION Bear Ignition",
+     message="Volatility Regime Engine [TRADION] V3.0: BEAR IGNITION confirmed at candle close."
+)
+
+alertcondition(
+     fastBullIgnition,
+     title="TRADION Fast Bull Ignition",
+     message="Volatility Regime Engine [TRADION] V3.0: FAST BULL IGNITION confirmed."
+)
+
+alertcondition(
+     fastBearIgnition,
+     title="TRADION Fast Bear Ignition",
+     message="Volatility Regime Engine [TRADION] V3.0: FAST BEAR IGNITION confirmed."
+)
+
+alertcondition(
+     bullRelease,
+     title="TRADION Bull Release",
+     message="Volatility Regime Engine [TRADION] V3.0: BULL RELEASE confirmed."
+)
+
+alertcondition(
+     bearRelease,
+     title="TRADION Bear Release",
+     message="Volatility Regime Engine [TRADION] V3.0: BEAR RELEASE confirmed."
+)
+
+alertcondition(
+     bullContinuationEvent,
+     title="TRADION Bull Continuation",
+     message="Volatility Regime Engine [TRADION] V3.0: HIGH QUALITY BULL CONTINUATION confirmed."
+)
+
+alertcondition(
+     bearContinuationEvent,
+     title="TRADION Bear Continuation",
+     message="Volatility Regime Engine [TRADION] V3.0: HIGH QUALITY BEAR CONTINUATION confirmed."
+)
+
+alertcondition(
+     bullForecastUpgrade,
+     title="TRADION Bull Continue Forecast",
+     message="Volatility Regime Engine [TRADION] V3.0: Bull continuation forecast upgraded to CONTINUE / STRONG CONTINUE."
+)
+
+alertcondition(
+     bullForecastFade,
+     title="TRADION Bull Forecast Fade",
+     message="Volatility Regime Engine [TRADION] V3.0: Bull continuation forecast faded."
+)
+
+alertcondition(
+     bullCycleInvalidation,
+     title="TRADION Bear Cycle Invalidated",
+     message="Volatility Regime Engine [TRADION] V3.0: Previous BEAR cycle invalidated."
+)
+
+alertcondition(
+     bearCycleInvalidation,
+     title="TRADION Bull Cycle Invalidated",
+     message="Volatility Regime Engine [TRADION] V3.0: Previous BULL cycle invalidated."
+)
+
+alertcondition(
+     bullExtremeEvent,
+     title="TRADION Bull Extreme Expansion",
+     message="Volatility Regime Engine [TRADION] V3.0: BULL EXTREME EXPANSION confirmed."
+)
+
+alertcondition(
+     bearExtremeEvent,
+     title="TRADION Bear Extreme Expansion",
+     message="Volatility Regime Engine [TRADION] V3.0: BEAR EXTREME EXPANSION confirmed."
+)
+
+alertcondition(
+     volatilityExhaustion,
+     title="TRADION Volatility Exhaustion",
+     message="Volatility Regime Engine [TRADION] V3.0: VOLATILITY EXHAUSTION confirmed."
+)
