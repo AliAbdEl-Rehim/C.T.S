@@ -1684,12 +1684,27 @@ if barstate.isconfirmed and array.size(contHistory) > 0
         ContSample sample = array.get(contHistory, i)
         if not sample.resolved and bar_index - sample.barNum >= forecastLookforward
             float needed = sample.px + forecastMinATRMove * atr
-            sample.win := high >= needed or close > sample.px
+            sample.win := high >= needed
             sample.resolved := true
             array.set(contHistory, i, sample)
 
 
-if barstate.isconfirmed and cycleDirection == 1 and bullDominant and close > emaFast and bar_index % 2 == 0
+storeForecastSample =
+     barstate.isconfirmed and
+     cycleDirection == 1 and
+     bullDominant and
+     close > emaFast and
+     (
+         bullIgnition or
+         bullRelease or
+         bullContinuationEvent or
+         (
+             not na(lastIgnitionBar) and
+             (bar_index - lastIgnitionBar) % 5 == 0
+         )
+     )
+
+if storeForecastSample
     ContSample fresh = ContSample.new(bar_index, close, fastScore, bullSetupScore, dominanceAbs, releaseQuality, htfCode, false, false)
     array.push(contHistory, fresh)
     if array.size(contHistory) > forecastSampleCap
