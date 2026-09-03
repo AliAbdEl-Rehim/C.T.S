@@ -1,0 +1,1822 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// ©SG_Group
+//@version=6
+indicator(
+     "Global Cash Market Open Close Handoff Sequence",
+     shorttitle = "MktHandoff",
+     overlay = true,
+     max_lines_count = 500,
+     max_labels_count = 400,
+     behind_chart = false)
+
+// =============================================================================
+// PURPOSE
+// =============================================================================
+// Boundary-only market-clock study. It draws exact open, break, resume, and
+// close timestamps for configurable cash-market references. Simultaneous
+// events are merged, and each timestamp can be classified by how the tracked
+// active-market set changes across it.
+//
+// An optional continuation engine watches the first bars after a real
+// active-set change and also after an EMA pullback in an existing rise.
+// It classifies that rise as continuation or failure. Confirmation means a
+// closed bar plus confluence filters, not a guaranteed outcome. The default
+// profile is meant to print visible marks; tighten the signal group if the
+// chart becomes too busy.
+//
+// This script does not draw session backgrounds, price ranges, or volume
+// studies, and it does not make performance claims. Default schedules are
+// editable reference hours. Exchange holidays, early closes, auctions,
+// unscheduled closures, and historical schedule changes are not modeled.
+// Contiguous or overlapping segments are rendered as one active interval;
+// separated segments create BREAK and RESUME boundaries.
+
+// =============================================================================
+// CONSTANTS AND DATA TYPES
+// =============================================================================
+const int MINUTE_MS = 60 * 1000
+const int HOUR_MS   = 60 * MINUTE_MS
+const int DAY_MS    = 24 * HOUR_MS
+
+const int EVENT_OPEN   = 1
+const int EVENT_BREAK  = 2
+const int EVENT_RESUME = 3
+const int EVENT_CLOSE  = 4
+
+const string GROUP_WINDOW = "1. Research Window"
+const string GROUP_LABELS = "2. Boundary Labels"
+const string GROUP_LINES  = "3. Boundary Lines"
+const string GROUP_ROLES  = "4. Handoff Classification"
+const string GROUP_STRIP  = "5. Boundary Strip"
+const string GROUP_SYDNEY = "6. Sydney Cash Reference"
+const string GROUP_TOKYO  = "7. Tokyo Cash Reference"
+const string GROUP_HK     = "8. Hong Kong Cash Reference"
+const string GROUP_FRA    = "9. Frankfurt / Xetra Main Cash Reference"
+const string GROUP_LON    = "10. London Cash Reference"
+const string GROUP_NY     = "11. New York Cash Reference"
+const string GROUP_SIGNALS = "12. Rise Continuation Signals"
+
+type Market
+    bool enabled
+    string name
+    string code
+    string tz
+    string weekdays
+    string segmentOne
+    bool segmentTwoEnabled
+    string segmentTwo
+    color tint
+
+// =============================================================================
+// INPUTS
+// Every input uses display.none so the chart status line shows only the
+// indicator's short title rather than a trail of parameter values.
+// =============================================================================
+string scheduleScope = input.string(
+     "Visible range",
+     "Schedule scope",
+     options = ["Visible range", "Recent days"],
+     tooltip = "Visible range rebuilds around the part of the chart you are studying. Recent days follows the selected anchor instead.",
+     group = GROUP_WINDOW,
+     display = display.none)
+
+int visibleSpanCapDays = input.int(
+     90,
+     "Maximum visible span to process (days)",
+     minval = 3,
+     maxval = 365,
+     tooltip = "When the visible chart covers more than this span, the script retains the most recent portion ending at the right visible bar.",
+     group = GROUP_WINDOW,
+     display = display.none,
+     active = scheduleScope == "Visible range")
+
+int recentPastDays = input.int(
+     10,
+     "Past days",
+     minval = 1,
+     maxval = 45,
+     group = GROUP_WINDOW,
+     display = display.none,
+     active = scheduleScope == "Recent days")
+
+string anchorMode = input.string(
+     "Right visible bar",
+     "Recent-days anchor",
+     options = ["Right visible bar", "Latest chart bar", "Real clock"],
+     tooltip = "Right visible bar is suitable for historical study. Latest chart bar follows the dataset. Real clock follows timenow and can extend beyond the latest bar.",
+     group = GROUP_WINDOW,
+     display = display.none,
+     active = scheduleScope == "Recent days")
+
+int futureProjectionDays = input.int(
+     2,
+     "Future projection days",
+     minval = 0,
+     maxval = 7,
+     tooltip = "Projects recurring reference boundaries forward from the effective anchor. This is a time schedule, not a price forecast.",
+     group = GROUP_WINDOW,
+     display = display.none)
+
+string readoutTimezone = input.string(
+     "Etc/UTC",
+     "Boundary Strip time zone",
+     tooltip = "Use a valid IANA identifier such as Etc/UTC, Asia/Tokyo, Europe/London, or America/New_York.",
+     group = GROUP_WINDOW,
+     display = display.none)
+
+bool showHistoricalLines = input.bool(
+     true,
+     "Show boundaries at or before anchor",
+     group = GROUP_WINDOW,
+     display = display.none)
+
+bool showFutureLines = input.bool(
+     true,
+     "Show projected boundaries after anchor",
+     group = GROUP_WINDOW,
+     display = display.none,
+     active = futureProjectionDays > 0)
+
+// Boundary labels.
+bool showBoundaryLabels = input.bool(
+     true,
+     "Show boundary labels",
+     group = GROUP_LABELS,
+     display = display.none)
+
+string labelContent = input.string(
+     "Role + events",
+     "Label content",
+     options = ["Role + events", "Events only", "Role only"],
+     group = GROUP_LABELS,
+     display = display.none,
+     active = showBoundaryLabels)
+
+string labelPlacement = input.string(
+     "Top",
+     "Label placement",
+     options = ["Alternate", "Top", "Bottom"],
+     tooltip = "Alternate distributes labels between upper and lower lanes. Lane spacing reduces collisions without moving timestamps.",
+     group = GROUP_LABELS,
+     display = display.none,
+     active = showBoundaryLabels)
+
+int labelLaneCount = input.int(
+     2,
+     "Lanes per side",
+     minval = 1,
+     maxval = 4,
+     group = GROUP_LABELS,
+     display = display.none,
+     active = showBoundaryLabels)
+
+int labelSpacingMinutes = input.int(
+     360,
+     "Minimum time spacing per lane (minutes)",
+     minval = 15,
+     maxval = 1440,
+     step = 15,
+     group = GROUP_LABELS,
+     display = display.none,
+     active = showBoundaryLabels)
+
+int maximumBoundaryLabels = input.int(
+     7,
+     "Maximum labels",
+     minval = 1,
+     maxval = 80,
+     tooltip = "Keep this near the visible line budget. Labels are applied only to retained structural lines.",
+     group = GROUP_LABELS,
+     display = display.none,
+     active = showBoundaryLabels)
+
+string labelTextSize = input.string(
+     "Small",
+     "Text size",
+     options = ["Tiny", "Small", "Normal"],
+     tooltip = "Small is the readability-first default. Use Normal when the chart is displayed on a high-resolution screen or in a large publication image.",
+     group = GROUP_LABELS,
+     display = display.none,
+     active = showBoundaryLabels)
+
+bool boldBoundaryLabelText = input.bool(
+     true,
+     "Bold label text",
+     tooltip = "Uses Pine v6 text formatting to keep compact boundary captions legible against the chart.",
+     group = GROUP_LABELS,
+     display = display.none,
+     active = showBoundaryLabels)
+
+int labelTransparency = input.int(
+     8,
+     "Label background transparency",
+     minval = 0,
+     maxval = 70,
+     tooltip = "Lower values create a more opaque caption background and stronger text contrast.",
+     group = GROUP_LABELS,
+     display = display.none,
+     active = showBoundaryLabels)
+
+bool showNativeTimeInTooltip = input.bool(
+     true,
+     "Include native local time in tooltip",
+     group = GROUP_LABELS,
+     display = display.none,
+     active = showBoundaryLabels)
+
+// Boundary lines.
+int boundaryLineWidth = input.int(
+     1,
+     "Standard line width",
+     minval = 1,
+     maxval = 4,
+     group = GROUP_LINES,
+     display = display.none)
+
+int maximumBoundaryLines = input.int(
+     7,
+     "Visible line budget",
+     minval = 3,
+     maxval = 120,
+     tooltip = "Adaptive spread uses this as the target number of real boundary timestamps. Increase it only when a denser research view is required.",
+     group = GROUP_LINES,
+     display = display.none)
+
+string lineRetentionMode = input.string(
+     "Adaptive spread",
+     "Line retention",
+     options = ["Adaptive spread", "Nearest anchor"],
+     tooltip = "Adaptive spread distributes retained boundaries across the displayed time span. Nearest anchor preserves the former dense research behavior around the effective anchor.",
+     group = GROUP_LINES,
+     display = display.none)
+
+string lineColorMode = input.string(
+     "Transition role",
+     "Line color mode",
+     options = ["Market identity", "Transition role"],
+     tooltip = "Market identity preserves each market color. Transition role recolors lines by the active-market change across the timestamp.",
+     group = GROUP_LINES,
+     display = display.none)
+
+string lineStyleMode = input.string(
+     "Directional",
+     "Line style mode",
+     options = ["Directional", "Uniform"],
+     tooltip = "Directional uses solid for open/resume, dotted for breaks, dashed for closes, and solid for merged timestamps.",
+     group = GROUP_LINES,
+     display = display.none)
+
+string uniformLineStyle = input.string(
+     "Solid",
+     "Uniform style",
+     options = ["Solid", "Dashed", "Dotted"],
+     group = GROUP_LINES,
+     display = display.none,
+     active = lineStyleMode == "Uniform")
+
+int historicalTransparency = input.int(
+     58,
+     "Historical line transparency",
+     minval = 0,
+     maxval = 85,
+     group = GROUP_LINES,
+     display = display.none)
+
+int futureTransparency = input.int(
+     44,
+     "Future line transparency",
+     minval = 0,
+     maxval = 85,
+     group = GROUP_LINES,
+     display = display.none)
+
+color simultaneousEventColor = input.color(
+     color.rgb(255, 193, 7),
+     "Simultaneous-event color",
+     tooltip = "Used when multiple tracked market events occur at the same absolute timestamp.",
+     group = GROUP_LINES,
+     display = display.none)
+
+bool emphasizeNextBoundary = input.bool(
+     true,
+     "Emphasize next boundary",
+     group = GROUP_LINES,
+     display = display.none)
+
+color nextBoundaryColor = input.color(
+     color.rgb(255, 215, 0),
+     "Next-boundary color",
+     group = GROUP_LINES,
+     display = display.none,
+     active = emphasizeNextBoundary)
+
+// Handoff classification.
+bool classifyBoundaryRoles = input.bool(
+     true,
+     "Classify active-market transitions",
+     tooltip = "Compares the configured active-market set immediately before and after each boundary. This is descriptive schedule logic, not a trading signal.",
+     group = GROUP_ROLES,
+     display = display.none)
+
+color activationColor = input.color(
+     color.rgb(0, 188, 255),
+     "Activation (none to active)",
+     group = GROUP_ROLES,
+     display = display.none,
+     active = classifyBoundaryRoles)
+
+color overlapBuildColor = input.color(
+     color.rgb(76, 217, 100),
+     "Overlap build (active count rises)",
+     group = GROUP_ROLES,
+     display = display.none,
+     active = classifyBoundaryRoles)
+
+color handoffColor = input.color(
+     color.rgb(255, 179, 0),
+     "Handoff (same count, different markets)",
+     group = GROUP_ROLES,
+     display = display.none,
+     active = classifyBoundaryRoles)
+
+color overlapReleaseColor = input.color(
+     color.rgb(175, 82, 222),
+     "Overlap release (active count falls)",
+     group = GROUP_ROLES,
+     display = display.none,
+     active = classifyBoundaryRoles)
+
+color deactivationColor = input.color(
+     color.rgb(255, 69, 58),
+     "Deactivation (active to none)",
+     group = GROUP_ROLES,
+     display = display.none,
+     active = classifyBoundaryRoles)
+
+color internalBoundaryColor = input.color(
+     color.rgb(100, 116, 139),
+     "Internal boundary",
+     group = GROUP_ROLES,
+     display = display.none,
+     active = classifyBoundaryRoles)
+
+// Compact fixed-position readout. Default is bottom-left to avoid the right
+// price scale and High/Low labels.
+bool showBoundaryStrip = input.bool(
+     true,
+     "Show Boundary Strip",
+     group = GROUP_STRIP,
+     display = display.none)
+
+string boundaryStripPosition = input.string(
+     "Bottom left",
+     "Position",
+     options = ["Bottom left", "Middle left", "Top left", "Bottom right", "Middle right", "Top right"],
+     tooltip = "Bottom-left remains the default. A transparent clearance row lifts the visible panel above TradingView's permanent lower-left branding area.",
+     group = GROUP_STRIP,
+     display = display.none,
+     active = showBoundaryStrip)
+
+string boundaryStripTextSize = input.string(
+     "Small",
+     "Text size",
+     options = ["Tiny", "Small", "Normal"],
+     tooltip = "Small is the readability-first default for the fixed readout.",
+     group = GROUP_STRIP,
+     display = display.none,
+     active = showBoundaryStrip)
+
+bool boldBoundaryStripText = input.bool(
+     true,
+     "Bold panel text",
+     tooltip = "Applies bold formatting to the panel header, keys, values, and visual marks.",
+     group = GROUP_STRIP,
+     display = display.none,
+     active = showBoundaryStrip)
+
+float boundaryStripBottomClearance = input.float(
+     4.0,
+     "Bottom clearance (% of pane)",
+     minval = 0.0,
+     maxval = 15.0,
+     step = 0.5,
+     tooltip = "Raises a bottom-anchored panel above the lower-left or lower-right chart furniture without moving it away from the corner. Set to zero to disable.",
+     group = GROUP_STRIP,
+     display = display.none,
+     active = showBoundaryStrip and (boundaryStripPosition == "Bottom left" or boundaryStripPosition == "Bottom right"))
+
+bool showSecondsInCountdown = input.bool(
+     false,
+     "Show seconds when under one hour",
+     group = GROUP_STRIP,
+     display = display.none,
+     active = showBoundaryStrip)
+
+// Market presets. All fields remain editable for research.
+bool sydneyEnabled = input.bool(true, "Enable", inline = "syd0", group = GROUP_SYDNEY, display = display.none)
+string sydneyCode = input.string("SYD", "Code", inline = "syd0", group = GROUP_SYDNEY, display = display.none, active = sydneyEnabled)
+string sydneyName = input.string("Sydney Cash", "Name", group = GROUP_SYDNEY, display = display.none, active = sydneyEnabled)
+string sydneyTimezone = input.string("Australia/Sydney", "IANA time zone", group = GROUP_SYDNEY, display = display.none, active = sydneyEnabled)
+string sydneyWeekdays = input.string("23456", "Active weekdays (1 Sun ... 7 Sat)", group = GROUP_SYDNEY, display = display.none, active = sydneyEnabled)
+string sydneySegmentOne = input.session("1000-1600", "Primary segment", group = GROUP_SYDNEY, display = display.none, active = sydneyEnabled)
+bool sydneySegmentTwoEnabled = input.bool(false, "Use second segment", group = GROUP_SYDNEY, display = display.none, active = sydneyEnabled)
+string sydneySegmentTwo = input.session("0000-0000", "Second segment", group = GROUP_SYDNEY, display = display.none, active = sydneyEnabled and sydneySegmentTwoEnabled)
+color sydneyColor = input.color(color.rgb(0, 174, 239), "Color", group = GROUP_SYDNEY, display = display.none, active = sydneyEnabled)
+
+bool tokyoEnabled = input.bool(true, "Enable", inline = "tyo0", group = GROUP_TOKYO, display = display.none)
+string tokyoCode = input.string("TYO", "Code", inline = "tyo0", group = GROUP_TOKYO, display = display.none, active = tokyoEnabled)
+string tokyoName = input.string("Tokyo Cash", "Name", group = GROUP_TOKYO, display = display.none, active = tokyoEnabled)
+string tokyoTimezone = input.string("Asia/Tokyo", "IANA time zone", group = GROUP_TOKYO, display = display.none, active = tokyoEnabled)
+string tokyoWeekdays = input.string("23456", "Active weekdays (1 Sun ... 7 Sat)", group = GROUP_TOKYO, display = display.none, active = tokyoEnabled)
+string tokyoSegmentOne = input.session("0900-1130", "Morning segment", group = GROUP_TOKYO, display = display.none, active = tokyoEnabled)
+bool tokyoSegmentTwoEnabled = input.bool(true, "Use afternoon segment", group = GROUP_TOKYO, display = display.none, active = tokyoEnabled)
+string tokyoSegmentTwo = input.session("1230-1530", "Afternoon segment", group = GROUP_TOKYO, display = display.none, active = tokyoEnabled and tokyoSegmentTwoEnabled)
+color tokyoColor = input.color(color.rgb(238, 61, 190), "Color", group = GROUP_TOKYO, display = display.none, active = tokyoEnabled)
+
+bool hongKongEnabled = input.bool(true, "Enable", inline = "hkg0", group = GROUP_HK, display = display.none)
+string hongKongCode = input.string("HKG", "Code", inline = "hkg0", group = GROUP_HK, display = display.none, active = hongKongEnabled)
+string hongKongName = input.string("Hong Kong Cash", "Name", group = GROUP_HK, display = display.none, active = hongKongEnabled)
+string hongKongTimezone = input.string("Asia/Hong_Kong", "IANA time zone", group = GROUP_HK, display = display.none, active = hongKongEnabled)
+string hongKongWeekdays = input.string("23456", "Active weekdays (1 Sun ... 7 Sat)", group = GROUP_HK, display = display.none, active = hongKongEnabled)
+string hongKongSegmentOne = input.session("0930-1200", "Morning segment", group = GROUP_HK, display = display.none, active = hongKongEnabled)
+bool hongKongSegmentTwoEnabled = input.bool(true, "Use afternoon segment", group = GROUP_HK, display = display.none, active = hongKongEnabled)
+string hongKongSegmentTwo = input.session("1300-1600", "Afternoon segment", group = GROUP_HK, display = display.none, active = hongKongEnabled and hongKongSegmentTwoEnabled)
+color hongKongColor = input.color(color.rgb(245, 158, 11), "Color", group = GROUP_HK, display = display.none, active = hongKongEnabled)
+
+bool frankfurtEnabled = input.bool(true, "Enable", inline = "fra0", group = GROUP_FRA, display = display.none)
+string frankfurtCode = input.string("XET", "Code", inline = "fra0", group = GROUP_FRA, display = display.none, active = frankfurtEnabled)
+string frankfurtName = input.string("Xetra Main Cash", "Name", group = GROUP_FRA, display = display.none, active = frankfurtEnabled)
+string frankfurtTimezone = input.string("Europe/Berlin", "IANA time zone", group = GROUP_FRA, display = display.none, active = frankfurtEnabled)
+string frankfurtWeekdays = input.string("23456", "Active weekdays (1 Sun ... 7 Sat)", group = GROUP_FRA, display = display.none, active = frankfurtEnabled)
+string frankfurtSegmentOne = input.session("0900-1730", "Primary segment", group = GROUP_FRA, display = display.none, active = frankfurtEnabled)
+bool frankfurtSegmentTwoEnabled = input.bool(false, "Use second segment", group = GROUP_FRA, display = display.none, active = frankfurtEnabled)
+string frankfurtSegmentTwo = input.session("0000-0000", "Second segment", group = GROUP_FRA, display = display.none, active = frankfurtEnabled and frankfurtSegmentTwoEnabled)
+color frankfurtColor = input.color(color.rgb(42, 200, 96), "Color", group = GROUP_FRA, display = display.none, active = frankfurtEnabled)
+
+bool londonEnabled = input.bool(true, "Enable", inline = "lon0", group = GROUP_LON, display = display.none)
+string londonCode = input.string("LON", "Code", inline = "lon0", group = GROUP_LON, display = display.none, active = londonEnabled)
+string londonName = input.string("London Cash", "Name", group = GROUP_LON, display = display.none, active = londonEnabled)
+string londonTimezone = input.string("Europe/London", "IANA time zone", group = GROUP_LON, display = display.none, active = londonEnabled)
+string londonWeekdays = input.string("23456", "Active weekdays (1 Sun ... 7 Sat)", group = GROUP_LON, display = display.none, active = londonEnabled)
+string londonSegmentOne = input.session("0800-1630", "Primary segment", group = GROUP_LON, display = display.none, active = londonEnabled)
+bool londonSegmentTwoEnabled = input.bool(false, "Use second segment", group = GROUP_LON, display = display.none, active = londonEnabled)
+string londonSegmentTwo = input.session("0000-0000", "Second segment", group = GROUP_LON, display = display.none, active = londonEnabled and londonSegmentTwoEnabled)
+color londonColor = input.color(color.rgb(111, 91, 255), "Color", group = GROUP_LON, display = display.none, active = londonEnabled)
+
+bool newYorkEnabled = input.bool(true, "Enable", inline = "nyc0", group = GROUP_NY, display = display.none)
+string newYorkCode = input.string("NYC", "Code", inline = "nyc0", group = GROUP_NY, display = display.none, active = newYorkEnabled)
+string newYorkName = input.string("New York Cash", "Name", group = GROUP_NY, display = display.none, active = newYorkEnabled)
+string newYorkTimezone = input.string("America/New_York", "IANA time zone", group = GROUP_NY, display = display.none, active = newYorkEnabled)
+string newYorkWeekdays = input.string("23456", "Active weekdays (1 Sun ... 7 Sat)", group = GROUP_NY, display = display.none, active = newYorkEnabled)
+string newYorkSegmentOne = input.session("0930-1600", "Primary segment", group = GROUP_NY, display = display.none, active = newYorkEnabled)
+bool newYorkSegmentTwoEnabled = input.bool(false, "Use second segment", group = GROUP_NY, display = display.none, active = newYorkEnabled)
+string newYorkSegmentTwo = input.session("0000-0000", "Second segment", group = GROUP_NY, display = display.none, active = newYorkEnabled and newYorkSegmentTwoEnabled)
+color newYorkColor = input.color(color.rgb(255, 59, 92), "Color", group = GROUP_NY, display = display.none, active = newYorkEnabled)
+
+// Rise continuation / failure. The Visible default is chosen so marks can
+// actually appear on a normal intraday chart. Tighten these only after the
+// shapes are printing. These remain research classifications, not sure trades.
+bool enableContinuationSignals = input.bool(
+     true,
+     "Enable rise continuation signals",
+     tooltip = "Prints continuation or failure after a cash-market handoff or an EMA pullback in an existing rise. Signals print on confirmed bars.",
+     group = GROUP_SIGNALS,
+     display = display.none)
+
+bool enableStructureSetups = input.bool(
+     true,
+     "Also signal EMA pullback continuations",
+     tooltip = "If the market is already rising and price pulls back into EMA21 then holds, start a watch even when no session handoff occurred. This is what makes marks visible between session events.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+int impulseLookbackBars = input.int(
+     8,
+     "Impulse lookback (bars)",
+     minval = 3,
+     maxval = 30,
+     tooltip = "The rise is measured from the prior bar back through this window.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+float impulseAtrMult = input.float(
+     0.35,
+     "Minimum pre-setup rise (ATR)",
+     minval = 0.15,
+     maxval = 3.00,
+     step = 0.05,
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+int confirmWindowBars = input.int(
+     16,
+     "Confirmation window (bars)",
+     minval = 3,
+     maxval = 40,
+     tooltip = "How many bars the engine may take to confirm continuation or failure. If the window ends without a new high, a failure mark is printed.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool twoBarConfirmation = input.bool(
+     false,
+     "Require two-bar confirmation",
+     tooltip = "Off by default so a valid closed trigger bar can print. Turn on after you are seeing marks and want fewer wicks.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool requireTrendStack = input.bool(
+     false,
+     "Require EMA 9>21>50 stack",
+     tooltip = "Off by default. When off, a close above EMA21 is enough trend context.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool requireVolumeConfirmation = input.bool(
+     false,
+     "Require volume above average",
+     tooltip = "Keep off on forex and CFD symbols where volume is missing or unreliable. Missing volume never blocks a signal.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool requireMacdConfirmation = input.bool(
+     false,
+     "Require MACD histogram agreement",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool requireLiquidityForContinue = input.bool(
+     false,
+     "Continuation only when liquidity arrives",
+     tooltip = "When on, continuation needs ACTIVATION, OVERLAP BUILD, HANDOFF, or a structure pullback. Failure may still print when liquidity leaves.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+int minContinueScore = input.int(
+     4,
+     "Minimum continuation score",
+     minval = 3,
+     maxval = 12,
+     tooltip = "Lower values print more continuation marks. Score is confluence, not a win-rate.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+int minFailScore = input.int(
+     3,
+     "Minimum failure score",
+     minval = 3,
+     maxval = 12,
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool showWatchMarkers = input.bool(
+     true,
+     "Show watch markers at setup",
+     tooltip = "Yellow circles mark the bar where the engine starts watching a rise. Use this to confirm the script is armed even before CONT/FAIL.",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool showSignalShapes = input.bool(
+     true,
+     "Show signal shapes",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool showSignalLabels = input.bool(
+     true,
+     "Show Arabic/English signal labels",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+bool useArabicSignalText = input.bool(
+     true,
+     "Prefer Arabic captions",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals and showSignalLabels)
+
+color continueSignalColor = input.color(
+     color.rgb(34, 197, 94),
+     "Continuation color",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+color failSignalColor = input.color(
+     color.rgb(244, 63, 94),
+     "Failure color",
+     group = GROUP_SIGNALS,
+     display = display.none,
+     active = enableContinuationSignals)
+
+// =============================================================================
+// UTILITY FUNCTIONS
+// =============================================================================
+f_sessionStartMinutes(string sessionText) =>
+    int hourValue = int(str.tonumber(str.substring(sessionText, 0, 2)))
+    int minuteValue = int(str.tonumber(str.substring(sessionText, 2, 4)))
+    hourValue * 60 + minuteValue
+
+f_sessionEndMinutes(string sessionText) =>
+    int hourValue = int(str.tonumber(str.substring(sessionText, 5, 7)))
+    int minuteValue = int(str.tonumber(str.substring(sessionText, 7, 9)))
+    hourValue * 60 + minuteValue
+
+f_sessionHasDuration(string sessionText) =>
+    f_sessionStartMinutes(sessionText) != f_sessionEndMinutes(sessionText)
+
+f_shiftLocalDate(int yearValue, int monthValue, int dayValue, string timezoneValue, int dayOffset) =>
+    int localNoon = timestamp(timezoneValue, yearValue, monthValue, dayValue, 12, 0, 0)
+    int shifted = localNoon + dayOffset * DAY_MS
+    [year(shifted, timezoneValue), month(shifted, timezoneValue), dayofmonth(shifted, timezoneValue)]
+
+f_sessionBounds(int yearValue, int monthValue, int dayValue, string timezoneValue, string sessionText) =>
+    int startMinutes = f_sessionStartMinutes(sessionText)
+    int endMinutes = f_sessionEndMinutes(sessionText)
+    int startTimestamp = timestamp(
+         timezoneValue,
+         yearValue,
+         monthValue,
+         dayValue,
+         int(startMinutes / 60),
+         startMinutes % 60,
+         0)
+    int endYear = yearValue
+    int endMonth = monthValue
+    int endDay = dayValue
+    if endMinutes <= startMinutes
+        [nextYear, nextMonth, nextDay] = f_shiftLocalDate(yearValue, monthValue, dayValue, timezoneValue, 1)
+        endYear := nextYear
+        endMonth := nextMonth
+        endDay := nextDay
+    int endTimestamp = timestamp(
+         timezoneValue,
+         endYear,
+         endMonth,
+         endDay,
+         int(endMinutes / 60),
+         endMinutes % 60,
+         0)
+    [startTimestamp, endTimestamp]
+
+f_dayAllowed(int localTimestamp, string timezoneValue, string weekdayMask) =>
+    int weekdayNumber = dayofweek(localTimestamp, timezoneValue)
+    str.contains(weekdayMask, str.tostring(weekdayNumber))
+
+f_intervalActiveForDate(
+     int queryTimestamp,
+     int yearValue,
+     int monthValue,
+     int dayValue,
+     string timezoneValue,
+     string weekdayMask,
+     string sessionText) =>
+    int localNoon = timestamp(timezoneValue, yearValue, monthValue, dayValue, 12, 0, 0)
+    bool allowed = f_dayAllowed(localNoon, timezoneValue, weekdayMask)
+    [startTimestamp, endTimestamp] = f_sessionBounds(yearValue, monthValue, dayValue, timezoneValue, sessionText)
+    allowed and f_sessionHasDuration(sessionText) and queryTimestamp >= startTimestamp and queryTimestamp < endTimestamp
+
+f_segmentActive(Market marketValue, string sessionText, int queryTimestamp) =>
+    int currentYear = year(queryTimestamp, marketValue.tz)
+    int currentMonth = month(queryTimestamp, marketValue.tz)
+    int currentDay = dayofmonth(queryTimestamp, marketValue.tz)
+    bool activeCurrentDate = f_intervalActiveForDate(
+         queryTimestamp,
+         currentYear,
+         currentMonth,
+         currentDay,
+         marketValue.tz,
+         marketValue.weekdays,
+         sessionText)
+    [previousYear, previousMonth, previousDay] = f_shiftLocalDate(
+         currentYear,
+         currentMonth,
+         currentDay,
+         marketValue.tz,
+         -1)
+    bool activePreviousDate = f_intervalActiveForDate(
+         queryTimestamp,
+         previousYear,
+         previousMonth,
+         previousDay,
+         marketValue.tz,
+         marketValue.weekdays,
+         sessionText)
+    activeCurrentDate or activePreviousDate
+
+f_marketActive(Market marketValue, int queryTimestamp) =>
+    bool firstSegmentActive = marketValue.enabled and f_sessionHasDuration(marketValue.segmentOne) and f_segmentActive(marketValue, marketValue.segmentOne, queryTimestamp)
+    bool secondSegmentActive = marketValue.enabled and marketValue.segmentTwoEnabled and f_sessionHasDuration(marketValue.segmentTwo) and f_segmentActive(marketValue, marketValue.segmentTwo, queryTimestamp)
+    firstSegmentActive or secondSegmentActive
+
+f_activeState(array<Market> markets, int queryTimestamp) =>
+    int activeCount = 0
+    string activeCodes = ""
+    int marketCount = array.size(markets)
+    if marketCount > 0
+        for marketIndex = 0 to marketCount - 1
+            Market marketValue = array.get(markets, marketIndex)
+            if f_marketActive(marketValue, queryTimestamp)
+                activeCount += 1
+                activeCodes += (activeCodes == "" ? "" : " + ") + marketValue.code
+    [activeCount, activeCodes == "" ? "None" : activeCodes]
+
+f_eventWord(int eventKind) =>
+    switch eventKind
+        EVENT_OPEN => "OPEN"
+        EVENT_BREAK => "BREAK"
+        EVENT_RESUME => "RESUME"
+        => "CLOSE"
+
+f_transitionRole(int beforeCount, string beforeCodes, int afterCount, string afterCodes) =>
+    string role = "INTERNAL BOUNDARY"
+    if beforeCount == 0 and afterCount > 0
+        role := "ACTIVATION"
+    else if beforeCount > 0 and afterCount == 0
+        role := "DEACTIVATION"
+    else if afterCount > beforeCount
+        role := "OVERLAP BUILD"
+    else if afterCount < beforeCount
+        role := "OVERLAP RELEASE"
+    else if beforeCodes != afterCodes
+        role := "HANDOFF"
+    role
+
+f_roleColor(string role) =>
+    switch role
+        "ACTIVATION" => activationColor
+        "OVERLAP BUILD" => overlapBuildColor
+        "HANDOFF" => handoffColor
+        "OVERLAP RELEASE" => overlapReleaseColor
+        "DEACTIVATION" => deactivationColor
+        => internalBoundaryColor
+
+f_roleTag(string role) =>
+    switch role
+        "ACTIVATION" => "ACTIVATE"
+        "OVERLAP BUILD" => "OVERLAP +"
+        "HANDOFF" => "HANDOFF"
+        "OVERLAP RELEASE" => "OVERLAP -"
+        "DEACTIVATION" => "DEACTIVATE"
+        "BOUNDARY" => "BOUNDARY"
+        => "INTERNAL"
+
+f_uniformLineStyle(string styleName) =>
+    switch styleName
+        "Dashed" => line.style_dashed
+        "Dotted" => line.style_dotted
+        => line.style_solid
+
+f_boundaryLineStyle(int eventKind, int eventCount) =>
+    if lineStyleMode == "Uniform"
+        f_uniformLineStyle(uniformLineStyle)
+    else if eventCount > 1
+        line.style_solid
+    else
+        switch eventKind
+            EVENT_BREAK => line.style_dotted
+            EVENT_CLOSE => line.style_dashed
+            => line.style_solid
+
+f_textSize(string sizeName) =>
+    switch sizeName
+        "Tiny" => size.tiny
+        "Normal" => size.normal
+        => size.small
+
+f_headerTextSize(string sizeName) =>
+    switch sizeName
+        "Tiny" => size.small
+        "Normal" => size.large
+        => size.normal
+
+f_tablePosition(string positionName) =>
+    switch positionName
+        "Middle left" => position.middle_left
+        "Top left" => position.top_left
+        "Bottom right" => position.bottom_right
+        "Middle right" => position.middle_right
+        "Top right" => position.top_right
+        => position.bottom_left
+
+f_contrastTextColor(color backgroundColor) =>
+    float luminance = 0.2126 * color.r(backgroundColor) + 0.7152 * color.g(backgroundColor) + 0.0722 * color.b(backgroundColor)
+    luminance > 145.0 ? color.rgb(8, 15, 28) : color.rgb(248, 250, 252)
+
+f_durationText(int millisecondsValue, bool includeSeconds) =>
+    int remaining = math.max(millisecondsValue, 0)
+    int totalSeconds = int(remaining / 1000)
+    int totalMinutes = int(totalSeconds / 60)
+    int daysValue = int(totalMinutes / (24 * 60))
+    int hoursValue = int((totalMinutes % (24 * 60)) / 60)
+    int minutesValue = totalMinutes % 60
+    int secondsValue = totalSeconds % 60
+    string result = ""
+    if daysValue > 0
+        result := str.tostring(daysValue) + "d " + str.tostring(hoursValue) + "h"
+    else if hoursValue > 0
+        result := str.tostring(hoursValue) + "h " + str.tostring(minutesValue) + "m"
+    else if totalMinutes > 0
+        result := str.tostring(totalMinutes) + "m"
+        if includeSeconds
+            result += " " + str.tostring(secondsValue) + "s"
+    else
+        result := includeSeconds ? str.tostring(secondsValue) + "s" : "<1m"
+    result
+
+f_clearLines(array<line> lineObjects) =>
+    int objectCount = array.size(lineObjects)
+    if objectCount > 0
+        for objectIndex = 0 to objectCount - 1
+            line.delete(array.get(lineObjects, objectIndex))
+    array.clear(lineObjects)
+    0
+
+f_clearLabels(array<label> labelObjects) =>
+    int objectCount = array.size(labelObjects)
+    if objectCount > 0
+        for objectIndex = 0 to objectCount - 1
+            label.delete(array.get(labelObjects, objectIndex))
+    array.clear(labelObjects)
+    0
+
+f_pushRawEvent(
+     array<int> rawTimes,
+     array<int> rawMarketIndexes,
+     array<int> rawKinds,
+     array<color> rawColors,
+     int eventTimestamp,
+     int marketIndex,
+     int eventKind,
+     color eventColor,
+     int lowerTimestamp,
+     int upperTimestamp) =>
+    if eventTimestamp >= lowerTimestamp and eventTimestamp <= upperTimestamp
+        array.push(rawTimes, eventTimestamp)
+        array.push(rawMarketIndexes, marketIndex)
+        array.push(rawKinds, eventKind)
+        array.push(rawColors, eventColor)
+    0
+
+f_addMarketDateEvents(
+     array<int> rawTimes,
+     array<int> rawMarketIndexes,
+     array<int> rawKinds,
+     array<color> rawColors,
+     Market marketValue,
+     int marketIndex,
+     int yearValue,
+     int monthValue,
+     int dayValue,
+     int lowerTimestamp,
+     int upperTimestamp) =>
+    int localNoon = timestamp(marketValue.tz, yearValue, monthValue, dayValue, 12, 0, 0)
+    bool allowed = marketValue.enabled and f_dayAllowed(localNoon, marketValue.tz, marketValue.weekdays)
+    if allowed and f_sessionHasDuration(marketValue.segmentOne)
+        [firstStart, firstEnd] = f_sessionBounds(yearValue, monthValue, dayValue, marketValue.tz, marketValue.segmentOne)
+        bool validSecond = marketValue.segmentTwoEnabled and f_sessionHasDuration(marketValue.segmentTwo)
+        if validSecond
+            [secondStart, secondEnd] = f_sessionBounds(yearValue, monthValue, dayValue, marketValue.tz, marketValue.segmentTwo)
+            bool firstStartsEarlier = firstStart <= secondStart
+            int earlyStart = firstStartsEarlier ? firstStart : secondStart
+            int earlyEnd = firstStartsEarlier ? firstEnd : secondEnd
+            int lateStart = firstStartsEarlier ? secondStart : firstStart
+            int lateEnd = firstStartsEarlier ? secondEnd : firstEnd
+            bool intervalsTouchOrOverlap = lateStart <= earlyEnd
+
+            f_pushRawEvent(rawTimes, rawMarketIndexes, rawKinds, rawColors, earlyStart, marketIndex, EVENT_OPEN, marketValue.tint, lowerTimestamp, upperTimestamp)
+            if intervalsTouchOrOverlap
+                int mergedEnd = math.max(earlyEnd, lateEnd)
+                f_pushRawEvent(rawTimes, rawMarketIndexes, rawKinds, rawColors, mergedEnd, marketIndex, EVENT_CLOSE, marketValue.tint, lowerTimestamp, upperTimestamp)
+            else
+                f_pushRawEvent(rawTimes, rawMarketIndexes, rawKinds, rawColors, earlyEnd, marketIndex, EVENT_BREAK, marketValue.tint, lowerTimestamp, upperTimestamp)
+                f_pushRawEvent(rawTimes, rawMarketIndexes, rawKinds, rawColors, lateStart, marketIndex, EVENT_RESUME, marketValue.tint, lowerTimestamp, upperTimestamp)
+                f_pushRawEvent(rawTimes, rawMarketIndexes, rawKinds, rawColors, lateEnd, marketIndex, EVENT_CLOSE, marketValue.tint, lowerTimestamp, upperTimestamp)
+        else
+            f_pushRawEvent(rawTimes, rawMarketIndexes, rawKinds, rawColors, firstStart, marketIndex, EVENT_OPEN, marketValue.tint, lowerTimestamp, upperTimestamp)
+            f_pushRawEvent(rawTimes, rawMarketIndexes, rawKinds, rawColors, firstEnd, marketIndex, EVENT_CLOSE, marketValue.tint, lowerTimestamp, upperTimestamp)
+    0
+
+f_findLane(array<int> laneTimes, int eventTimestamp, int minimumSpacingMilliseconds) =>
+    int laneCount = array.size(laneTimes)
+    int selectedLane = 0
+    bool freeLaneFound = false
+    int oldestTimestamp = na
+    if laneCount > 0
+        for laneIndex = 0 to laneCount - 1
+            int priorTimestamp = array.get(laneTimes, laneIndex)
+            bool laneIsFree = na(priorTimestamp) or eventTimestamp - priorTimestamp >= minimumSpacingMilliseconds
+            if laneIsFree and not freeLaneFound
+                selectedLane := laneIndex
+                freeLaneFound := true
+            if na(oldestTimestamp) or na(priorTimestamp) or priorTimestamp < oldestTimestamp
+                oldestTimestamp := priorTimestamp
+                if not freeLaneFound
+                    selectedLane := laneIndex
+    [selectedLane, freeLaneFound]
+
+
+f_eventImportance(string role, int eventCount) =>
+    int score = 100
+    if role == "HANDOFF"
+        score := 650
+    else if role == "ACTIVATION" or role == "DEACTIVATION"
+        score := 600
+    else if eventCount > 1
+        score := 540
+    else if role == "OVERLAP BUILD" or role == "OVERLAP RELEASE"
+        score := 320
+    score
+
+
+f_groupContains(string groupedKeyText, int marketIndex, int eventKind) =>
+    str.contains(groupedKeyText, "|" + str.tostring(marketIndex) + ":" + str.tostring(eventKind) + "|")
+
+f_eventPhase(string groupedKeyText, string role) =>
+    int phase = 6
+    if role == "ACTIVATION" or f_groupContains(groupedKeyText, 0, EVENT_OPEN)
+        phase := 0
+    else if f_groupContains(groupedKeyText, 1, EVENT_OPEN) or f_groupContains(groupedKeyText, 2, EVENT_OPEN)
+        phase := 1
+    else if role == "HANDOFF" or f_groupContains(groupedKeyText, 2, EVENT_RESUME) or f_groupContains(groupedKeyText, 0, EVENT_CLOSE)
+        phase := 2
+    else if f_groupContains(groupedKeyText, 3, EVENT_OPEN) or f_groupContains(groupedKeyText, 4, EVENT_OPEN)
+        phase := 3
+    else if f_groupContains(groupedKeyText, 5, EVENT_OPEN)
+        phase := 4
+    else if role == "DEACTIVATION" or f_groupContains(groupedKeyText, 5, EVENT_CLOSE)
+        phase := 5
+    phase
+
+f_liquidityArrives(string role) =>
+    role == "ACTIVATION" or role == "OVERLAP BUILD" or role == "HANDOFF"
+
+f_liquidityLeaves(string role) =>
+    role == "DEACTIVATION" or role == "OVERLAP RELEASE"
+
+f_candleBodyRatio() =>
+    float rangeSize = high - low
+    rangeSize > 0 ? math.abs(close - open) / rangeSize : 0.0
+
+f_upperWickRatio() =>
+    float bodySize = math.abs(close - open)
+    bodySize > 0 ? (high - math.max(close, open)) / bodySize : 0.0
+
+f_continuationScore(
+     bool brokeAndHeld,
+     bool qualityBull,
+     bool trendHold,
+     bool fastHold,
+     bool rsiSupportive,
+     bool macdSupportive,
+     bool volumeSupportive,
+     bool liquidityArrives) =>
+    int score = 0
+    if brokeAndHeld
+        score += 3
+    if qualityBull
+        score += 2
+    if trendHold
+        score += 1
+    if fastHold
+        score += 1
+    if rsiSupportive
+        score += 1
+    if macdSupportive
+        score += 1
+    if volumeSupportive
+        score += 1
+    if liquidityArrives
+        score += 2
+    score
+
+f_failureScore(
+     bool failedBreakout,
+     bool lostMidTrend,
+     bool lostWatchLow,
+     bool rejectWick,
+     bool bearishCandle,
+     bool macdFading,
+     bool liquidityLeaves) =>
+    int score = 0
+    if failedBreakout
+        score += 3
+    if lostMidTrend
+        score += 2
+    if lostWatchLow
+        score += 3
+    if rejectWick
+        score += 2
+    if bearishCandle
+        score += 1
+    if macdFading
+        score += 1
+    if liquidityLeaves
+        score += 2
+    score
+
+f_signalConfidence(int score) =>
+    math.min(50.0 + float(score) * 5.0, 95.0)
+
+f_volumeSupportive(float volumeValue, float volumeAverageValue, bool requireVolume) =>
+    bool volumeMissing = na(volumeValue) or na(volumeAverageValue) or volumeAverageValue <= 0
+    (not requireVolume) or volumeMissing or volumeValue > volumeAverageValue
+
+f_boundaryDuringBar(array<Market> markets, int barOpenTime, int barCloseTime) =>
+    int probeBefore = barOpenTime - 1
+    int probeAfter = barCloseTime > barOpenTime ? barCloseTime - 1 : barOpenTime
+    [beforeCount, beforeCodes] = f_activeState(markets, probeBefore)
+    [afterCount, afterCodes] = f_activeState(markets, probeAfter)
+    string role = f_transitionRole(beforeCount, beforeCodes, afterCount, afterCodes)
+    bool changed = beforeCount != afterCount or beforeCodes != afterCodes
+    [changed, role, beforeCodes, afterCodes]
+
+// =============================================================================
+// PERSISTENT STATE
+// =============================================================================
+var array<Market> markets = array.new<Market>()
+if barstate.isfirst
+    array.push(markets, Market.new(sydneyEnabled, sydneyName, sydneyCode, sydneyTimezone, sydneyWeekdays, sydneySegmentOne, sydneySegmentTwoEnabled, sydneySegmentTwo, sydneyColor))
+    array.push(markets, Market.new(tokyoEnabled, tokyoName, tokyoCode, tokyoTimezone, tokyoWeekdays, tokyoSegmentOne, tokyoSegmentTwoEnabled, tokyoSegmentTwo, tokyoColor))
+    array.push(markets, Market.new(hongKongEnabled, hongKongName, hongKongCode, hongKongTimezone, hongKongWeekdays, hongKongSegmentOne, hongKongSegmentTwoEnabled, hongKongSegmentTwo, hongKongColor))
+    array.push(markets, Market.new(frankfurtEnabled, frankfurtName, frankfurtCode, frankfurtTimezone, frankfurtWeekdays, frankfurtSegmentOne, frankfurtSegmentTwoEnabled, frankfurtSegmentTwo, frankfurtColor))
+    array.push(markets, Market.new(londonEnabled, londonName, londonCode, londonTimezone, londonWeekdays, londonSegmentOne, londonSegmentTwoEnabled, londonSegmentTwo, londonColor))
+    array.push(markets, Market.new(newYorkEnabled, newYorkName, newYorkCode, newYorkTimezone, newYorkWeekdays, newYorkSegmentOne, newYorkSegmentTwoEnabled, newYorkSegmentTwo, newYorkColor))
+
+var array<line> drawnLines = array.new<line>()
+var array<label> drawnLabels = array.new<label>()
+var array<label> signalLabels = array.new<label>()
+
+var array<int> rawTimes = array.new_int()
+var array<int> rawMarketIndexes = array.new_int()
+var array<int> rawKinds = array.new_int()
+var array<color> rawColors = array.new_color()
+
+var array<int> groupedTimes = array.new_int()
+var array<string> groupedTokens = array.new_string()
+var array<string> groupedDescriptions = array.new_string()
+var array<string> groupedKeys = array.new_string()
+var array<color> groupedColors = array.new_color()
+var array<int> groupedCounts = array.new_int()
+var array<int> groupedPrimaryKinds = array.new_int()
+var array<string> groupedRoles = array.new_string()
+var array<string> groupedBeforeCodes = array.new_string()
+var array<string> groupedAfterCodes = array.new_string()
+
+var int cachedVisibleLeft = na
+var int cachedVisibleRight = na
+var int cachedAnchorMinute = na
+var bool statusVisibleSpanCapped = false
+var bool statusLinesTruncated = false
+var bool statusLabelsTruncated = false
+var int effectiveAnchorTimestamp = na
+var int lastBoundaryIndex = na
+var int nextBoundaryIndex = na
+
+var bool watchingRise = false
+var int watchAge = 0
+var float watchHigh = na
+var float watchLow = na
+var float watchRsi = na
+var float watchHist = na
+var string watchRole = ""
+var string watchCodes = ""
+var bool sawBreakHigh = false
+var bool pendingContinue = false
+var bool pendingFail = false
+var int pendingAge = 0
+var string lastSignalKind = "NONE"
+var string lastSignalText = "None"
+var float lastSignalConfidence = 0.0
+var string lastSetupText = "No setup"
+var int lastSetupBarIndex = na
+
+var table boundaryStrip = table.new(
+     f_tablePosition(boundaryStripPosition),
+     3,
+     10,
+     bgcolor = color.new(color.rgb(15, 23, 42), 100),
+     frame_color = color.new(color.rgb(71, 85, 105), 100),
+     frame_width = 0,
+     border_color = color.new(color.rgb(51, 65, 85), 100),
+     border_width = 0)
+
+if barstate.isfirst
+    table.merge_cells(boundaryStrip, 0, 0, 2, 0)
+
+// Visible-price range used only for placing labels inside the chart pane.
+var float visiblePriceHigh = na
+var float visiblePriceLow = na
+bool barIsVisible = time >= chart.left_visible_bar_time and time <= chart.right_visible_bar_time
+if barIsVisible
+    visiblePriceHigh := na(visiblePriceHigh) ? high : math.max(visiblePriceHigh, high)
+    visiblePriceLow := na(visiblePriceLow) ? low : math.min(visiblePriceLow, low)
+
+// =============================================================================
+// SCHEDULE BUILD AND DRAWING
+// =============================================================================
+int visibleLeftTimestamp = chart.left_visible_bar_time
+int visibleRightTimestamp = chart.right_visible_bar_time
+
+int selectedAnchorTimestamp = visibleRightTimestamp
+if scheduleScope == "Recent days"
+    selectedAnchorTimestamp := switch anchorMode
+        "Latest chart bar" => last_bar_time
+        "Real clock" => timenow
+        => visibleRightTimestamp
+
+int anchorMinuteKey = int(selectedAnchorTimestamp / MINUTE_MS)
+bool rebuildRequired = barstate.islast and (
+     na(cachedVisibleLeft) or
+     na(cachedVisibleRight) or
+     na(cachedAnchorMinute) or
+     cachedVisibleLeft != visibleLeftTimestamp or
+     cachedVisibleRight != visibleRightTimestamp or
+     cachedAnchorMinute != anchorMinuteKey)
+
+if rebuildRequired
+    cachedVisibleLeft := visibleLeftTimestamp
+    cachedVisibleRight := visibleRightTimestamp
+    cachedAnchorMinute := anchorMinuteKey
+    effectiveAnchorTimestamp := selectedAnchorTimestamp
+
+    f_clearLines(drawnLines)
+    f_clearLabels(drawnLabels)
+    array.clear(rawTimes)
+    array.clear(rawMarketIndexes)
+    array.clear(rawKinds)
+    array.clear(rawColors)
+    array.clear(groupedTimes)
+    array.clear(groupedTokens)
+    array.clear(groupedDescriptions)
+    array.clear(groupedKeys)
+    array.clear(groupedColors)
+    array.clear(groupedCounts)
+    array.clear(groupedPrimaryKinds)
+    array.clear(groupedRoles)
+    array.clear(groupedBeforeCodes)
+    array.clear(groupedAfterCodes)
+
+    statusVisibleSpanCapped := false
+    statusLinesTruncated := false
+    statusLabelsTruncated := false
+    lastBoundaryIndex := na
+    nextBoundaryIndex := na
+
+    if timeframe.isintraday
+        int drawingStartTimestamp = scheduleScope == "Visible range" ? visibleLeftTimestamp : effectiveAnchorTimestamp - recentPastDays * DAY_MS
+        int drawingEndTimestamp = effectiveAnchorTimestamp + futureProjectionDays * DAY_MS
+
+        if scheduleScope == "Visible range"
+            int maximumVisibleSpan = visibleSpanCapDays * DAY_MS
+            if visibleRightTimestamp - visibleLeftTimestamp > maximumVisibleSpan
+                drawingStartTimestamp := visibleRightTimestamp - maximumVisibleSpan
+                statusVisibleSpanCapped := true
+
+        // Extra days support overnight intervals, local-date offsets, and the
+        // Boundary Strip's next-event lookup beyond the drawn window.
+        int calculationStartTimestamp = drawingStartTimestamp - 2 * DAY_MS
+        int calculationEndTimestamp = drawingEndTimestamp + 9 * DAY_MS
+        int calculationDays = int(math.ceil(float(calculationEndTimestamp - calculationStartTimestamp) / DAY_MS)) + 2
+
+        int marketCount = array.size(markets)
+        if marketCount > 0
+            for dayOffset = 0 to calculationDays
+                int dayProbe = calculationStartTimestamp + dayOffset * DAY_MS
+                for marketIndex = 0 to marketCount - 1
+                    Market marketValue = array.get(markets, marketIndex)
+                    int localYear = year(dayProbe, marketValue.tz)
+                    int localMonth = month(dayProbe, marketValue.tz)
+                    int localDay = dayofmonth(dayProbe, marketValue.tz)
+                    f_addMarketDateEvents(
+                         rawTimes,
+                         rawMarketIndexes,
+                         rawKinds,
+                         rawColors,
+                         marketValue,
+                         marketIndex,
+                         localYear,
+                         localMonth,
+                         localDay,
+                         calculationStartTimestamp,
+                         calculationEndTimestamp)
+
+        // Chronologically sort raw events, then collapse every identical UNIX
+        // timestamp into one boundary object. This prevents overlapping lines.
+        int rawEventCount = array.size(rawTimes)
+        if rawEventCount > 0
+            array<int> sortedRawIndexes = array.sort_indices(rawTimes, order.ascending)
+            int currentTimestamp = na
+            string currentTokens = ""
+            string currentDescriptions = ""
+            string currentKeys = ""
+            color currentColor = na
+            int currentCount = 0
+            int currentPrimaryKind = EVENT_OPEN
+
+            for sortedPosition = 0 to rawEventCount - 1
+                int rawIndex = array.get(sortedRawIndexes, sortedPosition)
+                int eventTimestamp = array.get(rawTimes, rawIndex)
+                int marketIndex = array.get(rawMarketIndexes, rawIndex)
+                int eventKind = array.get(rawKinds, rawIndex)
+                color eventColor = array.get(rawColors, rawIndex)
+                Market marketValue = array.get(markets, marketIndex)
+                string eventKey = "|" + str.tostring(marketIndex) + ":" + str.tostring(eventKind) + "|"
+
+                if na(currentTimestamp) or eventTimestamp != currentTimestamp
+                    if not na(currentTimestamp)
+                        array.push(groupedTimes, currentTimestamp)
+                        array.push(groupedTokens, currentTokens)
+                        array.push(groupedDescriptions, currentDescriptions)
+                        array.push(groupedKeys, currentKeys)
+                        array.push(groupedColors, currentCount > 1 ? simultaneousEventColor : currentColor)
+                        array.push(groupedCounts, currentCount)
+                        array.push(groupedPrimaryKinds, currentPrimaryKind)
+                    currentTimestamp := eventTimestamp
+                    currentTokens := ""
+                    currentDescriptions := ""
+                    currentKeys := ""
+                    currentColor := eventColor
+                    currentCount := 0
+                    currentPrimaryKind := eventKind
+
+                if not str.contains(currentKeys, eventKey)
+                    string eventToken = marketValue.code + " " + f_eventWord(eventKind)
+                    string nativeTimeText = showNativeTimeInTooltip ? " at " + str.format_time(eventTimestamp, "yyyy-MM-dd HH:mm", marketValue.tz) + " (" + marketValue.tz + ")" : ""
+                    string eventDescription = marketValue.name + ": " + f_eventWord(eventKind) + nativeTimeText
+                    currentTokens += (currentTokens == "" ? "" : " · ") + eventToken
+                    currentDescriptions += (currentDescriptions == "" ? "" : "\n") + eventDescription
+                    currentKeys += eventKey
+                    currentCount += 1
+
+            if not na(currentTimestamp)
+                array.push(groupedTimes, currentTimestamp)
+                array.push(groupedTokens, currentTokens)
+                array.push(groupedDescriptions, currentDescriptions)
+                array.push(groupedKeys, currentKeys)
+                array.push(groupedColors, currentCount > 1 ? simultaneousEventColor : currentColor)
+                array.push(groupedCounts, currentCount)
+                array.push(groupedPrimaryKinds, currentPrimaryKind)
+
+        // Classify each grouped timestamp once. Rendering then reuses the
+        // cached before/after sets instead of recalculating them per object.
+        int groupedEventCount = array.size(groupedTimes)
+        if groupedEventCount > 0
+            for groupIndex = 0 to groupedEventCount - 1
+                int groupTimestamp = array.get(groupedTimes, groupIndex)
+                [beforeCount, beforeCodes] = f_activeState(markets, groupTimestamp - 1)
+                [afterCount, afterCodes] = f_activeState(markets, groupTimestamp + 1)
+                array.push(groupedRoles, f_transitionRole(beforeCount, beforeCodes, afterCount, afterCodes))
+                array.push(groupedBeforeCodes, beforeCodes)
+                array.push(groupedAfterCodes, afterCodes)
+
+        // Locate the last and next boundary relative to the effective anchor.
+        if groupedEventCount > 0
+            for groupIndex = 0 to groupedEventCount - 1
+                int groupTimestamp = array.get(groupedTimes, groupIndex)
+                if groupTimestamp <= effectiveAnchorTimestamp
+                    lastBoundaryIndex := groupIndex
+                else if na(nextBoundaryIndex)
+                    nextBoundaryIndex := groupIndex
+
+        // Build line candidates, retain those nearest the anchor if the object
+        // budget is exceeded, then restore chronological drawing order.
+        array<int> lineCandidateIndexes = array.new_int()
+        array<int> lineCandidateDistances = array.new_int()
+        if groupedEventCount > 0
+            for groupIndex = 0 to groupedEventCount - 1
+                int groupTimestamp = array.get(groupedTimes, groupIndex)
+                bool inDrawingWindow = groupTimestamp >= drawingStartTimestamp and groupTimestamp <= drawingEndTimestamp
+                bool sideEnabled = groupTimestamp <= effectiveAnchorTimestamp ? showHistoricalLines : showFutureLines
+                if inDrawingWindow and sideEnabled
+                    array.push(lineCandidateIndexes, groupIndex)
+                    array.push(lineCandidateDistances, math.abs(groupTimestamp - effectiveAnchorTimestamp))
+
+        int lineCandidateCount = array.size(lineCandidateIndexes)
+        int lineSelectionCount = math.min(lineCandidateCount, maximumBoundaryLines)
+        statusLinesTruncated := lineCandidateCount > maximumBoundaryLines
+        array<int> selectedLineIndexes = array.new_int()
+        if lineSelectionCount > 0
+            if lineRetentionMode == "Adaptive spread" and lineCandidateCount > maximumBoundaryLines
+                int selectionSpan = math.max(drawingEndTimestamp - drawingStartTimestamp, 1)
+                for slotIndex = 0 to lineSelectionCount - 1
+                    int slotStart = drawingStartTimestamp + int(float(selectionSpan) * float(slotIndex) / float(lineSelectionCount))
+                    int slotEnd = slotIndex == lineSelectionCount - 1 ? drawingEndTimestamp + 1 : drawingStartTimestamp + int(float(selectionSpan) * float(slotIndex + 1) / float(lineSelectionCount))
+                    int slotCenter = slotStart + int((slotEnd - slotStart) / 2)
+                    int bestGroupIndex = na
+                    int bestScore = -1
+                    int bestCenterDistance = na
+                    for candidatePosition = 0 to lineCandidateCount - 1
+                        int groupIndex = array.get(lineCandidateIndexes, candidatePosition)
+                        int groupTimestamp = array.get(groupedTimes, groupIndex)
+                        if groupTimestamp >= slotStart and groupTimestamp < slotEnd
+                            string actualRole = array.get(groupedRoles, groupIndex)
+                            string groupedKeyText = array.get(groupedKeys, groupIndex)
+                            int eventCount = array.get(groupedCounts, groupIndex)
+                            int preferredPhase = slotIndex % 6
+                            int phaseBonus = f_eventPhase(groupedKeyText, actualRole) == preferredPhase ? 1000 : 0
+                            int eventScore = phaseBonus + f_eventImportance(actualRole, eventCount)
+                            int centerDistance = math.abs(groupTimestamp - slotCenter)
+                            if eventScore > bestScore or (eventScore == bestScore and (na(bestCenterDistance) or centerDistance < bestCenterDistance))
+                                bestGroupIndex := groupIndex
+                                bestScore := eventScore
+                                bestCenterDistance := centerDistance
+                    if not na(bestGroupIndex)
+                        array.push(selectedLineIndexes, bestGroupIndex)
+
+                // Keep one actionable future marker in the sparse view. The
+                // last sampled slot is replaced, rather than increasing the
+                // user's line budget, when the immediate next boundary was
+                // not selected by phase balancing.
+                if showFutureLines and not na(nextBoundaryIndex)
+                    int nextTimestampForRetention = array.get(groupedTimes, nextBoundaryIndex)
+                    bool nextInsideDrawingWindow = nextTimestampForRetention >= drawingStartTimestamp and nextTimestampForRetention <= drawingEndTimestamp
+                    if nextInsideDrawingWindow and array.indexof(selectedLineIndexes, nextBoundaryIndex) == -1
+                        int retainedCount = array.size(selectedLineIndexes)
+                        if retainedCount > 0
+                            array.set(selectedLineIndexes, retainedCount - 1, nextBoundaryIndex)
+                        else
+                            array.push(selectedLineIndexes, nextBoundaryIndex)
+                array.sort(selectedLineIndexes, order.ascending)
+            else
+                array<int> distanceOrder = array.sort_indices(lineCandidateDistances, order.ascending)
+                for selectionPosition = 0 to lineSelectionCount - 1
+                    int candidatePosition = array.get(distanceOrder, selectionPosition)
+                    array.push(selectedLineIndexes, array.get(lineCandidateIndexes, candidatePosition))
+                array.sort(selectedLineIndexes, order.ascending)
+
+        float rangeHigh = na(visiblePriceHigh) ? high : visiblePriceHigh
+        float rangeLow = na(visiblePriceLow) ? low : visiblePriceLow
+        float rangeSize = math.max(rangeHigh - rangeLow, math.max(math.abs(close) * 0.01, syminfo.mintick * 100.0))
+
+        int selectedLineCount = array.size(selectedLineIndexes)
+        if selectedLineCount > 0
+            for selectedPosition = 0 to selectedLineCount - 1
+                int groupIndex = array.get(selectedLineIndexes, selectedPosition)
+                int eventTimestamp = array.get(groupedTimes, groupIndex)
+                int eventCount = array.get(groupedCounts, groupIndex)
+                int primaryKind = array.get(groupedPrimaryKinds, groupIndex)
+                color marketColor = array.get(groupedColors, groupIndex)
+                string actualRole = array.get(groupedRoles, groupIndex)
+                string role = classifyBoundaryRoles ? actualRole : "BOUNDARY"
+                color roleColor = classifyBoundaryRoles ? f_roleColor(role) : marketColor
+                color baseLineColor = lineColorMode == "Transition role" ? roleColor : marketColor
+                bool isNextBoundary = emphasizeNextBoundary and groupIndex == nextBoundaryIndex
+                color finalLineColor = isNextBoundary ? nextBoundaryColor : color.new(baseLineColor, eventTimestamp <= effectiveAnchorTimestamp ? historicalTransparency : futureTransparency)
+                int finalLineWidth = isNextBoundary ? math.min(boundaryLineWidth + 1, 4) : boundaryLineWidth
+                line boundaryLine = line.new(
+                     x1 = eventTimestamp,
+                     y1 = rangeLow,
+                     x2 = eventTimestamp,
+                     y2 = rangeHigh,
+                     xloc = xloc.bar_time,
+                     extend = extend.both,
+                     color = finalLineColor,
+                     style = isNextBoundary ? line.style_solid : f_boundaryLineStyle(primaryKind, eventCount),
+                     width = finalLineWidth)
+                array.push(drawnLines, boundaryLine)
+
+        // Label candidates are selected independently, so reducing label count
+        // never removes structural boundary lines.
+        if showBoundaryLabels and selectedLineCount > 0
+            array<int> labelCandidateIndexes = array.copy(selectedLineIndexes)
+            array<int> labelCandidateDistances = array.new_int()
+            int labelCandidateCount = array.size(labelCandidateIndexes)
+            if labelCandidateCount > 0
+                for candidatePosition = 0 to labelCandidateCount - 1
+                    int groupIndex = array.get(labelCandidateIndexes, candidatePosition)
+                    array.push(labelCandidateDistances, math.abs(array.get(groupedTimes, groupIndex) - effectiveAnchorTimestamp))
+
+            int labelSelectionCount = math.min(labelCandidateCount, maximumBoundaryLabels)
+            statusLabelsTruncated := labelCandidateCount > maximumBoundaryLabels
+            array<int> selectedLabelIndexes = array.new_int()
+            if labelSelectionCount > 0
+                array<int> labelDistanceOrder = array.sort_indices(labelCandidateDistances, order.ascending)
+                for selectionPosition = 0 to labelSelectionCount - 1
+                    int candidatePosition = array.get(labelDistanceOrder, selectionPosition)
+                    array.push(selectedLabelIndexes, array.get(labelCandidateIndexes, candidatePosition))
+                array.sort(selectedLabelIndexes, order.ascending)
+
+            array<int> topLaneTimes = array.new_int(labelLaneCount, na)
+            array<int> bottomLaneTimes = array.new_int(labelLaneCount, na)
+            int minimumSpacingMilliseconds = labelSpacingMinutes * MINUTE_MS
+            int selectedLabelCount = array.size(selectedLabelIndexes)
+            if selectedLabelCount > 0
+                for labelPosition = 0 to selectedLabelCount - 1
+                    int groupIndex = array.get(selectedLabelIndexes, labelPosition)
+                    int eventTimestamp = array.get(groupedTimes, groupIndex)
+                    string eventTokens = array.get(groupedTokens, groupIndex)
+                    string eventDescriptions = array.get(groupedDescriptions, groupIndex)
+                    color marketColor = array.get(groupedColors, groupIndex)
+                    string beforeCodes = array.get(groupedBeforeCodes, groupIndex)
+                    string afterCodes = array.get(groupedAfterCodes, groupIndex)
+                    string actualRole = array.get(groupedRoles, groupIndex)
+                    string role = classifyBoundaryRoles ? actualRole : "BOUNDARY"
+                    color roleColor = classifyBoundaryRoles ? f_roleColor(role) : marketColor
+                    bool isNextBoundary = emphasizeNextBoundary and groupIndex == nextBoundaryIndex
+                    color labelBaseColor = isNextBoundary ? nextBoundaryColor : roleColor
+                    string roleTag = f_roleTag(role)
+                    string labelText = switch labelContent
+                        "Events only" => eventTokens
+                        "Role only" => roleTag
+                        => roleTag + "\n" + eventTokens
+                    bool preferTop = labelPlacement == "Top" or (labelPlacement == "Alternate" and labelPosition % 2 == 0)
+                    if labelPlacement == "Bottom"
+                        preferTop := false
+
+                    [preferredTopLane, preferredTopFree] = f_findLane(topLaneTimes, eventTimestamp, minimumSpacingMilliseconds)
+                    [preferredBottomLane, preferredBottomFree] = f_findLane(bottomLaneTimes, eventTimestamp, minimumSpacingMilliseconds)
+                    bool useTop = preferTop
+                    int selectedLane = preferTop ? preferredTopLane : preferredBottomLane
+                    bool preferredFree = preferTop ? preferredTopFree : preferredBottomFree
+                    bool alternateFree = preferTop ? preferredBottomFree : preferredTopFree
+                    bool allowOppositeSide = labelPlacement == "Alternate"
+                    if allowOppositeSide and not preferredFree and alternateFree
+                        useTop := not preferTop
+                        selectedLane := preferTop ? preferredBottomLane : preferredTopLane
+
+                    if useTop
+                        array.set(topLaneTimes, selectedLane, eventTimestamp)
+                    else
+                        array.set(bottomLaneTimes, selectedLane, eventTimestamp)
+
+                    float laneOffset = rangeSize * (0.03 + selectedLane * 0.058)
+                    float labelPrice = useTop ? rangeHigh - laneOffset : rangeLow + laneOffset
+                    string transitionText = "Transition: " + beforeCodes + " -> " + afterCodes
+                    string readoutTimeText = "Readout: " + str.format_time(eventTimestamp, "yyyy-MM-dd HH:mm", readoutTimezone) + " (" + readoutTimezone + ")"
+                    string tooltipText = eventDescriptions + "\n" + transitionText + "\nRole: " + role + "\n" + readoutTimeText
+                    label boundaryLabel = label.new(
+                         x = eventTimestamp,
+                         y = labelPrice,
+                         text = labelText,
+                         xloc = xloc.bar_time,
+                         yloc = yloc.price,
+                         style = useTop ? label.style_label_down : label.style_label_up,
+                         color = color.new(labelBaseColor, labelTransparency),
+                         textcolor = f_contrastTextColor(labelBaseColor),
+                         size = f_textSize(labelTextSize),
+                         textalign = text.align_center,
+                         tooltip = tooltipText,
+                         text_font_family = font.family_default)
+                    if boldBoundaryLabelText
+                        label.set_text_formatting(boundaryLabel, text.format_bold)
+                    else
+                        label.set_text_formatting(boundaryLabel, text.format_none)
+                    array.push(drawnLabels, boundaryLabel)
+
+// =============================================================================
+// RISE CONTINUATION ENGINE
+// Watches confirmed bars after a real active-market set change during the
+// current candle, or after an EMA21 pullback in an existing rise. A forming
+// candle cannot increment counters or print a mark that later disappears.
+// =============================================================================
+float atrValue = ta.atr(14)
+float emaFast = ta.ema(close, 9)
+float emaMid = ta.ema(close, 21)
+float emaSlow = ta.ema(close, 50)
+float rsiValue = ta.rsi(close, 14)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+float volumeAverage = ta.sma(volume, 20)
+float priorSwingLow = ta.lowest(low, impulseLookbackBars)
+
+bool continueSignal = false
+bool failSignal = false
+bool watchMarker = false
+float barSignalConfidence = 0.0
+int barContinueScore = 0
+int barFailScore = 0
+
+if enableContinuationSignals and array.size(markets) > 0 and barstate.isconfirmed
+    [boundaryBar, barRole, beforeCodes, afterCodes] = f_boundaryDuringBar(markets, time, time_close)
+
+    bool priorTrendUp = (not requireTrendStack or (emaFast[1] > emaMid[1] and emaMid[1] > emaSlow[1])) and close[1] > emaMid[1]
+    bool priorImpulseUp = not na(atrValue[1]) and not na(priorSwingLow[1]) and (close[1] - priorSwingLow[1]) >= impulseAtrMult * atrValue[1]
+    bool pulledIntoMid = low <= emaMid and close >= emaMid
+    bool cooldownOk = na(lastSetupBarIndex) or (bar_index - lastSetupBarIndex) >= math.max(3, int(confirmWindowBars / 2))
+    bool boundarySetup = boundaryBar and priorTrendUp and priorImpulseUp and barRole != "INTERNAL BOUNDARY"
+    bool structureSetup = enableStructureSetups and not boundaryBar and not watchingRise and cooldownOk and priorTrendUp and priorImpulseUp and pulledIntoMid
+    bool setupReady = boundarySetup or structureSetup
+
+    if setupReady
+        watchingRise := true
+        watchAge := 0
+        watchHigh := high
+        watchLow := math.min(low, priorSwingLow[1])
+        watchRsi := rsiValue[1]
+        watchHist := macdHist[1]
+        watchRole := boundarySetup ? barRole : "STRUCTURE PULLBACK"
+        watchCodes := boundarySetup ? beforeCodes + " -> " + afterCodes : "EMA21 hold"
+        sawBreakHigh := false
+        pendingContinue := false
+        pendingFail := false
+        pendingAge := 0
+        lastSetupText := watchRole + " · " + watchCodes
+        lastSetupBarIndex := bar_index
+        watchMarker := true
+
+    if watchingRise
+        watchAge += 1
+        if high > watchHigh
+            sawBreakHigh := true
+
+        bool inConfirmWindow = watchAge >= 1 and watchAge <= confirmWindowBars
+        bool brokeAndHeld = close > watchHigh
+        bool qualityBull = close > open and f_candleBodyRatio() >= 0.40
+        bool trendHold = close > emaMid
+        bool fastHold = close > emaFast
+        bool rsiSupportive = rsiValue >= 45.0 and rsiValue <= 75.0
+        bool macdSupportive = (not requireMacdConfirmation) or (macdHist > macdHist[1] and macdLine > macdSignal)
+        bool volumeSupportive = f_volumeSupportive(volume, volumeAverage, requireVolumeConfirmation)
+        bool liquidityArrives = f_liquidityArrives(watchRole) or watchRole == "STRUCTURE PULLBACK"
+        bool failedBreakout = sawBreakHigh and close < watchHigh
+        bool lostMidTrend = close < emaMid
+        bool lostWatchLow = close < watchLow
+        bool rejectWick = close < open and f_upperWickRatio() >= 1.20
+        bool bearishCandle = close < open
+        bool macdFading = (not requireMacdConfirmation) or (macdHist < macdHist[1] and macdLine < macdSignal)
+        bool liquidityLeaves = f_liquidityLeaves(watchRole)
+
+        barContinueScore := f_continuationScore(brokeAndHeld, qualityBull, trendHold, fastHold, rsiSupportive, macdSupportive, volumeSupportive, liquidityArrives)
+        barFailScore := f_failureScore(failedBreakout, lostMidTrend, lostWatchLow, rejectWick, bearishCandle, macdFading, liquidityLeaves)
+
+        bool continueGate = (not requireLiquidityForContinue) or liquidityArrives
+        bool continueRaw = inConfirmWindow and continueGate and barContinueScore >= minContinueScore and barContinueScore > barFailScore and brokeAndHeld
+        bool failRaw = inConfirmWindow and barFailScore >= minFailScore and barFailScore > barContinueScore and (failedBreakout or lostWatchLow or (lostMidTrend and bearishCandle))
+
+        if continueRaw and not pendingContinue
+            if twoBarConfirmation
+                pendingContinue := true
+                pendingFail := false
+                pendingAge := 0
+            else
+                continueSignal := true
+                barSignalConfidence := f_signalConfidence(barContinueScore)
+        else if failRaw and not pendingFail
+            if twoBarConfirmation
+                pendingFail := true
+                pendingContinue := false
+                pendingAge := 0
+            else
+                failSignal := true
+                barSignalConfidence := f_signalConfidence(barFailScore)
+
+        if pendingContinue
+            pendingAge += 1
+            if pendingAge >= 2
+                if close > watchHigh and close > emaMid
+                    continueSignal := true
+                    barSignalConfidence := f_signalConfidence(math.max(barContinueScore, minContinueScore))
+                pendingContinue := false
+                pendingAge := 0
+        else if pendingFail
+            pendingAge += 1
+            if pendingAge >= 2
+                if close < watchHigh and (close < emaMid or close < open)
+                    failSignal := true
+                    barSignalConfidence := f_signalConfidence(math.max(barFailScore, minFailScore))
+                pendingFail := false
+                pendingAge := 0
+
+        if continueSignal or failSignal
+            watchingRise := false
+            pendingContinue := false
+            pendingFail := false
+            lastSignalKind := continueSignal ? "CONTINUE" : "FAIL"
+            lastSignalText := continueSignal ? (useArabicSignalText ? "استكمال الصعود" : "Rise continuation") : (useArabicSignalText ? "فشل الصعود" : "Rise failure")
+            lastSignalConfidence := barSignalConfidence
+        else if watchAge > confirmWindowBars and not pendingContinue and not pendingFail
+            if not sawBreakHigh
+                failSignal := true
+                barFailScore := math.max(barFailScore, minFailScore)
+                barSignalConfidence := 60.0
+                lastSignalKind := "FAIL"
+                lastSignalText := useArabicSignalText ? "فشل الصعود" : "Rise failure"
+                lastSignalConfidence := barSignalConfidence
+            watchingRise := false
+
+if showSignalLabels and (continueSignal or failSignal)
+    if array.size(signalLabels) >= 80
+        label.delete(array.shift(signalLabels))
+    float atrOffset = na(atrValue) ? math.abs(close) * 0.002 : atrValue * 1.15
+    string caption = continueSignal ? (useArabicSignalText ? "استكمال الصعود" : "CONTINUE") : (useArabicSignalText ? "فشل الصعود" : "FAIL")
+    string englishCaption = continueSignal ? "Rise continuation" : "Rise failure"
+    string scoreText = continueSignal ? str.tostring(barContinueScore) : str.tostring(barFailScore)
+    string labelText = caption + "\n" + str.tostring(barSignalConfidence, "#") + "%"
+    string tooltipText = englishCaption + "\nRole: " + watchRole + "\n" + watchCodes + "\nScore: " + scoreText + "\nConfidence: " + str.tostring(barSignalConfidence, "#.#") + "%\nClosed-bar confluence only. Not a performance claim."
+    color labelColor = continueSignal ? continueSignalColor : failSignalColor
+    label signalLabel = label.new(
+         x = bar_index,
+         y = continueSignal ? low - atrOffset : high + atrOffset,
+         text = labelText,
+         xloc = xloc.bar_index,
+         yloc = yloc.price,
+         style = continueSignal ? label.style_label_up : label.style_label_down,
+         color = color.new(labelColor, 8),
+         textcolor = f_contrastTextColor(labelColor),
+         size = size.small,
+         textalign = text.align_center,
+         tooltip = tooltipText,
+         text_font_family = font.family_default)
+    label.set_text_formatting(signalLabel, text.format_bold)
+    array.push(signalLabels, signalLabel)
+
+plotshape(
+     showWatchMarkers and watchMarker,
+     title = "Rise watch",
+     style = shape.circle,
+     location = location.belowbar,
+     color = color.rgb(250, 204, 21),
+     size = size.tiny,
+     text = "W",
+     force_overlay = true)
+plotshape(
+     showSignalShapes and continueSignal,
+     title = "Rise continuation",
+     style = shape.triangleup,
+     location = location.belowbar,
+     color = continueSignalColor,
+     size = size.normal,
+     text = "CONT",
+     force_overlay = true)
+plotshape(
+     showSignalShapes and failSignal,
+     title = "Rise failure",
+     style = shape.triangledown,
+     location = location.abovebar,
+     color = failSignalColor,
+     size = size.normal,
+     text = "FAIL",
+     force_overlay = true)
+plot(
+     continueSignal ? 1 : failSignal ? -1 : watchMarker ? 0.5 : watchingRise ? 0.25 : 0,
+     title = "Continuation state",
+     display = display.data_window)
+
+// =============================================================================
+// BOUNDARY STRIP
+// =============================================================================
+if barstate.islast
+    table.set_position(boundaryStrip, f_tablePosition(boundaryStripPosition))
+    if not showBoundaryStrip
+        table.clear(boundaryStrip, 0, 0, 2, 9)
+    else
+        color panelBackground = color.new(color.rgb(15, 23, 42), 3)
+        color keyBackground = color.new(color.rgb(30, 41, 59), 1)
+        color neutralText = color.rgb(241, 245, 249)
+        color keyText = color.rgb(203, 213, 225)
+        color subduedText = color.rgb(148, 163, 184)
+        color headerBackground = color.rgb(3, 105, 161)
+
+        table.cell(
+             boundaryStrip,
+             0,
+             0,
+             "◆  MktHandoff",
+             bgcolor = headerBackground,
+             text_color = color.white,
+             text_size = f_headerTextSize(boundaryStripTextSize),
+             text_halign = text.align_center,
+             text_valign = text.align_center,
+             text_formatting = text.format_bold)
+
+        if not timeframe.isintraday
+            table.cell(boundaryStrip, 0, 1, "!", bgcolor = keyBackground, text_color = color.rgb(253, 224, 71), text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 1, "STATUS", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 1, "Use an intraday chart for session lines. Rise signals still run.", bgcolor = panelBackground, text_color = color.rgb(253, 224, 71), text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+            string dailySignalText = lastSignalKind == "NONE" ? (watchingRise ? (useArabicSignalText ? "مراقبة الصعود" : "Watching rise") : (useArabicSignalText ? "لا إشارة بعد" : "No signal yet")) : lastSignalText + "  " + str.tostring(lastSignalConfidence, "#") + "%"
+            color dailySignalColor = lastSignalKind == "CONTINUE" ? continueSignalColor : lastSignalKind == "FAIL" ? failSignalColor : watchingRise ? color.rgb(253, 224, 71) : subduedText
+            table.cell(boundaryStrip, 0, 2, "▲", bgcolor = keyBackground, text_color = dailySignalColor, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 2, "SIGNAL", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 2, dailySignalText, bgcolor = panelBackground, text_color = dailySignalColor, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+            table.cell(boundaryStrip, 0, 3, "↳", bgcolor = keyBackground, text_color = subduedText, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 3, "SETUP", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 3, lastSetupText, bgcolor = panelBackground, text_color = subduedText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+            for emptyRow = 4 to 8
+                table.cell(boundaryStrip, 0, emptyRow, "", bgcolor = keyBackground)
+                table.cell(boundaryStrip, 1, emptyRow, "", bgcolor = keyBackground)
+                table.cell(boundaryStrip, 2, emptyRow, "", bgcolor = panelBackground)
+        else
+            int liveAnchorTimestamp = visibleRightTimestamp
+            if scheduleScope == "Recent days"
+                liveAnchorTimestamp := switch anchorMode
+                    "Latest chart bar" => last_bar_time
+                    "Real clock" => timenow
+                    => visibleRightTimestamp
+            [activeCountNow, activeCodesNow] = f_activeState(markets, liveAnchorTimestamp)
+
+            string anchorText = str.format_time(liveAnchorTimestamp, "yyyy-MM-dd HH:mm", readoutTimezone) + "  " + readoutTimezone
+            string lastText = "None in calculation window"
+            color lastColor = internalBoundaryColor
+            if not na(lastBoundaryIndex)
+                int lastTimestamp = array.get(groupedTimes, lastBoundaryIndex)
+                string lastTokens = array.get(groupedTokens, lastBoundaryIndex)
+                lastText := lastTokens + "  ·  " + str.format_time(lastTimestamp, "MM-dd HH:mm", readoutTimezone)
+                lastColor := array.get(groupedColors, lastBoundaryIndex)
+
+            string nextText = "None in calculation window"
+            string distanceText = "—"
+            color nextColor = internalBoundaryColor
+            if not na(nextBoundaryIndex)
+                int nextTimestamp = array.get(groupedTimes, nextBoundaryIndex)
+                string nextTokens = array.get(groupedTokens, nextBoundaryIndex)
+                string nextActualRole = array.get(groupedRoles, nextBoundaryIndex)
+                string nextRole = classifyBoundaryRoles ? nextActualRole : "BOUNDARY"
+                nextColor := classifyBoundaryRoles ? f_roleColor(nextRole) : array.get(groupedColors, nextBoundaryIndex)
+                nextText := nextTokens + "  ·  " + str.format_time(nextTimestamp, "MM-dd HH:mm", readoutTimezone)
+                distanceText := f_durationText(nextTimestamp - liveAnchorTimestamp, showSecondsInCountdown)
+
+            string activeText = activeCountNow == 0 ? "None" : activeCodesNow + "  (" + str.tostring(activeCountNow) + ")"
+            string noteText = scheduleScope + " · " + lineRetentionMode
+            if statusVisibleSpanCapped
+                noteText += " · span capped"
+            if statusLinesTruncated or statusLabelsTruncated
+                noteText += " · " + str.tostring(array.size(drawnLines)) + " lines"
+
+            color activeColor = activeCountNow > 0 ? color.rgb(56, 189, 248) : subduedText
+            color lastValueBackground = color.new(lastColor, 86)
+            color nextValueBackground = color.new(nextColor, 82)
+
+            string liveSignalText = lastSignalKind == "NONE" ? (watchingRise ? (useArabicSignalText ? "مراقبة الصعود" : "Watching rise") : (useArabicSignalText ? "لا إشارة" : "No signal")) : lastSignalText + "  " + str.tostring(lastSignalConfidence, "#") + "%"
+            color liveSignalColor = lastSignalKind == "CONTINUE" ? continueSignalColor : lastSignalKind == "FAIL" ? failSignalColor : watchingRise ? color.rgb(253, 224, 71) : subduedText
+            string setupReadout = lastSetupText
+
+            // Icon column. The marks give each row a stable visual identity even
+            // when values change or the panel is viewed as a small thumbnail.
+            table.cell(boundaryStrip, 0, 1, "◉", bgcolor = keyBackground, text_color = color.rgb(125, 211, 252), text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 1, "ANCHOR", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 1, anchorText, bgcolor = panelBackground, text_color = neutralText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+
+            table.cell(boundaryStrip, 0, 2, "●", bgcolor = keyBackground, text_color = activeColor, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 2, "ACTIVE", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 2, activeText, bgcolor = panelBackground, text_color = activeColor, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+
+            table.cell(boundaryStrip, 0, 3, "◀", bgcolor = keyBackground, text_color = lastColor, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 3, "LAST", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 3, lastText, bgcolor = lastValueBackground, text_color = neutralText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+
+            table.cell(boundaryStrip, 0, 4, "▶", bgcolor = keyBackground, text_color = nextColor, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 4, "NEXT", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 4, nextText, bgcolor = nextValueBackground, text_color = neutralText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+
+            table.cell(boundaryStrip, 0, 5, "⌛", bgcolor = keyBackground, text_color = color.rgb(253, 224, 71), text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 5, "COUNTDOWN", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 5, distanceText, bgcolor = panelBackground, text_color = color.rgb(253, 224, 71), text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+
+            table.cell(boundaryStrip, 0, 6, "▦", bgcolor = keyBackground, text_color = subduedText, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 6, "VIEW", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 6, noteText, bgcolor = panelBackground, text_color = subduedText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+
+            table.cell(boundaryStrip, 0, 7, "▲", bgcolor = keyBackground, text_color = liveSignalColor, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 7, "SIGNAL", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 7, liveSignalText, bgcolor = panelBackground, text_color = liveSignalColor, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+
+            table.cell(boundaryStrip, 0, 8, "↳", bgcolor = keyBackground, text_color = subduedText, text_size = f_headerTextSize(boundaryStripTextSize), text_halign = text.align_center, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 1, 8, "SETUP", bgcolor = keyBackground, text_color = keyText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left, text_formatting = text.format_bold)
+            table.cell(boundaryStrip, 2, 8, setupReadout, bgcolor = panelBackground, text_color = subduedText, text_size = f_textSize(boundaryStripTextSize), text_halign = text.align_left)
+
+        // Apply the optional emphasis with dedicated setters and literal
+        // text.format_* constants. This avoids assigning text_format values to
+        // an int variable and follows Pine's type-safe formatting pattern.
+        if boldBoundaryStripText
+            for formattedRow = 1 to 8
+                table.cell_set_text_formatting(boundaryStrip, 2, formattedRow, text.format_bold)
+        else
+            for formattedRow = 1 to 8
+                table.cell_set_text_formatting(boundaryStrip, 2, formattedRow, text.format_none)
+
+        // A blank final row creates a controllable offset above permanent chart
+        // furniture. Minimal one-line constructors remove the parser-sensitive
+        // nested color.new() expression from the script tail.
+        bool useBottomClearance = boundaryStripPosition == "Bottom left" or boundaryStripPosition == "Bottom right"
+        float appliedBottomClearance = useBottomClearance ? boundaryStripBottomClearance : 0.0
+
+        table.cell(boundaryStrip, 0, 9, "")
+        table.cell(boundaryStrip, 1, 9, "")
+        table.cell(boundaryStrip, 2, 9, "")
+        table.cell_set_height(boundaryStrip, 0, 9, appliedBottomClearance)
+        table.cell_set_height(boundaryStrip, 1, 9, appliedBottomClearance)
+        table.cell_set_height(boundaryStrip, 2, 9, appliedBottomClearance)
+
+// =============================================================================
+// ALERTS
+// =============================================================================
+if continueSignal
+    alert("MktHandoff: استكمال الصعود / Rise continuation confirmed after " + watchRole + " (" + watchCodes + "). Confidence " + str.tostring(barSignalConfidence, "#") + "%. Closed-bar confluence only.", alert.freq_once_per_bar_close)
+if failSignal
+    alert("MktHandoff: فشل الصعود / Rise failure confirmed after " + watchRole + " (" + watchCodes + "). Confidence " + str.tostring(barSignalConfidence, "#") + "%. Closed-bar confluence only.", alert.freq_once_per_bar_close)
+
+alertcondition(continueSignal, title = "Rise continuation", message = "MktHandoff rise continuation confirmed")
+alertcondition(failSignal, title = "Rise failure", message = "MktHandoff rise failure confirmed")
