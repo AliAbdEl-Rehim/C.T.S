@@ -1,5 +1,5 @@
 //@version=6
-indicator("CM RSI-2 Strong Signals", shorttitle="RSI2 STRONG", overlay=false, precision=1, max_labels_count=200)
+indicator("CM RSI-2 Strong Signals", shorttitle="RSI2 STRONG", overlay=false, precision=1, max_labels_count=500)
 
 //====================================================================
 // CM RSI-2 STRONG SIGNALS
@@ -30,11 +30,12 @@ indicator("CM RSI-2 Strong Signals", shorttitle="RSI2 STRONG", overlay=false, pr
 groupGeneral = "01 • GENERAL"
 
 showDashboard = input.bool(true, "Show Dashboard", group=groupGeneral)
-showSignals = input.bool(true, "Show Strong Signals", group=groupGeneral)
-showWeakSetups = input.bool(false, "Show Raw Connors Setups", group=groupGeneral)
+showSignals = input.bool(true, "Show Buy / Sell Signals", group=groupGeneral)
+showWeakSetups = input.bool(false, "Show Extra Setup Dots", group=groupGeneral)
 showOverlayLabels = input.bool(true, "Show Overlay Labels", group=groupGeneral)
 showExits = input.bool(true, "Show Mean-Reversion Exits", group=groupGeneral)
 showBackground = input.bool(true, "Show Background", group=groupGeneral)
+useArabicText = input.bool(true, "Write Signals In Arabic", group=groupGeneral)
 
 
 //====================================================================
@@ -60,26 +61,26 @@ exitShortRsi = input.float(30.0, "Exit Short RSI", minval=10, maxval=60, step=1,
 
 groupStrong = "03 • STRONG SIGNAL ENGINE"
 
-signalMode = input.string("Reversal Confirm", "Entry Mode", options=["Reversal Confirm", "Extreme Touch"], group=groupStrong)
+signalMode = input.string("Extreme Touch", "Entry Mode", options=["Extreme Touch", "Reversal Confirm"], group=groupStrong)
 
-minQuality = input.float(72.0, "Minimum Quality Score", minval=50, maxval=95, step=1, group=groupStrong)
-signalCooldownBars = input.int(8, "Same-Side Cooldown Bars", minval=1, maxval=50, group=groupStrong)
+minQuality = input.float(55.0, "Strong Quality Score", minval=40, maxval=95, step=1, group=groupStrong)
+signalCooldownBars = input.int(5, "Same-Side Cooldown Bars", minval=1, maxval=50, group=groupStrong)
 minExtremeBars = input.int(1, "Minimum Extreme Bars", minval=1, maxval=8, group=groupStrong)
 
-requireVolume = input.bool(true, "Require Volume Confirmation", group=groupStrong)
+requireVolume = input.bool(false, "Require Volume Confirmation", group=groupStrong)
 volumeLen = input.int(20, "Volume Average", minval=5, maxval=100, group=groupStrong)
 minRvol = input.float(1.10, "Minimum RVOL", minval=0.50, maxval=3.0, step=0.05, group=groupStrong)
 
-requireCandle = input.bool(true, "Require Candle Confirmation", group=groupStrong)
-requireMaSlope = input.bool(true, "Require Trend MA Slope", group=groupStrong)
+requireCandle = input.bool(false, "Require Candle Confirmation", group=groupStrong)
+requireMaSlope = input.bool(false, "Require Trend MA Slope", group=groupStrong)
 maSlopeLen = input.int(5, "Trend MA Slope Bars", minval=1, maxval=20, group=groupStrong)
 
-requireAdx = input.bool(true, "Require ADX Trend", group=groupStrong)
+requireAdx = input.bool(false, "Require ADX Trend", group=groupStrong)
 adxLen = input.int(14, "ADX Length", minval=5, maxval=50, group=groupStrong)
 minAdx = input.float(18.0, "Minimum ADX", minval=10, maxval=40, step=1, group=groupStrong)
 
-maxExtendATR = input.float(6.0, "Max Distance From Trend MA (ATR)", minval=1.0, maxval=20.0, step=0.5, group=groupStrong)
-minPullbackATR = input.float(0.15, "Min Pullback From Fast MA (ATR)", minval=0.0, maxval=2.0, step=0.05, group=groupStrong)
+maxExtendATR = input.float(8.0, "Max Distance From Trend MA (ATR)", minval=1.0, maxval=20.0, step=0.5, group=groupStrong)
+minPullbackATR = input.float(0.0, "Min Pullback From Fast MA (ATR)", minval=0.0, maxval=2.0, step=0.05, group=groupStrong)
 
 
 //====================================================================
@@ -88,7 +89,7 @@ minPullbackATR = input.float(0.15, "Min Pullback From Fast MA (ATR)", minval=0.0
 
 groupHTF = "04 • HIGHER TIMEFRAME"
 
-useHTF = input.bool(true, "Require HTF Trend Alignment", group=groupHTF)
+useHTF = input.bool(false, "Require HTF Trend Alignment", group=groupHTF)
 higherTF = input.timeframe("240", "Higher Timeframe", group=groupHTF)
 
 
@@ -222,9 +223,6 @@ sellTouch =
      sellExtremeBars >= minExtremeBars and
      not connorsSellSetup[1]
 
-buyCandidate = signalMode == "Reversal Confirm" ? buyReversal : buyTouch
-sellCandidate = signalMode == "Reversal Confirm" ? sellReversal : sellTouch
-
 
 //====================================================================
 // 10 - QUALITY SCORE
@@ -321,19 +319,31 @@ var color lastEventColor = neutralColor
 buyCooldownOK = na(lastBuyBar) or bar_index - lastBuyBar >= signalCooldownBars
 sellCooldownOK = na(lastSellBar) or bar_index - lastSellBar >= signalCooldownBars
 
-strongBuy =
-     barstate.isconfirmed and
+buyTrigger = signalMode == "Reversal Confirm" ? buyReversal : buyTouch
+sellTrigger = signalMode == "Reversal Confirm" ? sellReversal : sellTouch
+
+buySignal =
      showSignals and
-     buyCandidate and
-     buyFiltersOK and
+     buyTrigger and
      buyCooldownOK
 
-strongSell =
-     barstate.isconfirmed and
+sellSignal =
      showSignals and
-     sellCandidate and
-     sellFiltersOK and
+     sellTrigger and
      sellCooldownOK
+
+strongBuy =
+     buySignal and
+     buyFiltersOK
+
+strongSell =
+     sellSignal and
+     sellFiltersOK
+
+buySignalConfirmed = barstate.isconfirmed and buySignal
+sellSignalConfirmed = barstate.isconfirmed and sellSignal
+strongBuyConfirmed = barstate.isconfirmed and strongBuy
+strongSellConfirmed = barstate.isconfirmed and strongSell
 
 exitLong =
      barstate.isconfirmed and
@@ -351,24 +361,24 @@ exitShort =
      (na(lastExitBar) or lastSellBar > lastExitBar) and
      (ta.crossunder(close, maFast) or ta.crossunder(rsi, exitShortRsi))
 
-if strongBuy
+if buySignalConfirmed
     lastBuyBar := bar_index
-    lastEvent := "STRONG BUY"
-    lastEventColor := bullStrong
+    lastEvent := strongBuyConfirmed ? "شراء قوي" : "شراء"
+    lastEventColor := strongBuyConfirmed ? bullStrong : bullColor
 
-if strongSell
+if sellSignalConfirmed
     lastSellBar := bar_index
-    lastEvent := "STRONG SELL"
-    lastEventColor := bearStrong
+    lastEvent := strongSellConfirmed ? "بيع قوي" : "بيع"
+    lastEventColor := strongSellConfirmed ? bearStrong : bearColor
 
 if exitLong
     lastExitBar := bar_index
-    lastEvent := "EXIT LONG"
+    lastEvent := "خروج شراء"
     lastEventColor := aquaColor
 
 if exitShort
     lastExitBar := bar_index
-    lastEvent := "EXIT SHORT"
+    lastEvent := "خروج بيع"
     lastEventColor := aquaColor
 
 
@@ -421,9 +431,9 @@ string modeText = connorsBuySetup ? "BUY SETUP" : connorsSellSetup ? "SELL SETUP
 
 color rsiColor = silverColor
 
-if strongBuy or (connorsBuySetup and buyQuality >= minQuality)
+if buySignal or (connorsBuySetup and buyQuality >= minQuality)
     rsiColor := bullStrong
-else if strongSell or (connorsSellSetup and sellQuality >= minQuality)
+else if sellSignal or (connorsSellSetup and sellQuality >= minQuality)
     rsiColor := bearStrong
 else if connorsBuySetup
     rsiColor := bullColor
@@ -460,6 +470,10 @@ if showBackground
         paneBackground := color.new(bullStrong, 78)
     else if strongSell
         paneBackground := color.new(bearStrong, 78)
+    else if buySignal
+        paneBackground := color.new(bullColor, 82)
+    else if sellSignal
+        paneBackground := color.new(bearColor, 82)
     else if connorsBuySetup
         paneBackground := color.new(bullColor, 92)
     else if connorsSellSetup
@@ -472,41 +486,72 @@ bgcolor(paneBackground)
 // 18 - SIGNAL SHAPES
 //====================================================================
 
-plotshape(showWeakSetups and connorsBuySetup and not strongBuy, title="Raw Buy Setup", text="SETUP", style=shape.circle, location=location.bottom, color=color.new(bullColor, 30), textcolor=color.black, size=size.tiny)
-plotshape(showWeakSetups and connorsSellSetup and not strongSell, title="Raw Sell Setup", text="SETUP", style=shape.circle, location=location.top, color=color.new(bearColor, 30), textcolor=color.white, size=size.tiny)
+plotshape(showWeakSetups and connorsBuySetup and not buySignal, title="Raw Buy Setup", text="SETUP", style=shape.circle, location=location.bottom, color=color.new(bullColor, 30), textcolor=color.black, size=size.tiny)
+plotshape(showWeakSetups and connorsSellSetup and not sellSignal, title="Raw Sell Setup", text="SETUP", style=shape.circle, location=location.top, color=color.new(bearColor, 30), textcolor=color.white, size=size.tiny)
 
-plotshape(strongBuy, title="Strong Buy", text="BUY", style=shape.labelup, location=location.bottom, color=bullStrong, textcolor=color.black, size=size.small)
-plotshape(strongSell, title="Strong Sell", text="SELL", style=shape.labeldown, location=location.top, color=bearStrong, textcolor=color.white, size=size.small)
+plotshape(buySignal and not strongBuy and useArabicText, title="Buy Arabic Pane", text="شراء", style=shape.labelup, location=location.bottom, color=bullColor, textcolor=color.black, size=size.small)
+plotshape(buySignal and strongBuy and useArabicText, title="Strong Buy Arabic Pane", text="شراء قوي", style=shape.labelup, location=location.bottom, color=bullStrong, textcolor=color.black, size=size.small)
+plotshape(sellSignal and not strongSell and useArabicText, title="Sell Arabic Pane", text="بيع", style=shape.labeldown, location=location.top, color=bearColor, textcolor=color.white, size=size.small)
+plotshape(sellSignal and strongSell and useArabicText, title="Strong Sell Arabic Pane", text="بيع قوي", style=shape.labeldown, location=location.top, color=bearStrong, textcolor=color.white, size=size.small)
 
-plotshape(exitLong, title="Exit Long", text="XL", style=shape.xcross, location=location.bottom, color=aquaColor, size=size.tiny)
-plotshape(exitShort, title="Exit Short", text="XS", style=shape.xcross, location=location.top, color=aquaColor, size=size.tiny)
+plotshape(buySignal and not strongBuy and not useArabicText, title="Buy English Pane", text="BUY", style=shape.labelup, location=location.bottom, color=bullColor, textcolor=color.black, size=size.small)
+plotshape(buySignal and strongBuy and not useArabicText, title="Strong Buy English Pane", text="BUY", style=shape.labelup, location=location.bottom, color=bullStrong, textcolor=color.black, size=size.small)
+plotshape(sellSignal and not strongSell and not useArabicText, title="Sell English Pane", text="SELL", style=shape.labeldown, location=location.top, color=bearColor, textcolor=color.white, size=size.small)
+plotshape(sellSignal and strongSell and not useArabicText, title="Strong Sell English Pane", text="SELL", style=shape.labeldown, location=location.top, color=bearStrong, textcolor=color.white, size=size.small)
+
+plotshape(buySignal and not strongBuy and useArabicText, title="Buy Arabic Chart", text="شراء", style=shape.labelup, location=location.belowbar, color=bullColor, textcolor=color.black, size=size.normal, force_overlay=true)
+plotshape(buySignal and strongBuy and useArabicText, title="Strong Buy Arabic Chart", text="شراء قوي", style=shape.labelup, location=location.belowbar, color=bullStrong, textcolor=color.black, size=size.normal, force_overlay=true)
+plotshape(sellSignal and not strongSell and useArabicText, title="Sell Arabic Chart", text="بيع", style=shape.labeldown, location=location.abovebar, color=bearColor, textcolor=color.white, size=size.normal, force_overlay=true)
+plotshape(sellSignal and strongSell and useArabicText, title="Strong Sell Arabic Chart", text="بيع قوي", style=shape.labeldown, location=location.abovebar, color=bearStrong, textcolor=color.white, size=size.normal, force_overlay=true)
+
+plotshape(buySignal and not strongBuy and not useArabicText, title="Buy English Chart", text="BUY", style=shape.labelup, location=location.belowbar, color=bullColor, textcolor=color.black, size=size.normal, force_overlay=true)
+plotshape(buySignal and strongBuy and not useArabicText, title="Strong Buy English Chart", text="STRONG BUY", style=shape.labelup, location=location.belowbar, color=bullStrong, textcolor=color.black, size=size.normal, force_overlay=true)
+plotshape(sellSignal and not strongSell and not useArabicText, title="Sell English Chart", text="SELL", style=shape.labeldown, location=location.abovebar, color=bearColor, textcolor=color.white, size=size.normal, force_overlay=true)
+plotshape(sellSignal and strongSell and not useArabicText, title="Strong Sell English Chart", text="STRONG SELL", style=shape.labeldown, location=location.abovebar, color=bearStrong, textcolor=color.white, size=size.normal, force_overlay=true)
+
+plotshape(exitLong and useArabicText, title="Exit Long Arabic", text="خروج", style=shape.xcross, location=location.belowbar, color=aquaColor, size=size.small, force_overlay=true)
+plotshape(exitShort and useArabicText, title="Exit Short Arabic", text="خروج", style=shape.xcross, location=location.abovebar, color=aquaColor, size=size.small, force_overlay=true)
+plotshape(exitLong and not useArabicText, title="Exit Long English", text="XL", style=shape.xcross, location=location.belowbar, color=aquaColor, size=size.small, force_overlay=true)
+plotshape(exitShort and not useArabicText, title="Exit Short English", text="XS", style=shape.xcross, location=location.abovebar, color=aquaColor, size=size.small, force_overlay=true)
 
 
 //====================================================================
 // 19 - OVERLAY LABELS
 //====================================================================
 
-if showOverlayLabels and strongBuy
+if showOverlayLabels and buySignalConfirmed
+    string buyLabelText =
+         (useArabicText ? (strongBuyConfirmed ? "شراء قوي" : "شراء") : (strongBuyConfirmed ? "STRONG BUY" : "BUY")) +
+         "\nQ " + str.tostring(buyQuality, "#") +
+         "\nTP1 " + str.tostring(buyTP1, format.mintick) +
+         "\nTP2 " + str.tostring(buyTP2, format.mintick) +
+         "\nSL " + str.tostring(buySL, format.mintick)
     label.new(
          bar_index,
          low,
-         "STRONG BUY\nQ " + str.tostring(buyQuality, "#") + "\nTP1 " + str.tostring(buyTP1, format.mintick) + "\nTP2 " + str.tostring(buyTP2, format.mintick) + "\nSL " + str.tostring(buySL, format.mintick),
+         buyLabelText,
          style=label.style_label_up,
-         color=color.new(bullStrong, 5),
+         color=color.new(strongBuyConfirmed ? bullStrong : bullColor, 5),
          textcolor=color.black,
-         size=size.small,
+         size=size.normal,
          force_overlay=true
      )
 
-if showOverlayLabels and strongSell
+if showOverlayLabels and sellSignalConfirmed
+    string sellLabelText =
+         (useArabicText ? (strongSellConfirmed ? "بيع قوي" : "بيع") : (strongSellConfirmed ? "STRONG SELL" : "SELL")) +
+         "\nQ " + str.tostring(sellQuality, "#") +
+         "\nTP1 " + str.tostring(sellTP1, format.mintick) +
+         "\nTP2 " + str.tostring(sellTP2, format.mintick) +
+         "\nSL " + str.tostring(sellSL, format.mintick)
     label.new(
          bar_index,
          high,
-         "STRONG SELL\nQ " + str.tostring(sellQuality, "#") + "\nTP1 " + str.tostring(sellTP1, format.mintick) + "\nTP2 " + str.tostring(sellTP2, format.mintick) + "\nSL " + str.tostring(sellSL, format.mintick),
+         sellLabelText,
          style=label.style_label_down,
-         color=color.new(bearStrong, 5),
+         color=color.new(strongSellConfirmed ? bearStrong : bearColor, 5),
          textcolor=color.white,
-         size=size.small,
+         size=size.normal,
          force_overlay=true
      )
 
@@ -574,9 +619,9 @@ if barstate.islast
 // 21 - ALERTS
 //====================================================================
 
-alertcondition(strongBuy, title="Strong Buy", message="CM RSI-2 Strong Signals: STRONG BUY confirmed at candle close.")
-alertcondition(strongSell, title="Strong Sell", message="CM RSI-2 Strong Signals: STRONG SELL confirmed at candle close.")
-alertcondition(exitLong, title="Exit Long", message="CM RSI-2 Strong Signals: EXIT LONG (RSI/MA5 mean reversion).")
-alertcondition(exitShort, title="Exit Short", message="CM RSI-2 Strong Signals: EXIT SHORT (RSI/MA5 mean reversion).")
-alertcondition(connorsBuySetup and buyQuality >= minQuality, title="Buy Setup Ready", message="CM RSI-2: high-quality buy setup is active.")
-alertcondition(connorsSellSetup and sellQuality >= minQuality, title="Sell Setup Ready", message="CM RSI-2: high-quality sell setup is active.")
+alertcondition(buySignalConfirmed, title="Buy", message="CM RSI-2: BUY signal confirmed at candle close.")
+alertcondition(sellSignalConfirmed, title="Sell", message="CM RSI-2: SELL signal confirmed at candle close.")
+alertcondition(strongBuyConfirmed, title="Strong Buy", message="CM RSI-2: STRONG BUY confirmed at candle close.")
+alertcondition(strongSellConfirmed, title="Strong Sell", message="CM RSI-2: STRONG SELL confirmed at candle close.")
+alertcondition(exitLong, title="Exit Long", message="CM RSI-2: EXIT LONG (RSI/MA5 mean reversion).")
+alertcondition(exitShort, title="Exit Short", message="CM RSI-2: EXIT SHORT (RSI/MA5 mean reversion).")
