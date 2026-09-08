@@ -1,5 +1,5 @@
 //@version=6
-indicator("DRE+Ichi+AdvDiv+BSS + STRAT ULTRA v3.1", shorttitle="All-in-One+ULTRA", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=100, max_bars_back=5000)
+indicator("DRE+Ichi+AdvDiv+BSS + STRAT ULTRA v3.1", shorttitle="AIO+ULTRA", overlay=true, max_labels_count=500, max_lines_count=500, max_boxes_count=100, max_bars_back=5000)
 
 // Merged without dropping module logic:
 //   A) Advanced Divergences   B) DRE Rise + Ichimoku S/R
@@ -645,7 +645,9 @@ green_candle      = close > open
 
 // —— برتقالي × أسود (الصفر) ——
 orange_near_black0 = math.abs(BullTrend) <= zeroSens or math.abs(BearTrend2) <= zeroSens
-orange_cross_up_0  = ta.crossover(BullTrend, 0) or ta.crossover(BearTrend2, 0)  // أصفر/برتقالي لمس الأسود وارتفع
+bullTrendCross0    = ta.crossover(BullTrend, 0)
+bearTrend2Cross0   = ta.crossover(BearTrend2, 0)
+orange_cross_up_0  = bullTrendCross0 or bearTrend2Cross0  // أصفر/برتقالي لمس الأسود وارتفع
 
 // —— تلامسات أخرى ——
 touch_white_orange_low = math.abs(Trend - BearTrend2) <= math.max(zeroSens, 0.25) and Trend < 0  // أبيض يلامس برتقالي سفلي
@@ -766,9 +768,12 @@ sellRecent    = recentTrue(sellNow, lookbackBars)
 redGoldRecent = recentTrue(bearish_wick, lookbackBars)
 grnGoldRecent = recentTrue(bullish_wick, lookbackBars)
 anyGoldRecent = redGoldRecent or grnGoldRecent
-anyGoldWide   = recentTrue(bearish_wick, math.max(lookbackBars, 10)) or recentTrue(bullish_wick, math.max(lookbackBars, 10))
+goldLookback  = math.max(lookbackBars, 10)
+redGoldWide   = recentTrue(bearish_wick, goldLookback)
+grnGoldWide   = recentTrue(bullish_wick, goldLookback)
+anyGoldWide   = redGoldWide or grnGoldWide
 yellowRecent  = recentTrue(yellow_tri, lookbackBars)
-accRecent     = recentTrue(accumulation, math.max(lookbackBars, 10))
+accRecent     = recentTrue(accumulation, goldLookback)
 
 // ذهبية مرتين خلال نافذة أوسع
 int goldHits = 0
@@ -2099,8 +2104,10 @@ if barstate.islast
 float nearestRoadmapResistance = resistanceCount > 0 ? array.get(resistanceLevels, 0) : na
 float nearestRoadmapSupport = supportCount > 0 ? array.get(supportLevels, 0) : na
 
-bool roadmapResistanceBreak = showRoadmap and not na(nearestRoadmapResistance) and ta.crossover(close, nearestRoadmapResistance)
-bool roadmapSupportBreak = showRoadmap and not na(nearestRoadmapSupport) and ta.crossunder(close, nearestRoadmapSupport)
+bool roadmapResCross = ta.crossover(close, nearestRoadmapResistance)
+bool roadmapSupCross = ta.crossunder(close, nearestRoadmapSupport)
+bool roadmapResistanceBreak = showRoadmap and not na(nearestRoadmapResistance) and roadmapResCross
+bool roadmapSupportBreak = showRoadmap and not na(nearestRoadmapSupport) and roadmapSupCross
 
 alertcondition(
      roadmapResistanceBreak,
@@ -2697,7 +2704,7 @@ alertcondition(showAdvanced and hasSignalNow and signal_type_adv == "بيع 🔴
 
 //====================================================================================
 // MODULE D: STRAT ULTRA PRO v3.1 — Smart Money + AI Confidence
-// Exact original logic. Conflict IDs renamed: suEma21 / suEma50 / suRsiVal
+// Exact original logic. Conflict IDs renamed: suEma21 / suEma50 / suRsiVal / suC15 (DRE case c15)
 // Dashboard default Middle Left so it does not cover AdvDiv (top-right).
 // Hammer/Shooter/Swing keep original above/below-bar triangle markers via labels.
 //====================================================================================
@@ -3030,32 +3037,32 @@ bool sweepBear = useSweepInput and sweepHigh
 // ══════════════════════════════════════════════════════════
 htf(string tf) => request.security(syminfo.tickerid, tf, [open, close, high, low, high[1], low[1], ta.rsi(close, 14)])
 
-[o15, c15, h15, l15, h15p, l15p, rsi15] = htf("15")
-[o30, c30, h30, l30, h30p, l30p, rsi30] = htf("30")
-[o60, c60, h60, l60, h60p, l60p, rsi60] = htf("60")
-[o4h, c4h, h4h, l4h, h4hp, l4hp, rsi4h] = htf("240")
-[oD,  cD,  hD,  lD,  hDp,  lDp,  rsiD ] = htf("D")
+[suO15, suC15, suH15, suL15, suH15p, suL15p, suRsi15] = htf("15")
+[suO30, suC30, suH30, suL30, suH30p, suL30p, suRsi30] = htf("30")
+[suO60, suC60, suH60, suL60, suH60p, suL60p, suRsi60] = htf("60")
+[suO4h, suC4h, suH4h, suL4h, suH4hp, suL4hp, suRsi4h] = htf("240")
+[suOD,  suCD,  suHD,  suLD,  suHDp,  suLDp,  suRsiD ] = htf("D")
 
 int chartSec = timeframe.in_seconds(timeframe.period)
 
 array<bool> fV = array.from(
-     chartSec < timeframe.in_seconds("15") and not na(o15),
-     chartSec < timeframe.in_seconds("30") and not na(o30),
-     chartSec < timeframe.in_seconds("60") and not na(o60),
-     chartSec < timeframe.in_seconds("240") and not na(o4h),
-     chartSec < timeframe.in_seconds("D") and not na(oD),
+     chartSec < timeframe.in_seconds("15") and not na(suO15),
+     chartSec < timeframe.in_seconds("30") and not na(suO30),
+     chartSec < timeframe.in_seconds("60") and not na(suO60),
+     chartSec < timeframe.in_seconds("240") and not na(suO4h),
+     chartSec < timeframe.in_seconds("D") and not na(suOD),
      false, false, false)
 array<bool> fG = array.from(
-     nz(o15) <= nz(c15), nz(o30) <= nz(c30), nz(o60) <= nz(c60), nz(o4h) <= nz(c4h),
-     nz(oD) <= nz(cD), false, false, false)
+     nz(suO15) <= nz(suC15), nz(suO30) <= nz(suC30), nz(suO60) <= nz(suC60), nz(suO4h) <= nz(suC4h),
+     nz(suOD) <= nz(suCD), false, false, false)
 array<bool> fI = array.from(
-     nz(h15) <= nz(h15p) and nz(l15) >= nz(l15p), nz(h30) <= nz(h30p) and nz(l30) >= nz(l30p),
-     nz(h60) <= nz(h60p) and nz(l60) >= nz(l60p), nz(h4h) <= nz(h4hp) and nz(l4h) >= nz(l4hp),
-     nz(hD) <= nz(hDp) and nz(lD) >= nz(lDp), false, false, false)
+     nz(suH15) <= nz(suH15p) and nz(suL15) >= nz(suL15p), nz(suH30) <= nz(suH30p) and nz(suL30) >= nz(suL30p),
+     nz(suH60) <= nz(suH60p) and nz(suL60) >= nz(suL60p), nz(suH4h) <= nz(suH4hp) and nz(suL4h) >= nz(suL4hp),
+     nz(suHD) <= nz(suHDp) and nz(suLD) >= nz(suLDp), false, false, false)
 array<bool> fO = array.from(
-     nz(h15) > nz(h15p) and nz(l15) < nz(l15p), nz(h30) > nz(h30p) and nz(l30) < nz(l30p),
-     nz(h60) > nz(h60p) and nz(l60) < nz(l60p), nz(h4h) > nz(h4hp) and nz(l4h) < nz(l4hp),
-     nz(hD) > nz(hDp) and nz(lD) < nz(lDp), false, false, false)
+     nz(suH15) > nz(suH15p) and nz(suL15) < nz(suL15p), nz(suH30) > nz(suH30p) and nz(suL30) < nz(suL30p),
+     nz(suH60) > nz(suH60p) and nz(suL60) < nz(suL60p), nz(suH4h) > nz(suH4hp) and nz(suL4h) < nz(suL4hp),
+     nz(suHD) > nz(suHDp) and nz(suLD) < nz(suLDp), false, false, false)
 
 int ftcVisible = 0
 int ftcAlignedBull = 0
@@ -3074,9 +3081,13 @@ for i = 0 to 4
         if fO.get(i)
             ftcOutsideN += 1
 
-float htfRsi = divTfInput == "15" ? rsi15 : divTfInput == "30" ? rsi30 : divTfInput == "60" ? rsi60 : rsi4h
-bool bullDivHTF = useDivInput and ta.falling(close, 5) and ta.rising(htfRsi, 5)
-bool bearDivHTF = useDivInput and ta.rising(close, 5) and ta.falling(htfRsi, 5)
+float htfRsi = divTfInput == "15" ? suRsi15 : divTfInput == "30" ? suRsi30 : divTfInput == "60" ? suRsi60 : suRsi4h
+bool closeFalling5 = ta.falling(close, 5)
+bool closeRising5  = ta.rising(close, 5)
+bool htfRsiRising5 = ta.rising(htfRsi, 5)
+bool htfRsiFalling5 = ta.falling(htfRsi, 5)
+bool bullDivHTF = useDivInput and closeFalling5 and htfRsiRising5
+bool bearDivHTF = useDivInput and closeRising5 and htfRsiFalling5
 
 float mtfFastClose = request.security(syminfo.tickerid, mtfFastTfInput, close)
 float mtfFastOpen  = request.security(syminfo.tickerid, mtfFastTfInput, open)
@@ -3087,7 +3098,7 @@ bool mtfSlowBull = nz(mtfSlowClose) >= nz(mtfSlowOpen)
 bool mtfFastBear = not mtfFastBull
 bool mtfSlowBear = not mtfSlowBull
 bool mtfAligned  = useMtfBiasInput ? (mtfFastBull and mtfSlowBull) or (mtfFastBear and mtfSlowBear) : true
-bool htf4hBull   = nz(c4h) >= nz(o4h)
+bool htf4hBull   = nz(suC4h) >= nz(suO4h)
 bool htf4hBear   = not htf4hBull
 
 float obvVal    = ta.obv
@@ -3378,7 +3389,7 @@ confluenceCount(int dir, bool viaTrap) =>
     n
 
 evalGates(int dir, int patIdx, bool viaTrap) =>
-    float conf  = getConfidence(dir, patIdx, viaTrap)
+    float gateConf = getConfidence(dir, patIdx, viaTrap)
     int   confl = confluenceCount(dir, viaTrap)
     int extraCd = lastCloseWasLoss ? int(math.round(cooldownBarsInput * lossCooldownMultInput)) : cooldownBarsInput
     bool inCooldown = lastSignalBar >= 0 and (bar_index - lastSignalBar) < extraCd
@@ -3408,7 +3419,7 @@ evalGates(int dir, int patIdx, bool viaTrap) =>
     bool ftcOk = minFtcInput == 0 or alignedN >= math.min(minFtcInput, ftcVisible)
     bool adxOk = not useAdxFilterInput or strongTrend
     bool sessOk = not useSessionInput or inSession
-    bool confOk = not useConfInput or conf >= minConfInput
+    bool confOk = not useConfInput or gateConf >= minConfInput
     bool conflOk = not precisionModeInput or confl >= minConflInput
     bool patWrOk = true
     if precisionModeInput and patMemoryInput and patIdx >= 0 and patIdx < patCounts.size()
@@ -3451,11 +3462,11 @@ evalGates(int dir, int patIdx, bool viaTrap) =>
     else if not sessOk
         reason := "Session"
     else if not confOk
-        reason := "Conf:" + str.tostring(conf, "#.")
+        reason := "Conf:" + str.tostring(gateConf, "#.")
     else if not conflOk
         reason := "Confl " + str.tostring(confl) + "/" + str.tostring(minConflInput)
     bool pass = reason == "OK"
-    [pass, reason, conf, confl]
+    [pass, reason, gateConf, confl]
 
 // ══════════════════════════════════════════════════════════
 // 12. TRADE ENGINE
@@ -3872,7 +3883,7 @@ if showDashInput and barstate.islast
     table.cell(dash, 0, 3, "ADX:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
     table.cell(dash, 1, 3, str.tostring(adxVal, "#.") + (strongTrend ? " ✓" : " ✗"), text_color = strongTrend ? BULL : C_MUTED, text_size = strSize(dashSizeInput))
     table.cell(dash, 0, 4, "RSI:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
-    table.cell(dash, 1, 4, str.tostring(suRsiVal, "#.") + " D:" + str.tostring(rsiD, "#."), text_color = suRsiVal > 70 ? BEAR : suRsiVal < 30 ? BULL : C_TEXT, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 4, str.tostring(suRsiVal, "#.") + " D:" + str.tostring(suRsiD, "#."), text_color = suRsiVal > 70 ? BEAR : suRsiVal < 30 ? BULL : C_TEXT, text_size = strSize(dashSizeInput))
     table.cell(dash, 0, 5, "Win Rate:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
     table.cell(dash, 1, 5, str.tostring(winRate, "#.##") + "% (" + str.tostring(totalTrades) + ")", text_color = winRate >= 60 ? BULL : winRate >= 40 ? C_TEXT : BEAR, text_size = strSize(dashSizeInput))
     table.cell(dash, 0, 6, "Last 15:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
