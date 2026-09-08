@@ -2775,7 +2775,7 @@ string GRP_PRC = "11 Precision (Accuracy)"
 // ══════════════════════════════════════════════════════════
 themeInput         = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_APP)
 showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_APP)
-signalSizeInput    = input.string("Small", "Signal Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_APP)
+signalSizeInput    = input.string("Large", "Signal Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_APP)
 
 extInput           = input.bool(true, "Extended Patterns", group = GRP_PAT)
 showSetupLblInput  = input.bool(true, "Show Setup Labels", group = GRP_PAT)
@@ -3868,7 +3868,7 @@ f_drawStratUi() =>
             tp1Line   := line.new(x1, activeTP1,   bar_index, activeTP1,   color = TP1_COL, style = lineStyle("Dashed"), width = 1)
             tp2Line   := line.new(x1, activeTP2,   bar_index, activeTP2,   color = TP2_COL, style = lineStyle("Dashed"), width = 1)
             tp3Line   := line.new(x1, activeTP3,   bar_index, activeTP3,   color = TP3_COL, style = lineStyle("Dashed"), width = 2)
-            slLbl     := label.new(bar_index, activeSL, "", style = label.style_label_left, color = beActive ? BE_COL : SL_COL, textcolor = color.white, size = size.tiny)
+            slLbl     := label.new(bar_index, activeSL, "", style = label.style_label_left, color = beActive ? BE_COL : SL_COL, textcolor = color.white, size = strSize(signalSizeInput))
         else
             line.set_xy1(entryLine, x1, activeEntry)
             line.set_xy2(entryLine, bar_index, activeEntry)
@@ -3908,7 +3908,7 @@ f_drawStratUi() =>
             slLbl := na
 
     if diagTriggered and showConfInput
-        lblFifo.push(label.new(bar_index, close, diagReason, style = label.style_label_center, color = color.new(DIAG_COL, 80), textcolor = DIAG_COL, size = size.tiny, tooltip = "Signal blocked by filter"))
+        lblFifo.push(label.new(bar_index, close, diagReason, style = label.style_label_center, color = color.new(DIAG_COL, 80), textcolor = DIAG_COL, size = strSize(signalSizeInput), tooltip = "Signal blocked by filter"))
 
     // ══════════════════════════════════════════════════════════
     // 15. DASHBOARD
