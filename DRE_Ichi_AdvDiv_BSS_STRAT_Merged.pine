@@ -6,6 +6,7 @@ indicator("DRE+Ichi+AdvDiv+BSS + STRAT ULTRA v3.1", shorttitle="AIO+ULTRA", over
 //   C) BSS2000+ Pre-Breakout  D) STRAT ULTRA PRO v3.1 (SMC + AI)
 // Plot-budget: extra Ichimoku/Roadmap levels use line objects; DRE/BSS bgcolor combined; STRAT hammers/swings use labels.
 // CE10295: heavy tables/labels/loops/FSM live in functions; plots, inputs, and alertcondition stay global.
+// CE10116: STRAT patterns init via arrays (not a many-int UDF); engine and UI are separate functions.
 
 //====================================================================================
 // MODULE A: Advanced Divergences (Modo Rápido) — logic preserved; conflict IDs prefixed adv*
@@ -2912,10 +2913,6 @@ clsName(int c) => c == 1 ? "1" : c == 3 ? "3" : c == 2 ? "2U" : c == -2 ? "2D" :
 
 clsColor(int c) => c == 1 ? C_INSIDE : c == 3 ? C_OUTSIDE : c == 2 ? BULL : c == -2 ? BEAR : na
 
-addPat(matrix<int> m, array<string> nm, int grp, int dir, string name, int plen, int t0, int t1, int t2, int t3) =>
-    m.add_row(m.rows(), array.from(grp, dir, plen, t0, t1, t2, t3))
-    nm.push(name)
-
 lineStyle(string s) => s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
 
 strSize(string s) => s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : size.huge
@@ -3163,6 +3160,58 @@ var matrix<int>   patM     = matrix.new<int>()
 var array<string> patNames = array.new<string>()
 var array<float>  patWinRates = array.new<float>()
 var array<int>    patCounts   = array.new<int>()
+var array<line>   lnFifo   = array.new<line>()
+var array<label>  lblFifo  = array.new<label>()
+
+// CE10116: do not call a UDF with many int args from any function (20×addPat overflowed 254).
+// Built-in array.from() args do not count as UDF parameters.
+f_initStratPats() =>
+    if barstate.isfirst
+        patM.add_row(patM.rows(), array.from(1,  1, 4,  2, -2,  2,  2))
+        patNames.push("2-2-2-2 RJ")
+        patM.add_row(patM.rows(), array.from(1, -1, 4, -2,  2, -2, -2))
+        patNames.push("2-2-2-2 RJ")
+        patM.add_row(patM.rows(), array.from(1,  1, 3,  2,  2,  2,  0))
+        patNames.push("2-2-2 Cont")
+        patM.add_row(patM.rows(), array.from(1, -1, 3, -2, -2, -2,  0))
+        patNames.push("2-2-2 Cont")
+        patM.add_row(patM.rows(), array.from(0,  1, 3,  2, -2,  3,  0))
+        patNames.push("3-2-2 Rev")
+        patM.add_row(patM.rows(), array.from(0, -1, 3, -2,  2,  3,  0))
+        patNames.push("3-2-2 Rev")
+        patM.add_row(patM.rows(), array.from(0,  1, 3,  2,  1,  3,  0))
+        patNames.push("3-1-2")
+        patM.add_row(patM.rows(), array.from(0, -1, 3, -2,  1,  3,  0))
+        patNames.push("3-1-2")
+        patM.add_row(patM.rows(), array.from(0,  1, 3,  2,  1, -2,  0))
+        patNames.push("2-1-2 Rev")
+        patM.add_row(patM.rows(), array.from(0, -1, 3, -2,  1,  2,  0))
+        patNames.push("2-1-2 Rev")
+        patM.add_row(patM.rows(), array.from(0,  1, 3,  2,  1,  2,  0))
+        patNames.push("2-1-2 Cont")
+        patM.add_row(patM.rows(), array.from(0, -1, 3, -2,  1, -2,  0))
+        patNames.push("2-1-2 Cont")
+        patM.add_row(patM.rows(), array.from(0,  1, 3,  2, -2,  1,  0))
+        patNames.push("1-2-2 RevStrat")
+        patM.add_row(patM.rows(), array.from(0, -1, 3, -2,  2,  1,  0))
+        patNames.push("1-2-2 RevStrat")
+        patM.add_row(patM.rows(), array.from(0,  1, 2,  2,  3,  0,  0))
+        patNames.push("3-2")
+        patM.add_row(patM.rows(), array.from(0, -1, 2, -2,  3,  0,  0))
+        patNames.push("3-2")
+        patM.add_row(patM.rows(), array.from(0,  1, 2,  2, -2,  0,  0))
+        patNames.push("2-2 Rev")
+        patM.add_row(patM.rows(), array.from(0, -1, 2, -2,  2,  0,  0))
+        patNames.push("2-2 Rev")
+        patM.add_row(patM.rows(), array.from(0,  1, 2,  2,  2,  0,  0))
+        patNames.push("2-2 Cont")
+        patM.add_row(patM.rows(), array.from(0, -1, 2, -2, -2,  0,  0))
+        patNames.push("2-2 Cont")
+        for i = 0 to patM.rows() - 1
+            patWinRates.push(0.5)
+            patCounts.push(0)
+    true
+f_initStratPats()
 
 // Confidence/gates hoisted (CE10295) — extra args avoid global :=
 getConfidence(int dir, int patIdx, bool isTrap) =>
@@ -3342,34 +3391,6 @@ f_runStratEngine() =>
     var bool lastCloseWasLoss = false
 
     // ══════════════════════════════════════════════════════════
-    // 9. PATTERN ENGINE WITH MEMORY
-    // ══════════════════════════════════════════════════════════
-    if barstate.isfirst
-        addPat(patM, patNames, 1,  1, "2-2-2-2 RJ",     4,  2, -2,  2,  2)
-        addPat(patM, patNames, 1, -1, "2-2-2-2 RJ",     4, -2,  2, -2, -2)
-        addPat(patM, patNames, 1,  1, "2-2-2 Cont",     3,  2,  2,  2,  0)
-        addPat(patM, patNames, 1, -1, "2-2-2 Cont",     3, -2, -2, -2,  0)
-        addPat(patM, patNames, 0,  1, "3-2-2 Rev",      3,  2, -2,  3,  0)
-        addPat(patM, patNames, 0, -1, "3-2-2 Rev",      3, -2,  2,  3,  0)
-        addPat(patM, patNames, 0,  1, "3-1-2",          3,  2,  1,  3,  0)
-        addPat(patM, patNames, 0, -1, "3-1-2",          3, -2,  1,  3,  0)
-        addPat(patM, patNames, 0,  1, "2-1-2 Rev",      3,  2,  1, -2,  0)
-        addPat(patM, patNames, 0, -1, "2-1-2 Rev",      3, -2,  1,  2,  0)
-        addPat(patM, patNames, 0,  1, "2-1-2 Cont",     3,  2,  1,  2,  0)
-        addPat(patM, patNames, 0, -1, "2-1-2 Cont",     3, -2,  1, -2,  0)
-        addPat(patM, patNames, 0,  1, "1-2-2 RevStrat", 3,  2, -2,  1,  0)
-        addPat(patM, patNames, 0, -1, "1-2-2 RevStrat", 3, -2,  2,  1,  0)
-        addPat(patM, patNames, 0,  1, "3-2",            2,  2,  3,  0,  0)
-        addPat(patM, patNames, 0, -1, "3-2",            2, -2,  3,  0,  0)
-        addPat(patM, patNames, 0,  1, "2-2 Rev",        2,  2, -2,  0,  0)
-        addPat(patM, patNames, 0, -1, "2-2 Rev",        2, -2,  2,  0,  0)
-        addPat(patM, patNames, 0,  1, "2-2 Cont",       2,  2,  2,  0,  0)
-        addPat(patM, patNames, 0, -1, "2-2 Cont",       2, -2, -2,  0,  0)
-        for i = 0 to patM.rows() - 1
-            patWinRates.push(0.5)
-            patCounts.push(0)
-
-    // ══════════════════════════════════════════════════════════
     // 10. SIGNAL LOGIC — FSM
     // ══════════════════════════════════════════════════════════
     var int    fsmState    = ST_IDLE
@@ -3381,8 +3402,6 @@ f_runStratEngine() =>
     var int    pendPatIdx  = -1
     var line   hiLn        = na
     var line   loLn        = na
-    var array<line>  lnFifo  = array.new<line>()
-    var array<label> lblFifo = array.new<label>()
 
     bool setupBullSig = false
     bool setupBearSig = false
@@ -3782,6 +3801,11 @@ f_runStratEngine() =>
                 diagTriggered := true
 
     // ══════════════════════════════════════════════════════════
+    [setupBullSig, setupBearSig, evLongEntry, evShortEntry, activeDir, activeEntry, activeSL, activeTP1, activeTP2, activeTP3, entryBarIdx, entryConf, entryPat, entryConfl, beActive, tp1Reached, tp2Reached, tp3Reached, partial1Done, partial2Done, diagTriggered, diagReason, winCount, lossCount, formStr, beJustActivated, closeBySl, rawSignalDir, tDir, gPass, gReason, gConf, gConfl, confirmDir, cPass, cReason, cConf, cConfl]
+
+[setupBullSig, setupBearSig, evLongEntry, evShortEntry, activeDir, activeEntry, activeSL, activeTP1, activeTP2, activeTP3, entryBarIdx, entryConf, entryPat, entryConfl, beActive, tp1Reached, tp2Reached, tp3Reached, partial1Done, partial2Done, diagTriggered, diagReason, winCount, lossCount, formStr, beJustActivated, closeBySl, rawSignalDir, tDir, gPass, gReason, gConf, gConfl, confirmDir, cPass, cReason, cConf, cConfl] = f_runStratEngine()
+
+f_drawStratUi() =>
     // 14. VISUALIZATION
     // ══════════════════════════════════════════════════════════
     if hammerNow
@@ -3980,9 +4004,14 @@ f_runStratEngine() =>
     else if not showWatermarkInput and not na(wm)
         label.delete(wm)
         wm := na
-    [setupBullSig, setupBearSig, evLongEntry, evShortEntry]
+    while lblFifo.size() > maxDrawInput
+        label.delete(lblFifo.shift())
+    while lnFifo.size() > maxDrawInput * 2
+        line.delete(lnFifo.shift())
+    true
 
-[setupBullSig, setupBearSig, evLongEntry, evShortEntry] = f_runStratEngine()
+f_drawStratUi()
+
 barcolor(clsColor(clsNow))
 
 alertcondition(evLongEntry, "ULTRA Long", "STRAT ULTRA Long entry")
