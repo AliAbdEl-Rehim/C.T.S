@@ -2917,6 +2917,9 @@ lineStyle(string s) => s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.
 
 strSize(string s) => s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : size.huge
 
+// Filter-block labels (RSI zone, SMC weak, Cooldown, …): one step below Signal Size, never tiny.
+diagSize(string s) => s == "Huge" ? size.large : s == "Large" ? size.normal : size.small
+
 fmtP(float v) => na(v) ? "—" : str.tostring(v, format.mintick)
 
 safeDiv(float num, float den, float fb) => den != 0 and not na(num) and not na(den) ? num / den : fb
@@ -3908,7 +3911,7 @@ f_drawStratUi() =>
             slLbl := na
 
     if diagTriggered and showConfInput
-        lblFifo.push(label.new(bar_index, close, diagReason, style = label.style_label_center, color = color.new(DIAG_COL, 80), textcolor = DIAG_COL, size = strSize(signalSizeInput), tooltip = "Signal blocked by filter"))
+        lblFifo.push(label.new(bar_index, close, diagReason, style = label.style_label_center, color = color.new(DIAG_COL, 80), textcolor = DIAG_COL, size = diagSize(signalSizeInput), tooltip = "Signal blocked by filter"))
 
     // ══════════════════════════════════════════════════════════
     // 15. DASHBOARD
