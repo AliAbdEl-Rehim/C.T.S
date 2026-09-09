@@ -1,5 +1,9 @@
+//@version=6
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+indicator("Statistical Model", shorttitle="STAT", overlay=true, max_lines_count=500, max_labels_count=500)
+
 //====================================================================================
-// 📊 SECTION: HISTORICAL PATTERN MATCHING (STATISTICAL MODEL)
+// 📊 HISTORICAL PATTERN MATCHING (STATISTICAL MODEL)
 //====================================================================================
 
 // ==================== INPUTS ====================
@@ -36,6 +40,15 @@ show_tp1_stats = input.bool(true, "Show TP1", group=displayGroupStats)
 show_tp2_stats = input.bool(true, "Show TP2", group=displayGroupStats)
 show_tp3_stats = input.bool(true, "Show TP3", group=displayGroupStats)
 show_sl_stats = input.bool(true, "Show SL", group=displayGroupStats)
+
+colorGroup = "🎨 Line Colors / ألوان الخطوط"
+colTp1 = input.color(color.new(#ffff00, 60), "TP1", group=colorGroup, inline="c1")
+colTp2 = input.color(color.new(#00ff88, 60), "TP2", group=colorGroup, inline="c1")
+colTp3 = input.color(color.new(#00ff00, 60), "TP3", group=colorGroup, inline="c2")
+colSl  = input.color(color.new(#ff0000, 60), "Stop Loss", group=colorGroup, inline="c2")
+colBuyLbl  = input.color(color.new(#00ff00, 20), "Buy Label", group=colorGroup, inline="c3")
+colSellLbl = input.color(color.new(#ff0000, 20), "Sell Label", group=colorGroup, inline="c3")
+lwLines = input.int(5, "Line Width", minval=1, maxval=10, group=colorGroup)
 
 // ==================== INDICATORS ====================
 rsi_adv = ta.rsi(close, 14)
@@ -214,50 +227,104 @@ tp3_adv = signal_type_adv == "Buy 🟢" ? close * (1 + tp3_percent / 100) : clos
 sl_adv = signal_type_adv == "Buy 🟢" ? close * (1 - stop_loss_percent / 100) : close * (1 + stop_loss_percent / 100)
 
 // ==================== DISPLAY LINES & LABELS ====================
-if show_prediction_stats and final_confidence >= min_confidence
-    if show_tp1_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "TP Only" or lines_display_mode_stats == "TP Yellow Only")
-        line.new(bar_index, tp1_adv, bar_index + 100, tp1_adv, extend=extend.right, color=color.new(#ffff00, 60), width=5)
-    if show_tp2_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "TP Only" or lines_display_mode_stats == "TP Green Only")
-        line.new(bar_index, tp2_adv, bar_index + 100, tp2_adv, extend=extend.right, color=color.new(#00ff88, 60), width=5)
-    if show_tp3_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "TP Only" or lines_display_mode_stats == "TP Green Only")
-        line.new(bar_index, tp3_adv, bar_index + 100, tp3_adv, extend=extend.right, color=color.new(#00ff00, 60), width=5)
-    if show_sl_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "SL Only")
-        line.new(bar_index, sl_adv, bar_index + 100, sl_adv, extend=extend.right, color=color.new(#ff0000, 60), width=5)
+bool show_levels = show_prediction_stats and final_confidence >= min_confidence and signal_type_adv != "Neutral"
+bool draw_tp1 = show_levels and show_tp1_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "TP Only" or lines_display_mode_stats == "TP Yellow Only")
+bool draw_tp2 = show_levels and show_tp2_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "TP Only" or lines_display_mode_stats == "TP Green Only")
+bool draw_tp3 = show_levels and show_tp3_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "TP Only" or lines_display_mode_stats == "TP Green Only")
+bool draw_sl  = show_levels and show_sl_stats and (lines_display_mode_stats == "All" or lines_display_mode_stats == "SL Only")
 
-if signal_type_adv != "Neutral" and final_confidence >= min_confidence
-    label_color = signal_type_adv == "Buy 🟢" ? color.new(#00ff00, 20) : color.new(#ff0000, 20)
+var line ln_tp1 = na
+var line ln_tp2 = na
+var line ln_tp3 = na
+var line ln_sl  = na
+
+if barstate.islast
+    if draw_tp1
+        if na(ln_tp1)
+            ln_tp1 := line.new(bar_index, tp1_adv, bar_index + 1, tp1_adv, extend=extend.right, color=colTp1, width=lwLines)
+        else
+            line.set_xy1(ln_tp1, bar_index, tp1_adv)
+            line.set_xy2(ln_tp1, bar_index + 1, tp1_adv)
+            line.set_color(ln_tp1, colTp1)
+            line.set_width(ln_tp1, lwLines)
+    else if not na(ln_tp1)
+        line.delete(ln_tp1)
+        ln_tp1 := na
+
+    if draw_tp2
+        if na(ln_tp2)
+            ln_tp2 := line.new(bar_index, tp2_adv, bar_index + 1, tp2_adv, extend=extend.right, color=colTp2, width=lwLines)
+        else
+            line.set_xy1(ln_tp2, bar_index, tp2_adv)
+            line.set_xy2(ln_tp2, bar_index + 1, tp2_adv)
+            line.set_color(ln_tp2, colTp2)
+            line.set_width(ln_tp2, lwLines)
+    else if not na(ln_tp2)
+        line.delete(ln_tp2)
+        ln_tp2 := na
+
+    if draw_tp3
+        if na(ln_tp3)
+            ln_tp3 := line.new(bar_index, tp3_adv, bar_index + 1, tp3_adv, extend=extend.right, color=colTp3, width=lwLines)
+        else
+            line.set_xy1(ln_tp3, bar_index, tp3_adv)
+            line.set_xy2(ln_tp3, bar_index + 1, tp3_adv)
+            line.set_color(ln_tp3, colTp3)
+            line.set_width(ln_tp3, lwLines)
+    else if not na(ln_tp3)
+        line.delete(ln_tp3)
+        ln_tp3 := na
+
+    if draw_sl
+        if na(ln_sl)
+            ln_sl := line.new(bar_index, sl_adv, bar_index + 1, sl_adv, extend=extend.right, color=colSl, width=lwLines)
+        else
+            line.set_xy1(ln_sl, bar_index, sl_adv)
+            line.set_xy2(ln_sl, bar_index + 1, sl_adv)
+            line.set_color(ln_sl, colSl)
+            line.set_width(ln_sl, lwLines)
+    else if not na(ln_sl)
+        line.delete(ln_sl)
+        ln_sl := na
+
+if signal_type_adv != "Neutral" and final_confidence >= min_confidence and barstate.isconfirmed
+    label_color = signal_type_adv == "Buy 🟢" ? colBuyLbl : colSellLbl
     lbl_txt = signal_type_adv + "\n" + str.tostring(final_confidence, "#.#") + "%\nTP1: " + str.tostring(tp1_adv, "#.##") + "\nTP2: " + str.tostring(tp2_adv, "#.##") + "\nTP3: " + str.tostring(tp3_adv, "#.##") + "\nSL: " + str.tostring(sl_adv, "#.##")
     offset_y = atrMeasure * 2.0
     lbl_y = signal_type_adv == "Buy 🟢" ? low - offset_y : high + offset_y
     label.new(bar_index, lbl_y, lbl_txt, style=signal_type_adv == "Buy 🟢" ? label.style_label_up : label.style_label_down, color=label_color, textcolor=color.white, size=size.small)
 
 // ==================== STATISTICS TABLE ====================
-if show_analysis_table_stats and barstate.islast
-    var table stats = table.new(position.top_left, 2, 8, bgcolor=color.new(#000000, 50))
-    table.cell(stats, 0, 0, "📊 Statistical Model", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.large)
-    table.cell(stats, 1, 0, "Value", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.large)
+var table stats = table.new(position.top_left, 2, 8, bgcolor=color.new(#000000, 50))
 
-    table.cell(stats, 0, 1, "Signal", bgcolor=#0a0a0a, text_color=color.gray)
-    table.cell(stats, 1, 1, signal_type_adv, bgcolor=#0a0a0a, text_color=#ffffff, text_size=size.large)
+if barstate.islast
+    if show_analysis_table_stats
+        table.cell(stats, 0, 0, "📊 Statistical Model", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.large)
+        table.cell(stats, 1, 0, "Value", bgcolor=#1a1a1a, text_color=#ffcc00, text_size=size.large)
 
-    table.cell(stats, 0, 2, "Confidence", bgcolor=#0a0a0a, text_color=color.gray)
-    conf_color = final_confidence >= 80 ? #00ff00 : final_confidence >= 70 ? #88ff00 : #ffaa00
-    table.cell(stats, 1, 2, str.tostring(final_confidence, "#.#") + "%", bgcolor=#0a0a0a, text_color=conf_color)
+        table.cell(stats, 0, 1, "Signal", bgcolor=#0a0a0a, text_color=color.gray)
+        table.cell(stats, 1, 1, signal_type_adv, bgcolor=#0a0a0a, text_color=#ffffff, text_size=size.large)
 
-    table.cell(stats, 0, 3, "Bullish Signals", bgcolor=#0a0a0a, text_color=color.gray)
-    table.cell(stats, 1, 3, str.tostring(bullish_signals), bgcolor=#0a0a0a, text_color=#00ff00)
+        table.cell(stats, 0, 2, "Confidence", bgcolor=#0a0a0a, text_color=color.gray)
+        conf_color = final_confidence >= 80 ? #00ff00 : final_confidence >= 70 ? #88ff00 : #ffaa00
+        table.cell(stats, 1, 2, str.tostring(final_confidence, "#.#") + "%", bgcolor=#0a0a0a, text_color=conf_color)
 
-    table.cell(stats, 0, 4, "Bearish Signals", bgcolor=#0a0a0a, text_color=color.gray)
-    table.cell(stats, 1, 4, str.tostring(bearish_signals), bgcolor=#0a0a0a, text_color=#ff0000)
+        table.cell(stats, 0, 3, "Bullish Signals", bgcolor=#0a0a0a, text_color=color.gray)
+        table.cell(stats, 1, 3, str.tostring(bullish_signals), bgcolor=#0a0a0a, text_color=#00ff00)
 
-    table.cell(stats, 0, 5, "Historical Matches Bull", bgcolor=#0a0a0a, text_color=color.gray)
-    table.cell(stats, 1, 5, str.tostring(match_count_bull), bgcolor=#0a0a0a, text_color=#00ff00)
+        table.cell(stats, 0, 4, "Bearish Signals", bgcolor=#0a0a0a, text_color=color.gray)
+        table.cell(stats, 1, 4, str.tostring(bearish_signals), bgcolor=#0a0a0a, text_color=#ff0000)
 
-    table.cell(stats, 0, 6, "Historical Matches Bear", bgcolor=#0a0a0a, text_color=color.gray)
-    table.cell(stats, 1, 6, str.tostring(match_count_bear), bgcolor=#0a0a0a, text_color=#ff0000)
+        table.cell(stats, 0, 5, "Historical Matches Bull", bgcolor=#0a0a0a, text_color=color.gray)
+        table.cell(stats, 1, 5, str.tostring(match_count_bull), bgcolor=#0a0a0a, text_color=#00ff00)
 
-    table.cell(stats, 0, 7, "Patterns in History", bgcolor=#0a0a0a, text_color=color.gray)
-    table.cell(stats, 1, 7, str.tostring(array.size(pattern_history)), bgcolor=#0a0a0a, text_color=#ffff00)
+        table.cell(stats, 0, 6, "Historical Matches Bear", bgcolor=#0a0a0a, text_color=color.gray)
+        table.cell(stats, 1, 6, str.tostring(match_count_bear), bgcolor=#0a0a0a, text_color=#ff0000)
+
+        table.cell(stats, 0, 7, "Patterns in History", bgcolor=#0a0a0a, text_color=color.gray)
+        table.cell(stats, 1, 7, str.tostring(array.size(pattern_history)), bgcolor=#0a0a0a, text_color=#ffff00)
+    else
+        table.clear(stats, 0, 0, 1, 7)
 
 // ==================== ALERTS ====================
 if signal_type_adv == "Buy 🟢" and final_confidence >= 75 and barstate.isconfirmed
@@ -270,5 +337,5 @@ alertcondition(signal_type_adv == "Buy 🟢" and final_confidence >= 75, "🟢 S
 alertcondition(signal_type_adv == "Sell 🔴" and final_confidence >= 75, "🔴 Strong Sell", "Sell")
 
 //====================================================================================
-// END OF STATISTICAL MODEL SECTION
+// END
 //====================================================================================
