@@ -71,6 +71,15 @@ egxBurstWeight = input.float(1.5, "وزن Burst Filter", minval=0.5, maxval=3.0,
 egxLimitWeight = input.float(1.3, "وزن Limit Filter", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
 egxAccumWeight = input.float(1.2, "وزن Accumulation", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
 
+// ⭐ NEW: توقيت BUY A++ (لمنع الدخول المتأخر بعد انتهاء الصعود)
+groupAxxTiming = "⚡ توقيت BUY A++"
+aPlusPlusMode = input.string("Early", "وضع BUY A++", options=["Conservative", "Early"], group=groupAxxTiming)
+earlyAxxScore = input.float(0.78, "Early A++: أقل Score", minval=0.70, maxval=0.85, step=0.01, group=groupAxxTiming)
+earlyBurstBodyFactor = input.float(0.70, "Early A++: نسبة Body من Burst", minval=0.40, maxval=1.00, step=0.05, group=groupAxxTiming)
+earlyBurstVolFactor = input.float(0.70, "Early A++: نسبة Volume من Burst", minval=0.40, maxval=1.00, step=0.05, group=groupAxxTiming)
+earlyLimitFactor = input.float(0.75, "Early A++: نسبة قرب الحد", minval=0.40, maxval=1.00, step=0.05, group=groupAxxTiming)
+earlyNeedLimitOrAccum = input.bool(true, "Early A++: اشترط Limit أو Accum", group=groupAxxTiming)
+
 //====================================================================================
 // 📋 2. مدخلات مؤشر المتنبئ المتقدم (Buy/Sell Trend Master)
 //====================================================================================
@@ -447,7 +456,9 @@ timeLowStoch = distLowStoch <= confirmBars
 getTierEGX(score, isBearish) =>
     highScore = score >= highProbCutoff
     medScore  = score >= medProbCutoff
-    hasMultipleConf = (timeTopRSI and timeTopOBV) or (timeLowRSI and timeLowOBV)
+    hasMultipleConfTop = timeTopRSI and timeTopOBV
+    hasMultipleConfLow = timeLowRSI and timeLowOBV
+    hasMultipleConf = isBearish ? hasMultipleConfTop : hasMultipleConfLow
     hasStochConf = useStoch ? (isBearish ? timeTopStoch : timeLowStoch) : false
     hasVolConf   = useFinVol ? (isBearish ? timeTopVol : timeLowVol) : false
     // ⭐ شروط EGX الجديدة
@@ -455,8 +466,17 @@ getTierEGX(score, isBearish) =>
     hasLimit = useLimitFilter ? (isBearish ? nearLimitDown : nearLimitUp) : false
     hasAccumEGX = useAccum ? (isBearish ? false : isAccumulating) : false
 
+    // ⭐ شروط BUY A++ المبكرة (تعتمد فقط على بيانات الشمعة الحالية المغلقة + الماضي)
+    earlyBurstBull = close > open and bodyRatio >= burstThreshold * earlyBurstBodyFactor and volumeRatio >= volumeBurstMult * earlyBurstVolFactor
+    earlyLimitBull = upProgress >= limitProximity * earlyLimitFactor
+    earlyGateBull = earlyNeedLimitOrAccum ? (hasAccumEGX or earlyLimitBull) : true
+    bullishAxxConservative = score >= 0.85 and hasMultipleConfLow and hasBurst and (hasLimit or hasAccumEGX)
+    bullishAxxEarly = score >= earlyAxxScore and hasMultipleConfLow and (hasAccumEGX or earlyBurstBull) and earlyGateBull
+
     // ⭐ A++ = أعلى درجة (EGX Special)
-    if score >= 0.85 and hasMultipleConf and hasBurst and (hasLimit or hasAccumEGX)
+    if isBearish and score >= 0.85 and hasMultipleConfTop and hasBurst and hasLimit
+        "A++"
+    else if not isBearish and ((aPlusPlusMode == "Early" and bullishAxxEarly) or (aPlusPlusMode == "Conservative" and bullishAxxConservative))
         "A++"
     else if highScore and hasMultipleConf and (hasStochConf or hasVolConf or hasBurst)
         "A+"
