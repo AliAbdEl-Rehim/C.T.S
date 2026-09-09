@@ -1,0 +1,193 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © Forex Sentiment + RSI Analysis Indicator
+//@version=6
+indicator('Forex Sentiment + RSI Analysis', shorttitle='FG_RSI', overlay=false)
+
+// ============================================================================
+// === INPUTS ===
+// ============================================================================
+
+// Symbol selection
+useAutoSymbol = input.bool(true, "Auto-detect chart symbol")
+manualSymbol = input.string("EURUSD", "Manual symbol",
+     options=["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "USDCAD",
+              "EURJPY", "GBPJPY", "AUDUSD", "NZDUSD", "EURGBP"])
+
+// RSI settings
+rsiLen = input.int(14, "RSI Length", minval=2, maxval=50)
+rsiOB = input.int(70, "RSI Overbought", minval=50, maxval=100)
+rsiOS = input.int(30, "RSI Oversold", minval=0, maxval=50)
+
+// Stochastic settings
+stochLen = input.int(14, "Stochastic Length", minval=2, maxval=50)
+smoothK = input.int(3, "Smoothing K", minval=1, maxval=10)
+smoothD = input.int(3, "Smoothing D", minval=1, maxval=10)
+
+// Display options
+showSignals = input.bool(true, "Show buy/sell signals")
+showDivergence = input.bool(true, "Show divergence signals")
+showTable = input.bool(true, "Show info table")
+
+// ============================================================================
+// === LINE COLORS (Settings → Inputs) ===
+// ============================================================================
+
+colorGroup = "🎨 Line Colors / ألوان الخطوط"
+
+colSentiment = input.color(color.purple, "Sentiment", group=colorGroup, inline="p1")
+lwSentiment  = input.int(2, "Width", minval=1, maxval=5, group=colorGroup, inline="p1")
+
+colRsiOB  = input.color(color.red, "RSI Overbought", group=colorGroup, inline="p2")
+colRsiOS  = input.color(color.green, "RSI Oversold", group=colorGroup, inline="p2")
+colRsiMid = input.color(color.orange, "RSI Neutral", group=colorGroup, inline="p3")
+lwRsi     = input.int(2, "RSI Width", minval=1, maxval=5, group=colorGroup, inline="p3")
+
+colStochK = input.color(color.blue, "Stoch K", group=colorGroup, inline="p4")
+lwStochK  = input.int(1, "Width", minval=1, maxval=5, group=colorGroup, inline="p4")
+colStochD = input.color(color.red, "Stoch D", group=colorGroup, inline="p5")
+lwStochD  = input.int(1, "Width", minval=1, maxval=5, group=colorGroup, inline="p5")
+
+hlineGroup = "📏 Level Colors / ألوان المستويات"
+
+colMidLine   = input.color(color.new(color.gray, 50), "Mid Line (50)", group=hlineGroup)
+colHlineOB   = input.color(color.new(color.red, 70), "Overbought Line", group=hlineGroup)
+colHlineOS   = input.color(color.new(color.green, 70), "Oversold Line", group=hlineGroup)
+colSentUpper = input.color(color.new(color.green, 70), "Sentiment Upper", group=hlineGroup)
+colSentLower = input.color(color.new(color.red, 70), "Sentiment Lower", group=hlineGroup)
+
+signalGroup = "🔔 Signal Colors / ألوان الإشارات"
+
+colBullDiv = input.color(color.lime, "Bullish Divergence", group=signalGroup, inline="s1")
+colBearDiv = input.color(color.fuchsia, "Bearish Divergence", group=signalGroup, inline="s1")
+colBuy     = input.color(color.green, "Buy Signal", group=signalGroup, inline="s2")
+colSell    = input.color(color.red, "Sell Signal", group=signalGroup, inline="s2")
+colBuyTxt  = input.color(color.white, "Buy Text", group=signalGroup, inline="s3")
+colSellTxt = input.color(color.white, "Sell Text", group=signalGroup, inline="s3")
+colBuyBg   = input.color(color.new(color.green, 90), "Buy Background", group=signalGroup, inline="s4")
+colSellBg  = input.color(color.new(color.red, 90), "Sell Background", group=signalGroup, inline="s4")
+
+// ============================================================================
+// === SIMULATED SENTIMENT DATA ===
+// ============================================================================
+
+simulatedSentiment = 50 + (ta.rsi(close, 14) - 50) * 0.5 + (close - ta.sma(close, 20)) / ta.sma(close, 20) * 20
+sentimentValue = math.min(math.max(simulatedSentiment, 0), 100)
+sentimentNormalized = (sentimentValue - 50) / 50
+
+// ============================================================================
+// === TECHNICAL INDICATORS ===
+// ============================================================================
+
+// RSI
+rsi = ta.rsi(close, rsiLen)
+
+// Stochastic RSI (guard zero range)
+rsiLowest = ta.lowest(rsi, stochLen)
+rsiHighest = ta.highest(rsi, stochLen)
+rsiRange = rsiHighest - rsiLowest
+stochRsi = rsiRange == 0 ? 50.0 : (rsi - rsiLowest) / rsiRange * 100
+k = ta.sma(stochRsi, smoothK)
+d = ta.sma(k, smoothD)
+
+// Crossover signals
+buyCross = ta.crossover(k, d) and k < 30
+sellCross = ta.crossunder(k, d) and k > 70
+
+// RSI signals
+buyRsi = rsi < rsiOS
+sellRsi = rsi > rsiOB
+
+// Sentiment signals
+buySentiment = sentimentNormalized > 0.2
+sellSentiment = sentimentNormalized < -0.2
+
+// Combined signals
+buySignal = (buyRsi or buyCross) and buySentiment
+sellSignal = (sellRsi or sellCross) and sellSentiment
+
+// ============================================================================
+// === DIVERGENCE DETECTION ===
+// ============================================================================
+
+priceLow1 = ta.lowest(low, 5)
+priceLow2 = ta.lowest(low[1], 5)
+rsiLow1 = ta.lowest(rsi, 5)
+rsiLow2 = ta.lowest(rsi[1], 5)
+bullishDiv = priceLow1 < priceLow2 and rsiLow1 > rsiLow2
+
+priceHigh1 = ta.highest(high, 5)
+priceHigh2 = ta.highest(high[1], 5)
+rsiHigh1 = ta.highest(rsi, 5)
+rsiHigh2 = ta.highest(rsi[1], 5)
+bearishDiv = priceHigh1 > priceHigh2 and rsiHigh1 < rsiHigh2
+
+// ============================================================================
+// === PLOTTING ===
+// ============================================================================
+
+rsiColor = rsi > rsiOB ? colRsiOB : rsi < rsiOS ? colRsiOS : colRsiMid
+
+plot(sentimentNormalized, "Sentiment", color=colSentiment, linewidth=lwSentiment)
+plot(rsi, "RSI", color=rsiColor, linewidth=lwRsi)
+plot(k, "Stoch K", color=colStochK, linewidth=lwStochK)
+plot(d, "Stoch D", color=colStochD, linewidth=lwStochD)
+
+hline(50, "Mid Line", color=colMidLine, linestyle=hline.style_dotted)
+hline(rsiOB, "Overbought", color=colHlineOB, linestyle=hline.style_dotted)
+hline(rsiOS, "Oversold", color=colHlineOS, linestyle=hline.style_dotted)
+hline(0.5, "Sentiment Upper", color=colSentUpper, linestyle=hline.style_dotted)
+hline(-0.5, "Sentiment Lower", color=colSentLower, linestyle=hline.style_dotted)
+
+// ============================================================================
+// === SIGNAL PLOTS ===
+// ============================================================================
+
+plotshape(showDivergence and bullishDiv, title="Bullish Divergence", location=location.belowbar,
+         color=colBullDiv, style=shape.triangleup, size=size.small)
+
+plotshape(showDivergence and bearishDiv, title="Bearish Divergence", location=location.abovebar,
+         color=colBearDiv, style=shape.triangledown, size=size.small)
+
+plotshape(showSignals and buySignal, title="Buy Signal", location=location.belowbar,
+         color=colBuy, style=shape.labelup, size=size.tiny,
+         text="BUY", textcolor=colBuyTxt)
+
+plotshape(showSignals and sellSignal, title="Sell Signal", location=location.abovebar,
+         color=colSell, style=shape.labeldown, size=size.tiny,
+         text="SELL", textcolor=colSellTxt)
+
+bgcolor(buySignal ? colBuyBg : sellSignal ? colSellBg : na)
+
+// ============================================================================
+// === ALERTS ===
+// ============================================================================
+
+alertcondition(buySignal, title="Buy Signal", message="Buy signal detected")
+alertcondition(sellSignal, title="Sell Signal", message="Sell signal detected")
+alertcondition(bullishDiv, title="Bullish Divergence", message="Bullish divergence detected")
+alertcondition(bearishDiv, title="Bearish Divergence", message="Bearish divergence detected")
+
+// ============================================================================
+// === INFO TABLE ===
+// ============================================================================
+
+var table infoTable = table.new(position.top_right, 1, 6, bgcolor=color.new(color.black, 85), border_color=color.white, border_width=1)
+
+if barstate.islast
+    if showTable
+        currentSym = useAutoSymbol ? syminfo.ticker : manualSymbol
+
+        table.cell(infoTable, 0, 0, "📊 " + currentSym, text_color=color.white, bgcolor=color.new(color.blue, 70))
+        table.cell(infoTable, 0, 1, "RSI: " + str.tostring(rsi, "0.00"), text_color=color.white)
+        table.cell(infoTable, 0, 2, "Sentiment: " + str.tostring(sentimentNormalized, "0.00"),
+                   text_color=sentimentNormalized > 0 ? color.green : color.red)
+        table.cell(infoTable, 0, 3, "Stoch K/D: " + str.tostring(k, "0.00") + " / " + str.tostring(d, "0.00"), text_color=color.white)
+
+        signalStatus = buySignal ? "🔵 BUY" : sellSignal ? "🔴 SELL" : "⚪ NEUTRAL"
+        signalColor = buySignal ? color.green : sellSignal ? color.red : color.gray
+        table.cell(infoTable, 0, 4, signalStatus, text_color=signalColor, bgcolor=color.new(signalColor, 80))
+
+        divergenceStatus = bullishDiv ? "📈 Bullish Div" : bearishDiv ? "📉 Bearish Div" : "No Divergence"
+        table.cell(infoTable, 0, 5, divergenceStatus, text_color=color.white)
+    else
+        table.clear(infoTable, 0, 0, 0, 5)
