@@ -2017,5 +2017,5 @@ plotchar(show_stochastic_crosses and sl and crossDn and sigConfirmShort, title="
 plotchar(show_stochastic_crosses and sacl and crossUpAll and sigConfirmLong, title="Buy Signal Any Cross Up", char='B', location=location.bottom, color=color.new(color.lime, 0), offset=0)
 plotchar(show_stochastic_crosses and sacl and crossDownAll and sigConfirmShort, title="Sell Signal Any Cross Down", char='S', location=location.top, color=color.new(color.red, 0), offset=0)
 
-alertcondition(crossUp and sl and sigConfirmLong, "Stoch Buy Confirmed", "Stochastic buy with CVD/OBV confirmation")
-alertcondition(crossDn and sl and sigConfirmShort, "Stoch Sell Confirmed", "Stochastic sell with CVD/OBV confirmation")
+alertcondition(crossUp and sigConfirmLong, "Stoch Buy Confirmed", "Stochastic buy with CVD/OBV confirmation")
+alertcondition(crossDn and sigConfirmShort, "Stoch Sell Confirmed", "Stochastic sell with CVD/OBV confirmation")
