@@ -1,4 +1,14 @@
 //@version=6
+// ملف جاهز للنسخ في TradingView:
+// Pine Editor → Open → الصق الكود كامل → Save → Add to chart
+//
+// BUY A++ يظهر على الشمعة الحالية بعد إغلاقها فقط (بدون شموع قادمة).
+// الوضع الافتراضي = Early / متوازن.
+//
+// Presets لمجموعة "⚡ توقيت BUY A++":
+// 1) هجومي:   Score 0.74 | Body 0.55 | Vol 0.55 | Limit 0.60 | Limit/Accum = false
+// 2) متوازن:  Score 0.78 | Body 0.70 | Vol 0.70 | Limit 0.75 | Limit/Accum = true   ← الافتراضي
+// 3) محافظ:   Score 0.82 | Body 0.85 | Vol 0.85 | Limit 0.90 | Limit/Accum = true
 indicator("🔥 Buy/Sell + Divergências Pro • v6 + EGX Boost", overlay=true, max_labels_count=500, max_lines_count=200)
 
 //====================================================================================
