@@ -1377,10 +1377,8 @@ alertcondition(sweepBear,      "Bearish Sweep",     "Liquidity sweep of highs")
 alertcondition(isTrapBuy,      "⚠️ Trap Buy Warning", "Potential false buy signal detected")
 alertcondition(isTrapSell,     "⚠️ Trap Sell Warning", "Potential false sell signal detected")
 
-plot(final_confidence, "Confidence Score", display=display.none)
-
 //====================================================================================
-// Note: The rest of your Wyckoff, Advanced Trading, Pivot Predictor, and Stochastic
-// sections remain unchanged. This enhanced version adds trap filtering at the signal
-// generation level without modifying those components.
+// Note: This enhanced version adds trap filtering at the signal generation level.
+// All original features (Wyckoff, Advanced Trading, Pivot, Stochastic, etc.) 
+// remain unchanged and fully functional.
 //====================================================================================
