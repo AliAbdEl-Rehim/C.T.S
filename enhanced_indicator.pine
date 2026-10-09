@@ -277,22 +277,16 @@ var float last_price_high = na
 var float last_rsi_low = na
 var float last_price_low = na
 
+// Compare against the previous pivot first. Assigning first made divergence always false.
+bearish_divergence = detect_divergence and not na(last_rsi_high) and not na(last_price_high) and not na(rsi_high) and not na(price_high) and price_high > last_price_high and rsi_high < last_rsi_high
+bullish_divergence = detect_divergence and not na(last_rsi_low) and not na(last_price_low) and not na(rsi_low) and not na(price_low) and price_low < last_price_low and rsi_low > last_rsi_low
+
 if not na(rsi_high) and not na(price_high)
     last_rsi_high := rsi_high
     last_price_high := price_high
 if not na(rsi_low) and not na(price_low)
     last_rsi_low := rsi_low
     last_price_low := price_low
-
-// Bearish Divergence (trap for buy signals - price makes higher high but RSI lower high)
-bearish_divergence = detect_divergence and not na(last_rsi_high) and not na(last_price_high) and 
-                     not na(rsi_high) and not na(price_high) and
-                     price_high > last_price_high and rsi_high < last_rsi_high
-
-// Bullish Divergence (trap for sell signals - price makes lower low but RSI higher low)
-bullish_divergence = detect_divergence and not na(last_rsi_low) and not na(last_price_low) and 
-                     not na(rsi_low) and not na(price_low) and
-                     price_low < last_price_low and rsi_low > last_rsi_low
 
 // 2. Volume Analysis for Traps
 volume_ma_short = ta.sma(volume, 10)
@@ -359,26 +353,25 @@ pattern_similarity(current_rsi, current_vol, current_atr, current_momentum, hist
         similarity = 1.0 - ((rsi_diff + vol_diff + atr_diff + momentum_diff) / 4)
         math.max(0.0, similarity)
 
-// Find similar historical patterns and calculate success rate
+// Find similar historical patterns and calculate success rate.
+// Counters are local: a var here would keep growing forever and fake the win rate.
 calculate_success_rate(is_bullish_signal, current_rsi, current_vol, current_atr, current_momentum) =>
-    var float total_success = 0.0
-    var int pattern_count = 0
+    float total_success = 0.0
+    int pattern_count = 0
     
     if array.size(signal_history) > 0
-        for i = 0 to math.min(lookback_history, array.size(signal_history) - 1)
-            if i < array.size(signal_history)
+        int lastIdx = math.min(lookback_history, array.size(signal_history)) - 1
+        if lastIdx >= 0
+            for i = 0 to lastIdx
                 pattern = array.get(signal_history, i)
-                
-                // Only compare with same direction signals
                 if pattern.is_bullish == is_bullish_signal
                     similarity = pattern_similarity(current_rsi, current_vol, current_atr, current_momentum, pattern)
-                    
                     if similarity >= (1.0 - pattern_similarity_tolerance)
                         pattern_count += 1
                         if pattern.success_tp1 or pattern.success_tp2 or pattern.success_tp3
                             total_success += pattern.success_score
     
-    success_rate = pattern_count >= min_similar_patterns ? (total_success / pattern_count) * 100 : 0.0
+    float success_rate = pattern_count >= min_similar_patterns and pattern_count > 0 ? (total_success / pattern_count) * 100 : 0.0
     [success_rate, pattern_count]
 
 // Track historical signal outcomes (simplified for demonstration)
@@ -949,8 +942,8 @@ if bar_index - obv_pattern_bar > 10
     last_obv_bearish := false
 
 plot(i_showOBV ? obv_smooth : na, "OBV Smoothed", color=color.new(#2962FF, 0), linewidth=3)
-plotshape(i_showOBVPattern and obv_bullish_reversal, "🟢 OBV Bullish Reversal", location=location.bottom, style=shape.labelup, color=color.new(#00ff88, 0), size=size.small, text="OBV↑", textcolor=color.white)
-plotshape(i_showOBVPattern and obv_bearish_reversal, "🔴 OBV Bearish Reversal", location=location.top, style=shape.labeldown, color=color.new(#ff4444, 0), size=size.small, text="OBV↓", textcolor=color.white)
+plotshape(false, "🟢 OBV Bullish Reversal", location=location.bottom, style=shape.labelup, color=color.new(#00ff88, 0), size=size.small, text="OBV↑", textcolor=color.white)
+plotshape(false, "🔴 OBV Bearish Reversal", location=location.top, style=shape.labeldown, color=color.new(#ff4444, 0), size=size.small, text="OBV↓", textcolor=color.white)
 
 buyVol  = volume * (close - low) / (high - low + 0.0001)
 sellVol = volume * (high - close) / (high - low + 0.0001)
@@ -1077,51 +1070,76 @@ trendOkShort = bearTrend and bosBear and belowHTF
 pdOkLong  = not i_sigReqPD or inDiscount
 pdOkShort = not i_sigReqPD or inPremium
 
-// ============= TRAP FILTERS =============
-// For BUY signals, check for bearish traps
-isTrapBuy = enable_trap_filter and (
-     (detect_divergence and bearish_divergence[1]) or
-     (detect_volume_drop and volume_declining) or
-     (detect_rejection_pattern and bullish_rejection) or
-     (detect_exhaustion and momentum_weakening_bullish) or
-     (require_volume_increase and not volume_increasing) or
-     (require_momentum_confirm and hist < 0) or
-     (not htf_aligned_bullish)
- )
+// One signal needs two separate events. An order-block retest alone stays true for many bars and was reprinting labels.
+int longTriggers  = (trig_longCE ? 1 : 0) + (trig_longOB ? 1 : 0) + (trig_longSweep ? 1 : 0)
+int shortTriggers = (trig_shortCE ? 1 : 0) + (trig_shortOB ? 1 : 0) + (trig_shortSweep ? 1 : 0)
+bool freshLong    = trig_longCE or trig_longSweep
+bool freshShort   = trig_shortCE or trig_shortSweep
 
-// For SELL signals, check for bullish traps
-isTrapSell = enable_trap_filter and (
-     (detect_divergence and bullish_divergence[1]) or
-     (detect_volume_drop and volume_declining) or
-     (detect_rejection_pattern and bearish_rejection) or
-     (detect_exhaustion and momentum_weakening_bearish) or
-     (require_volume_increase and not volume_increasing) or
-     (require_momentum_confirm and hist > 0) or
-     (not htf_aligned_bearish)
- )
+float rsiNow = rsi_for_divergence
+bool rsiRising  = rsiNow > rsiNow[1]
+bool rsiFalling = rsiNow < rsiNow[1]
+// Buy the pullback inside a trend. RSI above 68 is a late chase and is the usual top-trap.
+bool rsiBuyOk  = rsiNow >= 42 and rsiNow <= 68 and rsiRising
+bool rsiSellOk = rsiNow <= 58 and rsiNow >= 32 and rsiFalling
 
-// Calculate statistical success rate for current conditions
-[buy_success_rate, buy_pattern_count] = calculate_success_rate(true, rsi_for_divergence, rvol, atr, hist)
-[sell_success_rate, sell_pattern_count] = calculate_success_rate(false, rsi_for_divergence, rvol, atr, hist)
+bool momBuy  = hist > 0 and hist > hist[1] and macd_line > signal_line and not momentum_weakening_bullish
+bool momSell = hist < 0 and hist < hist[1] and macd_line < signal_line and not momentum_weakening_bearish
+bool volBuy  = volume > volume_ma_short and volume >= volume[1] and rvol >= math.max(i_rvolMin, 1.1) and not volume_declining
+bool volSell = volume > volume_ma_short and volume >= volume[1] and rvol >= math.max(i_rvolMin, 1.1) and not volume_declining
 
-statistical_buy_valid = not enable_statistical_model or (buy_success_rate >= min_success_rate and buy_pattern_count >= min_similar_patterns)
-statistical_sell_valid = not enable_statistical_model or (sell_success_rate >= min_success_rate and sell_pattern_count >= min_similar_patterns)
+float wickRange = math.max(candle_range, syminfo.mintick)
+bool buyCandleOk  = close > open and upper_wick / wickRange <= 0.35 and close >= (high + low) / 2.0
+bool sellCandleOk = close < open and lower_wick / wickRange <= 0.35 and close <= (high + low) / 2.0
+bool notExtendedBuy  = close - emaFast <= atr * 1.2
+bool notExtendedSell = emaFast - close <= atr * 1.2
+
+// Context divergence: price at a 15-bar extreme while RSI has already rolled over.
+bool divTop = high >= ta.highest(high, 15) and rsiNow < ta.highest(rsiNow, 15) - 4
+bool divBot = low  <= ta.lowest(low, 15)  and rsiNow > ta.lowest(rsiNow, 15) + 4
+bool noDivBuy  = not bearish_divergence and not divTop and not bullish_rejection
+bool noDivSell = not bullish_divergence and not divBot and not bearish_rejection
+
+// Premium far above the range midpoint is the end of a rally, not a buy. Discount far under it is not a sell.
+bool stretchedPremium = haveRange and inPremium and (close - rangeMid) > atr * 0.5
+bool stretchedDiscount = haveRange and inDiscount and (rangeMid - close) > atr * 0.5
+bool structBuy  = bullTrend and aboveHTF and htf_aligned_bullish and not isChop and not stretchedPremium
+bool structSell = bearTrend and belowHTF and htf_aligned_bearish and not isChop and not stretchedDiscount
+bool cvdBuyOk   = not i_enableCVD or (cvdStrongBuy or cvdBuy)
+bool cvdSellOk  = not i_enableCVD or (cvdStrongSell or cvdSell)
+
+[buy_success_rate, buy_pattern_count] = calculate_success_rate(true, rsiNow, rvol, atr, hist)
+[sell_success_rate, sell_pattern_count] = calculate_success_rate(false, rsiNow, rvol, atr, hist)
+// Not enough history yet: do not invent a win rate, and do not block. Once enough similar trades exist, require the threshold.
+bool statsBuyOk  = not enable_statistical_model or buy_pattern_count < min_similar_patterns or buy_success_rate >= min_success_rate
+bool statsSellOk = not enable_statistical_model or sell_pattern_count < min_similar_patterns or sell_success_rate >= min_success_rate
+
+int minGap = math.max(i_sigCooldown, 20)
+bool cooldownLongStrict  = bar_index - lastLongSigBar  >= minGap
+bool cooldownShortStrict = bar_index - lastShortSigBar >= minGap
+
+bool precisionLong = longTriggers >= 2 and freshLong and buyCandleOk and rsiBuyOk and notExtendedBuy and momBuy and volBuy and noDivBuy and structBuy and cvdBuyOk and statsBuyOk and notBlackout and not inBlackout
+bool precisionShort = shortTriggers >= 2 and freshShort and sellCandleOk and rsiSellOk and notExtendedSell and momSell and volSell and noDivSell and structSell and cvdSellOk and statsSellOk and notBlackout and not inBlackout
+
+// A setup that has a trigger but fails the quality gate is a trap. It is recorded, not drawn.
+bool isTrapBuy  = enable_trap_filter and (freshLong or longTriggers >= 2) and not precisionLong
+bool isTrapSell = enable_trap_filter and (freshShort or shortTriggers >= 2) and not precisionShort
 
 baseCtx = rvolOk and kzOk and notBlackout and notCompressed
+bool modeTrend = i_sigMode == "Trend Only" or i_sigMode == "Both"
 
-canFireTrendLong  = baseCtx and anyLongTrig  and confirmLong  and scoreOkLong  and trendOkLong  and pdOkLong  and cooldownLong  and obv_confirm_long and cvdConfirmLong and not isTrapBuy and statistical_buy_valid
-canFireTrendShort = baseCtx and anyShortTrig and confirmShort and scoreOkShort and trendOkShort and pdOkShort and cooldownShort and obv_confirm_short and cvdConfirmShort and not isTrapSell and statistical_sell_valid
+bool fireTrendLong  = false
+bool fireTrendShort = false
+bool fireRevLong    = false
+bool fireRevShort   = false
+// Reversal entries at the end of a move were the false signals. Only trend continuation passes.
+if i_showSignals and modeTrend and barstate.isconfirmed and cooldownLongStrict and precisionLong and not precisionShort
+    fireTrendLong := true
+if i_showSignals and modeTrend and barstate.isconfirmed and cooldownShortStrict and precisionShort and not precisionLong
+    fireTrendShort := true
 
-canFireRevLong  = baseCtx and trig_longSweep  and confirmLong  and bearTrend and cooldownLong  and obv_confirm_long and cvdConfirmLong and not isTrapBuy and statistical_buy_valid
-canFireRevShort = baseCtx and trig_shortSweep and confirmShort and bullTrend and cooldownShort and obv_confirm_short and cvdConfirmShort and not isTrapSell and statistical_sell_valid
-
-modeTrend = i_sigMode == "Trend Only" or i_sigMode == "Both"
-modeRev   = i_sigMode == "Reversal Only" or i_sigMode == "Both"
-
-fireTrendLong  = i_showSignals and modeTrend and canFireTrendLong
-fireTrendShort = i_showSignals and modeTrend and canFireTrendShort
-fireRevLong    = i_showSignals and modeRev   and canFireRevLong
-fireRevShort   = i_showSignals and modeRev   and canFireRevShort
+float buyQuality = math.min(95.0, (longTriggers >= 2 ? 20.0 : 0.0) + (longTriggers >= 3 ? 10.0 : 0.0) + (momBuy ? 15.0 : 0.0) + (volBuy ? 15.0 : 0.0) + (structBuy ? 15.0 : 0.0) + (htf_bullish ? 10.0 : 0.0) + (cvdStrongBuy ? 10.0 : cvdBuy ? 5.0 : 0.0) + (rsiBuyOk ? 5.0 : 0.0))
+float sellQuality = math.min(95.0, (shortTriggers >= 2 ? 20.0 : 0.0) + (shortTriggers >= 3 ? 10.0 : 0.0) + (momSell ? 15.0 : 0.0) + (volSell ? 15.0 : 0.0) + (structSell ? 15.0 : 0.0) + (htf_bearish ? 10.0 : 0.0) + (cvdStrongSell ? 10.0 : cvdSell ? 5.0 : 0.0) + (rsiSellOk ? 5.0 : 0.0))
 
 tierOf(isLong, isTrend) =>
     triggerCount = 0
@@ -1155,43 +1173,52 @@ cvd_label_short = i_enableCVD and cvdConfirmShort and (cvdSell or cvdStrongSell)
 success_label_long = show_success_rate and buy_success_rate > 0 ? "\n✅" + str.tostring(math.round(buy_success_rate)) + "% (" + str.tostring(buy_pattern_count) + ")" : ""
 success_label_short = show_success_rate and sell_success_rate > 0 ? "\n✅" + str.tostring(math.round(sell_success_rate)) + "% (" + str.tostring(sell_pattern_count) + ")" : ""
 
-if (fireTrendLong or fireRevLong) and passAplusLong and show_fvg_signals
-    lblType = fireRevLong ? "REV LONG" : "LONG"
-    sc      = trigScoreLong
-    txt     = lblType + " " + longTier + obv_label_long + cvd_label_long + success_label_long + (sc > 0 ? " " + str.format("{0,number,#}%", sc * 100) : "")
-    labelColor = fireRevLong ? color.new(#7e57c2, 10) : color.new(colorValidSignal, 20)
-    label.new(bar_index, low, txt, style=label.style_label_up, color=labelColor, textcolor=color.white, size=size.normal, yloc=yloc.belowbar)
+var line sigTp1 = na
+var line sigTp2 = na
+var line sigTp3 = na
+var line sigSl  = na
+
+if fireTrendLong and passAplusLong and show_fvg_signals and buyQuality >= 70
+    float tp1 = close + atr * 1.0
+    float tp2 = close + atr * 2.0
+    float tp3 = close + atr * 3.5
+    float sl  = close - atr * 1.2
+    line.delete(sigTp1)
+    line.delete(sigTp2)
+    line.delete(sigTp3)
+    line.delete(sigSl)
+    sigTp1 := line.new(bar_index, tp1, bar_index + 25, tp1, color=color.new(#ffff00, 0), width=2)
+    sigTp2 := line.new(bar_index, tp2, bar_index + 25, tp2, color=color.new(#00ff88, 0), width=2)
+    sigTp3 := line.new(bar_index, tp3, bar_index + 25, tp3, color=color.new(#00ff00, 0), width=2)
+    sigSl  := line.new(bar_index, sl,  bar_index + 25, sl,  color=color.new(#ff0000, 0), width=2)
+    string txt = "شراء\n" + str.tostring(buyQuality, "#") + "%" + obv_label_long + cvd_label_long + success_label_long + "\nTP1: " + str.tostring(tp1, format.mintick) + "\nTP2: " + str.tostring(tp2, format.mintick) + "\nTP3: " + str.tostring(tp3, format.mintick) + "\nSL: " + str.tostring(sl, format.mintick)
+    label.new(bar_index, low, txt, style=label.style_label_up, color=color.new(#00c853, 0), textcolor=color.white, size=size.small, yloc=yloc.belowbar)
     lastLongSigBar := bar_index
-    
-    // Store signal in history
     if enable_statistical_model
-        new_pattern = SignalPattern.new(bar_index, close, rsi_for_divergence, rvol, atr, true, trendOkLong, volume_increasing, hist, false, false, false, false, 0.0)
-        array.push(signal_history, new_pattern)
+        array.push(signal_history, SignalPattern.new(bar_index, close, rsi_for_divergence, rvol, atr, true, trendOkLong, volume_increasing, hist, false, false, false, false, 0.0))
         if array.size(signal_history) > lookback_history
             array.shift(signal_history)
 
-if (fireTrendShort or fireRevShort) and passAplusShort and show_fvg_signals
-    lblType = fireRevShort ? "REV SHORT" : "SHORT"
-    sc      = trigScoreShort
-    txt     = lblType + " " + shortTier + obv_label_short + cvd_label_short + success_label_short + (sc > 0 ? " " + str.format("{0,number,#}%", sc * 100) : "")
-    labelColor = fireRevShort ? color.new(#f48fb1, 10) : color.new(colorValidSignal, 20)
-    label.new(bar_index, high, txt, style=label.style_label_down, color=labelColor, textcolor=color.white, size=size.normal, yloc=yloc.abovebar)
+if fireTrendShort and passAplusShort and show_fvg_signals and sellQuality >= 70
+    float tp1 = close - atr * 1.0
+    float tp2 = close - atr * 2.0
+    float tp3 = close - atr * 3.5
+    float sl  = close + atr * 1.2
+    line.delete(sigTp1)
+    line.delete(sigTp2)
+    line.delete(sigTp3)
+    line.delete(sigSl)
+    sigTp1 := line.new(bar_index, tp1, bar_index + 25, tp1, color=color.new(#ffff00, 0), width=2)
+    sigTp2 := line.new(bar_index, tp2, bar_index + 25, tp2, color=color.new(#00ff88, 0), width=2)
+    sigTp3 := line.new(bar_index, tp3, bar_index + 25, tp3, color=color.new(#00ff00, 0), width=2)
+    sigSl  := line.new(bar_index, sl,  bar_index + 25, sl,  color=color.new(#ff0000, 0), width=2)
+    string txt = "بيع\n" + str.tostring(sellQuality, "#") + "%" + obv_label_short + cvd_label_short + success_label_short + "\nTP1: " + str.tostring(tp1, format.mintick) + "\nTP2: " + str.tostring(tp2, format.mintick) + "\nTP3: " + str.tostring(tp3, format.mintick) + "\nSL: " + str.tostring(sl, format.mintick)
+    label.new(bar_index, high, txt, style=label.style_label_down, color=color.new(#ff1744, 0), textcolor=color.white, size=size.small, yloc=yloc.abovebar)
     lastShortSigBar := bar_index
-    
-    // Store signal in history
     if enable_statistical_model
-        new_pattern = SignalPattern.new(bar_index, close, rsi_for_divergence, rvol, atr, false, trendOkShort, volume_increasing, hist, false, false, false, false, 0.0)
-        array.push(signal_history, new_pattern)
+        array.push(signal_history, SignalPattern.new(bar_index, close, rsi_for_divergence, rvol, atr, false, trendOkShort, volume_increasing, hist, false, false, false, false, 0.0))
         if array.size(signal_history) > lookback_history
             array.shift(signal_history)
-
-// Show trap warnings
-if show_trap_warnings
-    if isTrapBuy and anyLongTrig
-        label.new(bar_index, high, "⚠️ TRAP\nFAKE BUY", style=label.style_label_down, color=color.new(colorTrapWarning, 0), textcolor=color.white, size=size.small, yloc=yloc.abovebar)
-    
-    if isTrapSell and anyShortTrig
-        label.new(bar_index, low, "⚠️ TRAP\nFAKE SELL", style=label.style_label_up, color=color.new(colorTrapWarning, 0), textcolor=color.white, size=size.small, yloc=yloc.belowbar)
 
 // Original dashboard continues with trap statistics added...
 int openBull  = 0
@@ -1374,8 +1401,6 @@ alertcondition(fireRevLong,    "LONG Reversal",     "LONG reversal setup")
 alertcondition(fireRevShort,   "SHORT Reversal",    "SHORT reversal setup")
 alertcondition(sweepBull,      "Bullish Sweep",     "Liquidity sweep of lows")
 alertcondition(sweepBear,      "Bearish Sweep",     "Liquidity sweep of highs")
-alertcondition(isTrapBuy,      "⚠️ Trap Buy Warning", "Potential false buy signal detected")
-alertcondition(isTrapSell,     "⚠️ Trap Sell Warning", "Potential false sell signal detected")
 
 //====================================================================================
 // Note: This enhanced version adds trap filtering at the signal generation level.
