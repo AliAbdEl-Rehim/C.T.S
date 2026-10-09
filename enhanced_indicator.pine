@@ -1070,60 +1070,44 @@ trendOkShort = bearTrend and bosBear and belowHTF
 pdOkLong  = not i_sigReqPD or inDiscount
 pdOkShort = not i_sigReqPD or inPremium
 
-// One signal needs two separate events. An order-block retest alone stays true for many bars and was reprinting labels.
+// A single sticky trigger used to reprint a label every bar. Score the setup instead, then print once when it becomes valid.
 int longTriggers  = (trig_longCE ? 1 : 0) + (trig_longOB ? 1 : 0) + (trig_longSweep ? 1 : 0)
 int shortTriggers = (trig_shortCE ? 1 : 0) + (trig_shortOB ? 1 : 0) + (trig_shortSweep ? 1 : 0)
 bool freshLong    = trig_longCE or trig_longSweep
 bool freshShort   = trig_shortCE or trig_shortSweep
+bool hasLongTrig  = longTriggers > 0
+bool hasShortTrig = shortTriggers > 0
 
 float rsiNow = rsi_for_divergence
-bool rsiRising  = rsiNow > rsiNow[1]
-bool rsiFalling = rsiNow < rsiNow[1]
-// Buy the pullback inside a trend. RSI above 68 is a late chase and is the usual top-trap.
-bool rsiBuyOk  = rsiNow >= 42 and rsiNow <= 68 and rsiRising
-bool rsiSellOk = rsiNow <= 58 and rsiNow >= 32 and rsiFalling
-
-bool momBuy  = hist > 0 and hist > hist[1] and macd_line > signal_line and not momentum_weakening_bullish
-bool momSell = hist < 0 and hist < hist[1] and macd_line < signal_line and not momentum_weakening_bearish
-bool volBuy  = volume > volume_ma_short and volume >= volume[1] and rvol >= math.max(i_rvolMin, 1.1) and not volume_declining
-bool volSell = volume > volume_ma_short and volume >= volume[1] and rvol >= math.max(i_rvolMin, 1.1) and not volume_declining
-
 float wickRange = math.max(candle_range, syminfo.mintick)
-bool buyCandleOk  = close > open and upper_wick / wickRange <= 0.35 and close >= (high + low) / 2.0
-bool sellCandleOk = close < open and lower_wick / wickRange <= 0.35 and close <= (high + low) / 2.0
-bool notExtendedBuy  = close - emaFast <= atr * 1.2
-bool notExtendedSell = emaFast - close <= atr * 1.2
+bool upperWickHeavy = upper_wick / wickRange >= 0.55
+bool lowerWickHeavy = lower_wick / wickRange >= 0.55
+bool stretchedPremium = haveRange and inPremium and (close - rangeMid) > atr * 1.5
+bool stretchedDiscount = haveRange and inDiscount and (rangeMid - close) > atr * 1.5
 
-// Context divergence: price at a 15-bar extreme while RSI has already rolled over.
-bool divTop = high >= ta.highest(high, 15) and rsiNow < ta.highest(rsiNow, 15) - 4
-bool divBot = low  <= ta.lowest(low, 15)  and rsiNow > ta.lowest(rsiNow, 15) + 4
-bool noDivBuy  = not bearish_divergence and not divTop and not bullish_rejection
-bool noDivSell = not bullish_divergence and not divBot and not bearish_rejection
+// Hard traps only: chasing an extreme, or a rejection wick against a trend that is already the other way.
+bool hardTrapBuy  = enable_trap_filter and (rsiNow >= 75 or upperWickHeavy or (bearTrend and htf_bearish) or (bearish_divergence and rsiNow > 65))
+bool hardTrapSell = enable_trap_filter and (rsiNow <= 25 or lowerWickHeavy or (bullTrend and htf_bullish) or (bullish_divergence and rsiNow < 35))
 
-// Premium far above the range midpoint is the end of a rally, not a buy. Discount far under it is not a sell.
-bool stretchedPremium = haveRange and inPremium and (close - rangeMid) > atr * 0.5
-bool stretchedDiscount = haveRange and inDiscount and (rangeMid - close) > atr * 0.5
-bool structBuy  = bullTrend and aboveHTF and htf_aligned_bullish and not isChop and not stretchedPremium
-bool structSell = bearTrend and belowHTF and htf_aligned_bearish and not isChop and not stretchedDiscount
-bool cvdBuyOk   = not i_enableCVD or (cvdStrongBuy or cvdBuy)
-bool cvdSellOk  = not i_enableCVD or (cvdStrongSell or cvdSell)
+int buyPoints = (bullTrend ? 1 : 0) + ((aboveHTF or htf_bullish) ? 1 : 0) + (macd_line > signal_line ? 1 : 0) + (rvol >= 0.8 ? 1 : 0) + (close > open ? 1 : 0) + ((rsiNow >= 35 and rsiNow <= 72) ? 1 : 0) + ((cvdBuy or cvdStrongBuy or leaderAboveZero) ? 1 : 0) + (not stretchedPremium ? 1 : 0)
+int sellPoints = (bearTrend ? 1 : 0) + ((belowHTF or htf_bearish) ? 1 : 0) + (macd_line < signal_line ? 1 : 0) + (rvol >= 0.8 ? 1 : 0) + (close < open ? 1 : 0) + ((rsiNow <= 65 and rsiNow >= 28) ? 1 : 0) + ((cvdSell or cvdStrongSell or leaderBelowZero) ? 1 : 0) + (not stretchedDiscount ? 1 : 0)
 
 [buy_success_rate, buy_pattern_count] = calculate_success_rate(true, rsiNow, rvol, atr, hist)
 [sell_success_rate, sell_pattern_count] = calculate_success_rate(false, rsiNow, rvol, atr, hist)
-// Not enough history yet: do not invent a win rate, and do not block. Once enough similar trades exist, require the threshold.
 bool statsBuyOk  = not enable_statistical_model or buy_pattern_count < min_similar_patterns or buy_success_rate >= min_success_rate
 bool statsSellOk = not enable_statistical_model or sell_pattern_count < min_similar_patterns or sell_success_rate >= min_success_rate
 
-int minGap = math.max(i_sigCooldown, 20)
+bool longReady  = hasLongTrig and buyPoints >= 4 and not hardTrapBuy and statsBuyOk and close > open
+bool shortReady = hasShortTrig and sellPoints >= 4 and not hardTrapSell and statsSellOk and close < open
+bool newLong  = longReady and (not longReady[1] or freshLong)
+bool newShort = shortReady and (not shortReady[1] or freshShort)
+
+int minGap = math.max(i_sigCooldown, 8)
 bool cooldownLongStrict  = bar_index - lastLongSigBar  >= minGap
 bool cooldownShortStrict = bar_index - lastShortSigBar >= minGap
 
-bool precisionLong = longTriggers >= 2 and freshLong and buyCandleOk and rsiBuyOk and notExtendedBuy and momBuy and volBuy and noDivBuy and structBuy and cvdBuyOk and statsBuyOk and notBlackout and not inBlackout
-bool precisionShort = shortTriggers >= 2 and freshShort and sellCandleOk and rsiSellOk and notExtendedSell and momSell and volSell and noDivSell and structSell and cvdSellOk and statsSellOk and notBlackout and not inBlackout
-
-// A setup that has a trigger but fails the quality gate is a trap. It is recorded, not drawn.
-bool isTrapBuy  = enable_trap_filter and (freshLong or longTriggers >= 2) and not precisionLong
-bool isTrapSell = enable_trap_filter and (freshShort or shortTriggers >= 2) and not precisionShort
+bool isTrapBuy  = enable_trap_filter and hasLongTrig and hardTrapBuy
+bool isTrapSell = enable_trap_filter and hasShortTrig and hardTrapSell
 
 baseCtx = rvolOk and kzOk and notBlackout and notCompressed
 bool modeTrend = i_sigMode == "Trend Only" or i_sigMode == "Both"
@@ -1132,14 +1116,13 @@ bool fireTrendLong  = false
 bool fireTrendShort = false
 bool fireRevLong    = false
 bool fireRevShort   = false
-// Reversal entries at the end of a move were the false signals. Only trend continuation passes.
-if i_showSignals and modeTrend and barstate.isconfirmed and cooldownLongStrict and precisionLong and not precisionShort
+if i_showSignals and modeTrend and barstate.isconfirmed and cooldownLongStrict and newLong and not shortReady
     fireTrendLong := true
-if i_showSignals and modeTrend and barstate.isconfirmed and cooldownShortStrict and precisionShort and not precisionLong
+if i_showSignals and modeTrend and barstate.isconfirmed and cooldownShortStrict and newShort and not longReady
     fireTrendShort := true
 
-float buyQuality = math.min(95.0, (longTriggers >= 2 ? 20.0 : 0.0) + (longTriggers >= 3 ? 10.0 : 0.0) + (momBuy ? 15.0 : 0.0) + (volBuy ? 15.0 : 0.0) + (structBuy ? 15.0 : 0.0) + (htf_bullish ? 10.0 : 0.0) + (cvdStrongBuy ? 10.0 : cvdBuy ? 5.0 : 0.0) + (rsiBuyOk ? 5.0 : 0.0))
-float sellQuality = math.min(95.0, (shortTriggers >= 2 ? 20.0 : 0.0) + (shortTriggers >= 3 ? 10.0 : 0.0) + (momSell ? 15.0 : 0.0) + (volSell ? 15.0 : 0.0) + (structSell ? 15.0 : 0.0) + (htf_bearish ? 10.0 : 0.0) + (cvdStrongSell ? 10.0 : cvdSell ? 5.0 : 0.0) + (rsiSellOk ? 5.0 : 0.0))
+float buyQuality  = math.min(95.0, buyPoints / 8.0 * 100.0)
+float sellQuality = math.min(95.0, sellPoints / 8.0 * 100.0)
 
 tierOf(isLong, isTrend) =>
     triggerCount = 0
@@ -1178,7 +1161,7 @@ var line sigTp2 = na
 var line sigTp3 = na
 var line sigSl  = na
 
-if fireTrendLong and passAplusLong and show_fvg_signals and buyQuality >= 70
+if fireTrendLong and passAplusLong and show_fvg_signals
     float tp1 = close + atr * 1.0
     float tp2 = close + atr * 2.0
     float tp3 = close + atr * 3.5
@@ -1199,7 +1182,7 @@ if fireTrendLong and passAplusLong and show_fvg_signals and buyQuality >= 70
         if array.size(signal_history) > lookback_history
             array.shift(signal_history)
 
-if fireTrendShort and passAplusShort and show_fvg_signals and sellQuality >= 70
+if fireTrendShort and passAplusShort and show_fvg_signals
     float tp1 = close - atr * 1.0
     float tp2 = close - atr * 2.0
     float tp3 = close - atr * 3.5
