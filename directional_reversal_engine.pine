@@ -1,0 +1,154 @@
+//@version=6
+indicator(title="محرك الانعكاس الاتجاهي", shorttitle="DRE v2", overlay=false, precision=1, max_labels_count=200, max_lines_count=200)
+
+// شراء: السعر يصنع قاعاً أدنى و%K يصنع قاعاً أعلى، ثم يلتف %K للأعلى.
+// بيع: السعر يصنع قمة أعلى و%K يصنع قمة أدنى، ثم يلتف %K للأسفل.
+// المقياس 0–100 فقط. لا تُرسم إشارة على مجرد تقاطع.
+
+grp_stoch = "الستوكاستيك"
+periodK = input.int(14, "طول %K", minval=1, group=grp_stoch)
+smoothK = input.int(3, "تنعيم %K", minval=1, group=grp_stoch)
+periodD = input.int(3, "تنعيم %D", minval=1, group=grp_stoch)
+
+grp_div = "الاختلاف"
+pivotBars = input.int(5, "شموع يمين ويسار القمة", minval=2, maxval=20, group=grp_div)
+divLookback = input.int(40, "أقصى مسافة بين القمتين", minval=8, maxval=80, group=grp_div)
+minKGap = input.float(3.0, "أقل فرق بين قمتي %K", minval=1.0, maxval=15.0, step=0.5, group=grp_div)
+buyZone = input.int(40, "منطقة الشراء: %K تحت", minval=20, maxval=50, group=grp_div)
+sellZone = input.int(60, "منطقة البيع: %K فوق", minval=50, maxval=80, group=grp_div)
+showLines = input.bool(true, "خط الاختلاف", group=grp_div)
+
+grp_trend = "فلتر الفخ"
+useTrendFilter = input.bool(true, "رفض الانعكاس الضعيف عكس اتجاه قوي", group=grp_trend)
+signalGap = input.int(8, "أقل شموع بين إشارتين", minval=3, maxval=40, group=grp_trend)
+minConfidence = input.float(70.0, "أقل ثقة للعرض %", minval=50, maxval=90, step=1, group=grp_trend)
+
+grp_tp = "الأهداف"
+tp1Pct = input.float(1.0, "TP1 %", minval=0.3, maxval=5.0, step=0.1, group=grp_tp)
+tp2Pct = input.float(2.0, "TP2 %", minval=0.5, maxval=8.0, step=0.1, group=grp_tp)
+slPct = input.float(1.2, "وقف الخسارة %", minval=0.3, maxval=5.0, step=0.1, group=grp_tp)
+showTable = input.bool(true, "جدول الحالة", group=grp_tp)
+
+rawK = ta.stoch(close, high, low, periodK)
+k = ta.sma(rawK, smoothK)
+d = ta.sma(k, periodD)
+atr5 = ta.atr(5)
+atr14 = ta.atr(14)
+trendRaw = (close - ta.lowest(low, 50)) / math.max(atr5, syminfo.mintick) - (ta.highest(high, 50) - close) / math.max(atr5, syminfo.mintick)
+trendLine = 50.0 + 35.0 * math.tanh(ta.ema(trendRaw, 3) / 8.0)
+
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+[macdLine, macdSignal, hist] = ta.macd(close, 12, 26, 9)
+strongUp = ema20 > ema50 and ema50 > ema100 and close > ema50
+strongDown = ema20 < ema50 and ema50 < ema100 and close < ema50
+macdTurningUp = hist > hist[1]
+macdTurningDown = hist < hist[1]
+
+priceLow = ta.pivotlow(low, pivotBars, pivotBars)
+priceHigh = ta.pivothigh(high, pivotBars, pivotBars)
+
+var float prevLowPrice = na
+var float prevLowK = na
+var int prevLowBar = na
+var float prevHighPrice = na
+var float prevHighK = na
+var int prevHighBar = na
+var int lastSignalBar = na
+var string lastSignal = "لا يوجد"
+var float lastConfidence = na
+
+bool fireBull = false
+bool fireBear = false
+float confBull = 0.0
+float confBear = 0.0
+float tp1 = na
+float tp2 = na
+float sl = na
+
+bool gapOk = na(lastSignalBar) or bar_index - lastSignalBar >= signalGap
+
+if not na(priceLow)
+    float thisPrice = priceLow
+    float thisK = k[pivotBars]
+    int thisBar = bar_index - pivotBars
+    bool aligned = not na(prevLowPrice) and thisBar - prevLowBar >= pivotBars and thisBar - prevLowBar <= divLookback
+    bool bullDiv = aligned and thisPrice < prevLowPrice and thisK > prevLowK + minKGap and thisK <= buyZone
+    bool turnedUp = k > thisK and (k > k[1] or k > d)
+    bool survived = close > low[pivotBars]
+    bool trap = useTrendFilter and strongDown and not (close > open and macdTurningUp)
+    confBull := 66.0 + (thisK <= 25 ? 8.0 : 0.0) + (close > open ? 6.0 : 0.0) + (macdTurningUp ? 6.0 : 0.0) + (not strongDown ? 8.0 : 0.0)
+    confBull := math.min(confBull, 95.0)
+    if bullDiv and turnedUp and survived and not trap and gapOk and confBull >= minConfidence and barstate.isconfirmed
+        fireBull := true
+        if showLines
+            line.new(prevLowBar, prevLowK, thisBar, thisK, color=color.new(#00e676, 0), width=2)
+        tp1 := close * (1 + tp1Pct / 100.0)
+        tp2 := close * (1 + tp2Pct / 100.0)
+        sl := close * (1 - slPct / 100.0)
+        label.new(bar_index, math.max(k - 6, 2), "شراء " + str.tostring(confBull, "#") + "%\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nSL " + str.tostring(sl, format.mintick), yloc=yloc.price, style=label.style_label_up, color=color.new(#00c853, 0), textcolor=color.white, size=size.small)
+        lastSignalBar := bar_index
+        lastSignal := "شراء"
+        lastConfidence := confBull
+    prevLowPrice := thisPrice
+    prevLowK := thisK
+    prevLowBar := thisBar
+
+if not na(priceHigh) and not fireBull
+    float thisPrice = priceHigh
+    float thisK = k[pivotBars]
+    int thisBar = bar_index - pivotBars
+    bool aligned = not na(prevHighPrice) and thisBar - prevHighBar >= pivotBars and thisBar - prevHighBar <= divLookback
+    bool bearDiv = aligned and thisPrice > prevHighPrice and thisK < prevHighK - minKGap and thisK >= sellZone
+    bool turnedDown = k < thisK and (k < k[1] or k < d)
+    bool survived = close < high[pivotBars]
+    bool trap = useTrendFilter and strongUp and not (close < open and macdTurningDown)
+    confBear := 66.0 + (thisK >= 75 ? 8.0 : 0.0) + (close < open ? 6.0 : 0.0) + (macdTurningDown ? 6.0 : 0.0) + (not strongUp ? 8.0 : 0.0)
+    confBear := math.min(confBear, 95.0)
+    if bearDiv and turnedDown and survived and not trap and gapOk and confBear >= minConfidence and barstate.isconfirmed
+        fireBear := true
+        if showLines
+            line.new(prevHighBar, prevHighK, thisBar, thisK, color=color.new(#ff5252, 0), width=2)
+        tp1 := close * (1 - tp1Pct / 100.0)
+        tp2 := close * (1 - tp2Pct / 100.0)
+        sl := close * (1 + slPct / 100.0)
+        label.new(bar_index, math.min(k + 6, 98), "بيع " + str.tostring(confBear, "#") + "%\nTP1 " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2, format.mintick) + "\nSL " + str.tostring(sl, format.mintick), yloc=yloc.price, style=label.style_label_down, color=color.new(#d50000, 0), textcolor=color.white, size=size.small)
+        lastSignalBar := bar_index
+        lastSignal := "بيع"
+        lastConfidence := confBear
+    prevHighPrice := thisPrice
+    prevHighK := thisK
+    prevHighBar := thisBar
+
+kColor = k > d ? color.new(#00e676, 0) : color.new(#ff5252, 0)
+plot(k, "%K", color=kColor, linewidth=2)
+plot(d, "%D", color=color.new(#ffab00, 0), linewidth=1)
+plot(trendLine, "اتجاه مطبّع", color=color.new(#7c4dff, 35), linewidth=1)
+
+bandTop = plot(100, display=display.none)
+band80 = plot(80, "80", color=color.new(#ef5350, 40), linewidth=1)
+band50 = plot(50, "50", color=color.new(#90a4ae, 50), linewidth=1)
+band20 = plot(20, "20", color=color.new(#26a69a, 40), linewidth=1)
+bandBot = plot(0, display=display.none)
+fill(band80, bandTop, color=color.new(#ef5350, 88))
+fill(band20, bandBot, color=color.new(#26a69a, 88))
+bgcolor(strongUp ? color.new(#00e676, 92) : strongDown ? color.new(#ff5252, 92) : na)
+
+alertcondition(fireBull, "انعكاس صاعد", "انعكاس صاعد على {{ticker}} عند {{close}}")
+alertcondition(fireBear, "انعكاس هابط", "انعكاس هابط على {{ticker}} عند {{close}}")
+
+var table status = table.new(position.top_right, 2, 6, bgcolor=color.new(#0d1117, 10), border_width=1, border_color=color.new(#30363d, 30))
+if showTable and barstate.islast
+    table.cell(status, 0, 0, "%K", text_color=color.gray, text_size=size.tiny)
+    table.cell(status, 1, 0, str.tostring(k, "#.#"), text_color=kColor, text_size=size.small)
+    table.cell(status, 0, 1, "%D", text_color=color.gray, text_size=size.tiny)
+    table.cell(status, 1, 1, str.tostring(d, "#.#"), text_color=color.orange, text_size=size.tiny)
+    table.cell(status, 0, 2, "الاتجاه", text_color=color.gray, text_size=size.tiny)
+    table.cell(status, 1, 2, strongUp ? "صاعد" : strongDown ? "هابط" : "جانبي", text_color=strongUp ? color.lime : strongDown ? color.red : color.gray, text_size=size.tiny)
+    table.cell(status, 0, 3, "الماكد", text_color=color.gray, text_size=size.tiny)
+    table.cell(status, 1, 3, macdLine > macdSignal ? "صاعد" : "هابط", text_color=macdLine > macdSignal ? color.lime : color.red, text_size=size.tiny)
+    table.cell(status, 0, 4, "آخر إشارة", text_color=color.gray, text_size=size.tiny)
+    table.cell(status, 1, 4, lastSignal, text_color=lastSignal == "شراء" ? color.lime : lastSignal == "بيع" ? color.red : color.gray, text_size=size.small)
+    table.cell(status, 0, 5, "ثقتها", text_color=color.gray, text_size=size.tiny)
+    table.cell(status, 1, 5, na(lastConfidence) ? "—" : str.tostring(lastConfidence, "#") + "%", text_color=color.yellow, text_size=size.tiny)
