@@ -35,7 +35,10 @@ d = ta.sma(k, periodD)
 atr5 = ta.atr(5)
 atr14 = ta.atr(14)
 trendRaw = (close - ta.lowest(low, 50)) / math.max(atr5, syminfo.mintick) - (ta.highest(high, 50) - close) / math.max(atr5, syminfo.mintick)
-trendLine = 50.0 + 35.0 * math.tanh(ta.ema(trendRaw, 3) / 8.0)
+// Pine has no math.tanh. This is the same curve, with the input clamped so exp does not overflow.
+tanhInput = math.max(-4.0, math.min(4.0, ta.ema(trendRaw, 3) / 8.0))
+tanhExp = math.exp(2.0 * tanhInput)
+trendLine = 50.0 + 35.0 * ((tanhExp - 1.0) / (tanhExp + 1.0))
 
 ema20 = ta.ema(close, 20)
 ema50 = ta.ema(close, 50)
