@@ -1,0 +1,1245 @@
+//@version=6
+// ══════════════════════════════════════════════════════════
+// STRAT ULTRA PRO v3.1 — Smart Money + AI Confidence
+// Precision Edition — directional MTF, confluence, fewer false signals
+// ══════════════════════════════════════════════════════════
+indicator(
+     title            = "STRAT ULTRA PRO v3.1 [SMC + AI]",
+     shorttitle       = "STRAT ULTRA",
+     overlay          = true,
+     max_bars_back    = 5000,
+     max_lines_count  = 500,
+     max_labels_count = 500,
+     max_boxes_count  = 100)
+
+// ══════════════════════════════════════════════════════════
+// 1. CONSTANTS
+// ══════════════════════════════════════════════════════════
+string VERSION   = "3.1-PRECISION"
+string JSON_IND  = "STRAT-ULTRA"
+int    ST_IDLE   = 0
+int    ST_PEND   = 1
+int    FORM_LEN  = 15
+int    MS_DAY    = 86400000
+int    STAT_DAYS = 60
+
+string GRP_APP = "01 Appearance"
+string GRP_PAT = "02 Pattern Engine"
+string GRP_TRG = "03 Trigger Engine"
+string GRP_RSK = "04 Risk Management"
+string GRP_FLT = "05 Advanced Filters"
+string GRP_SMC = "06 Smart Money"
+string GRP_AI  = "07 AI Confidence"
+string GRP_MTF = "08 Multi-Timeframe"
+string GRP_DSH = "09 Dashboard"
+string GRP_ALR = "10 Alerts"
+string GRP_PRC = "11 Precision (Accuracy)"
+
+// ══════════════════════════════════════════════════════════
+// 2. INPUTS  (named args — positional 5th of input.int is `step`, not group)
+// ══════════════════════════════════════════════════════════
+themeInput         = input.string("Auto", "Theme", options = ["Auto", "Dark", "Light"], group = GRP_APP)
+showWatermarkInput = input.bool(true, "Show Watermark", group = GRP_APP)
+signalSizeInput    = input.string("Small", "Signal Size", options = ["Tiny", "Small", "Normal", "Large", "Huge"], group = GRP_APP)
+
+extInput           = input.bool(true, "Extended Patterns", group = GRP_PAT)
+showSetupLblInput  = input.bool(true, "Show Setup Labels", group = GRP_PAT)
+maxDrawInput       = input.int(80, "Max Drawings", minval = 10, maxval = 300, group = GRP_PAT)
+patMemoryInput     = input.bool(true, "Pattern Memory (Learning)", group = GRP_PAT)
+
+expiryInput        = input.int(5, "Setup Expiry (bars)", minval = 1, maxval = 30, group = GRP_TRG)
+showLinesInput     = input.bool(true, "Trigger/Stop Lines", group = GRP_TRG)
+useConfirmInput    = input.bool(true, "Require Confirmation Bar", group = GRP_TRG)
+confirmTypeInput   = input.string("Body Break", "Confirmation Type", options = ["Close vs Close", "Close vs Open", "Body Break"], group = GRP_TRG)
+
+enableTradesInput  = input.bool(true, "Trade Engine", group = GRP_RSK)
+entryModeInput     = input.string("Both", "Entry Mode", options = ["Trap Bar", "STRAT Trigger", "Both"], group = GRP_RSK)
+riskPresetInput    = input.string("Balanced", "Risk Preset", options = ["Conservative", "Balanced", "Aggressive", "Scalping", "Custom"], group = GRP_RSK)
+atrLenRiskInput    = input.int(14, "ATR Length", minval = 5, maxval = 50, group = GRP_RSK)
+slAnchorInput      = input.string("Structure", "SL Anchor", options = ["Trigger Level", "Setup Bar", "Wick-Anchored", "ATR", "Structure"], group = GRP_RSK)
+slMultInput        = input.float(1.5, "SL Multiplier (xATR)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RSK)
+slBufferInput      = input.float(0.25, "SL Buffer (xATR)", minval = 0.0, maxval = 1.0, step = 0.05, group = GRP_RSK)
+maxRiskAtrInput    = input.float(3.0, "Max Risk (xATR)", minval = 0.0, maxval = 10.0, step = 0.5, group = GRP_RSK)
+tp1MultInput       = input.float(1.0, "TP1 (xRisk)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RSK)
+tp2MultInput       = input.float(2.0, "TP2 (xRisk)", minval = 1.0, maxval = 10.0, step = 0.1, group = GRP_RSK)
+tp3MultInput       = input.float(3.5, "TP3 (xRisk)", minval = 1.5, maxval = 15.0, step = 0.1, group = GRP_RSK)
+partialExitInput   = input.bool(true, "Enable Partial Exits", group = GRP_RSK)
+
+beInput            = input.bool(true, "Break-Even After TP1", group = GRP_RSK)
+useTrailInput      = input.bool(true, "Smart Chandelier Trailing", group = GRP_RSK)
+trailAtrMultInput  = input.float(2.5, "Trail ATR Multiplier", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_RSK)
+trailStepInput     = input.float(0.5, "Trail Step (xATR)", minval = 0.1, maxval = 2.0, step = 0.1, group = GRP_RSK)
+
+useTrendFilterInput = input.bool(true, "EMA Trend Filter (21/50/200)", group = GRP_FLT)
+trendFastInput      = input.int(21, "Fast EMA", minval = 5, maxval = 200, group = GRP_FLT)
+trendSlowInput      = input.int(50, "Slow EMA", minval = 20, maxval = 500, group = GRP_FLT)
+trendTrendInput     = input.int(200, "Trend EMA", minval = 50, maxval = 1000, group = GRP_FLT)
+
+useAdxFilterInput   = input.bool(true, "ADX Trend Strength", group = GRP_FLT)
+adxLenInput         = input.int(14, "ADX Length", minval = 5, maxval = 50, group = GRP_FLT)
+adxThreshInput      = input.int(25, "ADX Minimum", minval = 10, maxval = 50, group = GRP_FLT)
+
+useRsiFilterInput   = input.bool(true, "RSI Filter", group = GRP_FLT)
+rsiLenInput         = input.int(14, "RSI Length", minval = 5, maxval = 50, group = GRP_FLT)
+rsiObInput          = input.int(72, "RSI Overbought", minval = 55, maxval = 95, group = GRP_FLT)
+rsiOsInput          = input.int(28, "RSI Oversold", minval = 5, maxval = 45, group = GRP_FLT)
+
+useVolFilterInput   = input.bool(true, "Volume Confirmation", group = GRP_FLT)
+volMultInput        = input.float(1.3, "Volume Threshold (xSMA20)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_FLT)
+
+useSessionInput     = input.bool(false, "Session Filter", group = GRP_FLT)
+sessionStrInput     = input.string("0900-1600", "Trading Session", group = GRP_FLT)
+
+useVolRegimeInput   = input.bool(true, "Volatility Regime Filter", group = GRP_FLT)
+vbbLenInput         = input.int(20, "BB Length", minval = 10, maxval = 50, group = GRP_FLT)
+vbbMultInput        = input.float(2.0, "BB Multiplier", minval = 1.0, maxval = 3.0, step = 0.1, group = GRP_FLT)
+
+minFtcInput         = input.int(3, "Min FTC Aligned", minval = 0, maxval = 8, group = GRP_FLT)
+
+useSmcInput         = input.bool(true, "Enable Smart Money", group = GRP_SMC)
+smcSwingInput       = input.int(5, "Swing Lookback", minval = 3, maxval = 20, group = GRP_SMC)
+showSwingsInput     = input.bool(true, "Show Swing Points", group = GRP_SMC)
+showObInput         = input.bool(true, "Show Order Blocks", group = GRP_SMC)
+showFvgInput        = input.bool(true, "Show Fair Value Gaps", group = GRP_SMC)
+useSweepInput       = input.bool(true, "Liquidity Sweep Filter", group = GRP_SMC)
+
+useConfInput        = input.bool(true, "Enable Confidence Scoring", group = GRP_AI)
+minConfInput        = input.int(78, "Minimum Confidence", minval = 0, maxval = 100, group = GRP_AI)
+showConfInput       = input.bool(true, "Show Confidence on Chart", group = GRP_AI)
+useDivInput         = input.bool(true, "MTF Divergence Check", group = GRP_AI)
+divTfInput          = input.string("60", "Divergence TF", options = ["15", "30", "60", "240"], group = GRP_AI)
+
+useMtfBiasInput     = input.bool(true, "MTF Bias Engine", group = GRP_MTF)
+mtfFastTfInput      = input.string("15", "Fast Bias TF", options = ["5", "15", "30", "60"], group = GRP_MTF)
+mtfSlowTfInput      = input.string("240", "Slow Bias TF", options = ["60", "240", "D", "W"], group = GRP_MTF)
+
+showDashInput       = input.bool(true, "Show Dashboard", group = GRP_DSH)
+dashPosInput        = input.string("Top Right", "Position", options = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"], group = GRP_DSH)
+dashSizeInput       = input.string("Small", "Size", options = ["Small", "Normal", "Large"], group = GRP_DSH)
+
+enableAlertsInput   = input.bool(true, "Enable Alerts", group = GRP_ALR)
+alertFmtInput       = input.string("JSON", "Format", options = ["JSON", "Text"], group = GRP_ALR)
+
+precisionModeInput  = input.bool(true, "Precision Mode (fewer, higher-quality signals)", group = GRP_PRC)
+minConflInput       = input.int(5, "Min Confluence Score (0-10)", minval = 0, maxval = 10, group = GRP_PRC)
+requireLocationInput = input.bool(true, "Require Discount/Premium Location (OB/FVG/Sweep)", group = GRP_PRC)
+requireHtfBiasInput = input.bool(true, "Require 4H Close With Trade", group = GRP_PRC)
+requireFastMtfInput = input.bool(true, "Require Fast MTF With Trade", group = GRP_PRC)
+useExtFilterInput   = input.bool(true, "Block Extended Chase (xATR from EMA21)", group = GRP_PRC)
+maxExtAtrInput      = input.float(1.8, "Max Distance from EMA21 (xATR)", minval = 0.5, maxval = 5.0, step = 0.1, group = GRP_PRC)
+blockChopInput      = input.bool(true, "Block High-Vol Chop (high BB + weak ADX)", group = GRP_PRC)
+useTrapQualityInput = input.bool(true, "Strict Trap Bars (wick + reclaim)", group = GRP_PRC)
+skipInsideInput     = input.bool(true, "Skip Inside-Bar Entries", group = GRP_PRC)
+cooldownBarsInput   = input.int(8, "Cooldown After Signal (bars)", minval = 0, maxval = 50, group = GRP_PRC)
+lossCooldownMultInput = input.float(2.0, "Extra Cooldown After Loss (x)", minval = 1.0, maxval = 5.0, step = 0.5, group = GRP_PRC)
+minPatWrInput       = input.float(0.45, "Min Pattern WinRate (after 3 samples)", minval = 0.0, maxval = 0.9, step = 0.05, group = GRP_PRC)
+rsiPullbackInput    = input.bool(true, "RSI Pullback Zone (buy dips / sell rallies)", group = GRP_PRC)
+
+// ══════════════════════════════════════════════════════════
+// 3. VALIDATION
+// ══════════════════════════════════════════════════════════
+if riskPresetInput == "Custom" and (tp1MultInput >= tp2MultInput or tp2MultInput >= tp3MultInput)
+    runtime.error("Invalid TP multipliers: required TP1 < TP2 < TP3")
+if slMultInput <= 0
+    runtime.error("SL Multiplier must be > 0")
+
+// ══════════════════════════════════════════════════════════
+// 4. THEME & COLORS
+// ══════════════════════════════════════════════════════════
+float bgLum  = 0.299 * color.r(chart.bg_color) + 0.587 * color.g(chart.bg_color) + 0.114 * color.b(chart.bg_color)
+bool  isDark = themeInput == "Dark" or (themeInput == "Auto" and bgLum < 128.0)
+
+color BULL      = isDark ? #00E676 : #00A152
+color BEAR      = isDark ? #FF5252 : #D32F2F
+color C_INSIDE  = isDark ? #FFD54F : #C77800
+color C_OUTSIDE = isDark ? #E040FB : #8E24AA
+color C_TEXT    = isDark ? #ECEFF1 : #263238
+color C_MUTED   = color.new(C_TEXT, 50)
+color PANEL_BG  = isDark ? color.new(#131722, 20) : color.new(#FFFFFF, 20)
+color SL_COL    = isDark ? color.new(#E57373, 0) : color.new(#B71C1C, 0)
+color TP1_COL   = isDark ? color.new(#66BB6A, 30) : color.new(#388E3C, 30)
+color TP2_COL   = isDark ? color.new(#66BB6A, 40) : color.new(#388E3C, 40)
+color TP3_COL   = isDark ? color.new(#66BB6A, 0) : color.new(#388E3C, 0)
+color ENT_COL   = isDark ? color.new(#5C8AAE, 0) : color.new(#34495E, 0)
+color BE_COL    = isDark ? color.new(#FFA726, 0) : color.new(#E65100, 0)
+color VIP_COL   = isDark ? color.new(#FFD700, 0) : color.new(#F9A825, 0)
+color DIAG_COL  = isDark ? #FFD54F : #F57F17
+color OB_BULL   = color.new(BULL, 85)
+color OB_BEAR   = color.new(BEAR, 85)
+color FVG_BULL  = color.new(BULL, 90)
+color FVG_BEAR  = color.new(BEAR, 90)
+
+// ══════════════════════════════════════════════════════════
+// 5. FUNCTIONS
+// ══════════════════════════════════════════════════════════
+seqGet(array<int> s, int back) => s.get(s.size() - 1 - back)
+
+clsName(int c) => c == 1 ? "1" : c == 3 ? "3" : c == 2 ? "2U" : c == -2 ? "2D" : "·"
+
+clsColor(int c) => c == 1 ? C_INSIDE : c == 3 ? C_OUTSIDE : c == 2 ? BULL : c == -2 ? BEAR : na
+
+addPat(matrix<int> m, array<string> nm, int grp, int dir, string name, int plen, int t0, int t1, int t2, int t3) =>
+    m.add_row(m.rows(), array.from(grp, dir, plen, t0, t1, t2, t3))
+    nm.push(name)
+
+lineStyle(string s) => s == "Dashed" ? line.style_dashed : s == "Dotted" ? line.style_dotted : line.style_solid
+
+strSize(string s) => s == "Tiny" ? size.tiny : s == "Small" ? size.small : s == "Normal" ? size.normal : s == "Large" ? size.large : size.huge
+
+fmtP(float v) => na(v) ? "—" : str.tostring(v, format.mintick)
+
+safeDiv(float num, float den, float fb) => den != 0 and not na(num) and not na(den) ? num / den : fb
+
+kamaCalc(float src, int len) =>
+    float fastSC = 2.0 / 3.0
+    float slowSC = 2.0 / 31.0
+    float mom    = math.abs(ta.change(src, len))
+    float noise  = math.sum(math.abs(ta.change(src)), len)
+    float er     = safeDiv(mom, noise, 0.0)
+    float sc     = math.pow(er * (fastSC - slowSC) + slowSC, 2.0)
+    float k = na
+    k := na(k[1]) ? src : k[1] + nz(sc) * (src - k[1])
+    k
+
+fmtPct(float level, float entry) =>
+    string res = ""
+    if not na(level) and not na(entry) and entry != 0
+        float pct = (level - entry) / entry * 100.0
+        res := " (" + (pct >= 0 ? "+" : "") + str.tostring(pct, "#.##") + "%)"
+    res
+
+resolveSlAnchor(int dir, string mode, float trigLvl, float setupStp, float structPx) =>
+    mode == "Setup Bar" ? setupStp : mode == "Wick-Anchored" ? (dir == 1 ? low : high) : mode == "Structure" ? structPx : trigLvl
+
+// ══════════════════════════════════════════════════════════
+// 6. CORE CALCULATIONS
+// ══════════════════════════════════════════════════════════
+bool insideNow  = bar_index > 0 and high <= high[1] and low >= low[1]
+bool outsideNow = bar_index > 0 and high > high[1] and low < low[1]
+int  clsNow     = bar_index == 0 ? 0 : insideNow ? 1 : outsideNow ? 3 : high > high[1] ? 2 : -2
+
+float rng       = high - low
+float upWick    = high - math.max(open, close)
+float dnWick    = math.min(open, close) - low
+bool hammerNow  = rng > 0 and dnWick >= rng * 0.70 and clsNow != 1
+bool shooterNow = rng > 0 and upWick >= rng * 0.70 and clsNow != 1
+
+float riskAtr   = nz(ta.atr(atrLenRiskInput), 0.0)
+bool  hasVolume = nz(volume, 0) > 0
+float volSma    = nz(ta.sma(volume, 20), 0.0)
+float kamaTrend = kamaCalc(close, trendSlowInput)
+
+[effSlMult, effTp1m, effTp2m, effTp3m] = switch riskPresetInput
+    "Conservative" => [2.5, 1.0, 2.0, 4.0]
+    "Aggressive"   => [1.0, 1.5, 2.5, 4.5]
+    "Scalping"     => [0.8, 0.8, 1.5, 2.5]
+    "Custom"       => [slMultInput, tp1MultInput, tp2MultInput, tp3MultInput]
+    => [1.5, 1.0, 2.0, 3.5]
+
+float ema21  = ta.ema(close, trendFastInput)
+float ema50  = ta.ema(close, trendSlowInput)
+float ema200 = ta.ema(close, trendTrendInput)
+bool trendBull = close > ema21 and ema21 > ema50 and close > ema200
+bool trendBear = close < ema21 and ema21 < ema50 and close < ema200
+
+[dmiPlus, dmiMinus, adxVal] = ta.dmi(adxLenInput, adxLenInput)
+bool strongTrend = adxVal >= adxThreshInput
+bool dmiBull = dmiPlus > dmiMinus
+bool dmiBear = dmiMinus > dmiPlus
+
+float rsiVal = ta.rsi(close, rsiLenInput)
+bool rsiOkLong  = rsiVal < rsiObInput
+bool rsiOkShort = rsiVal > rsiOsInput
+
+bool inSession = not useSessionInput or not na(time(timeframe.period, sessionStrInput))
+
+float bbBasis = ta.sma(close, vbbLenInput)
+float bbDev   = ta.stdev(close, vbbLenInput) * vbbMultInput
+float bbWidth = safeDiv(bbDev * 2.0, bbBasis, 0.0) * 100.0
+float bbwSma  = ta.sma(bbWidth, 50)
+int   volRegime = bbWidth < bbwSma * 0.85 ? 1 : bbWidth > bbwSma * 1.15 ? 3 : 2
+
+float slK = useVolRegimeInput ? (volRegime == 1 ? 0.8 : volRegime == 3 ? 1.4 : 1.0) : 1.0
+float t1K = useVolRegimeInput ? (volRegime == 1 ? 1.2 : volRegime == 3 ? 0.8 : 1.0) : 1.0
+float t2K = useVolRegimeInput ? (volRegime == 1 ? 1.1 : volRegime == 3 ? 0.85 : 1.0) : 1.0
+float t3K = useVolRegimeInput ? (volRegime == 1 ? 1.1 : volRegime == 3 ? 0.9 : 1.0) : 1.0
+float adaptSl = effSlMult * slK
+float adaptT1 = effTp1m * t1K
+float adaptT2 = effTp2m * t2K
+float adaptT3 = effTp3m * t3K
+
+// ══════════════════════════════════════════════════════════
+// 7. SMART MONEY CONCEPTS
+// ══════════════════════════════════════════════════════════
+float phVal = ta.pivothigh(high, smcSwingInput, smcSwingInput)
+float plVal = ta.pivotlow(low, smcSwingInput, smcSwingInput)
+bool swingHigh = not na(phVal)
+bool swingLow  = not na(plVal)
+
+var float lastSwingHigh = na
+var float lastSwingLow  = na
+var float prevSwingHigh = na
+var float prevSwingLow  = na
+
+if swingHigh
+    prevSwingHigh := lastSwingHigh
+    lastSwingHigh := phVal
+if swingLow
+    prevSwingLow := lastSwingLow
+    lastSwingLow := plVal
+
+bool bullStruct = not na(lastSwingHigh) and not na(prevSwingHigh) and lastSwingHigh > prevSwingHigh
+bool bearStruct = not na(lastSwingLow) and not na(prevSwingLow) and lastSwingLow < prevSwingLow
+
+bool strongUp  = close > open and (close - open) > rng * 0.6
+bool strongDn  = close < open and (open - close) > rng * 0.6
+
+var float obBullTop = na
+var float obBullBot = na
+var int   obBullBar = na
+var float obBearTop = na
+var float obBearBot = na
+var int   obBearBar = na
+
+if strongUp and close[1] < open[1]
+    obBullTop := high[1]
+    obBullBot := low[1]
+    obBullBar := bar_index - 1
+if strongDn and close[1] > open[1]
+    obBearTop := high[1]
+    obBearBot := low[1]
+    obBearBar := bar_index - 1
+
+bool inBullOB = not na(obBullBot) and not na(obBullTop) and low <= obBullTop and high >= obBullBot
+bool inBearOB = not na(obBearBot) and not na(obBearTop) and low <= obBearTop and high >= obBearBot
+
+bool fvgBull = low > high[2] and close[1] > open[1]
+bool fvgBear = high < low[2] and close[1] < open[1]
+
+var float fvgBullBot = na
+var float fvgBullTop = na
+var float fvgBearBot = na
+var float fvgBearTop = na
+
+if fvgBull
+    fvgBullBot := high[2]
+    fvgBullTop := low
+if fvgBear
+    fvgBearBot := high
+    fvgBearTop := low[2]
+
+bool inFvgBull = not na(fvgBullBot) and low <= fvgBullTop and high >= fvgBullBot
+bool inFvgBear = not na(fvgBearBot) and low <= fvgBearTop and high >= fvgBearBot
+
+bool sweepHigh = not na(lastSwingHigh) and high > lastSwingHigh and close < lastSwingHigh
+bool sweepLow  = not na(lastSwingLow) and low < lastSwingLow and close > lastSwingLow
+bool sweepBull = useSweepInput and sweepLow
+bool sweepBear = useSweepInput and sweepHigh
+
+// ══════════════════════════════════════════════════════════
+// 8. MULTI-TIMEFRAME
+// ══════════════════════════════════════════════════════════
+htf(string tf) => request.security(syminfo.tickerid, tf, [open, close, high, low, high[1], low[1], ta.rsi(close, 14)])
+
+[o15, c15, h15, l15, h15p, l15p, rsi15] = htf("15")
+[o30, c30, h30, l30, h30p, l30p, rsi30] = htf("30")
+[o60, c60, h60, l60, h60p, l60p, rsi60] = htf("60")
+[o4h, c4h, h4h, l4h, h4hp, l4hp, rsi4h] = htf("240")
+[oD,  cD,  hD,  lD,  hDp,  lDp,  rsiD ] = htf("D")
+
+int chartSec = timeframe.in_seconds(timeframe.period)
+
+array<bool> fV = array.from(
+     chartSec < timeframe.in_seconds("15") and not na(o15),
+     chartSec < timeframe.in_seconds("30") and not na(o30),
+     chartSec < timeframe.in_seconds("60") and not na(o60),
+     chartSec < timeframe.in_seconds("240") and not na(o4h),
+     chartSec < timeframe.in_seconds("D") and not na(oD),
+     false, false, false)
+array<bool> fG = array.from(
+     nz(o15) <= nz(c15), nz(o30) <= nz(c30), nz(o60) <= nz(c60), nz(o4h) <= nz(c4h),
+     nz(oD) <= nz(cD), false, false, false)
+array<bool> fI = array.from(
+     nz(h15) <= nz(h15p) and nz(l15) >= nz(l15p), nz(h30) <= nz(h30p) and nz(l30) >= nz(l30p),
+     nz(h60) <= nz(h60p) and nz(l60) >= nz(l60p), nz(h4h) <= nz(h4hp) and nz(l4h) >= nz(l4hp),
+     nz(hD) <= nz(hDp) and nz(lD) >= nz(lDp), false, false, false)
+array<bool> fO = array.from(
+     nz(h15) > nz(h15p) and nz(l15) < nz(l15p), nz(h30) > nz(h30p) and nz(l30) < nz(l30p),
+     nz(h60) > nz(h60p) and nz(l60) < nz(l60p), nz(h4h) > nz(h4hp) and nz(l4h) < nz(l4hp),
+     nz(hD) > nz(hDp) and nz(lD) < nz(lDp), false, false, false)
+
+int ftcVisible = 0
+int ftcAlignedBull = 0
+int ftcAlignedBear = 0
+int ftcInsideN = 0
+int ftcOutsideN = 0
+for i = 0 to 4
+    if fV.get(i)
+        ftcVisible += 1
+        if fG.get(i)
+            ftcAlignedBull += 1
+        else
+            ftcAlignedBear += 1
+        if fI.get(i)
+            ftcInsideN += 1
+        if fO.get(i)
+            ftcOutsideN += 1
+
+float htfRsi = divTfInput == "15" ? rsi15 : divTfInput == "30" ? rsi30 : divTfInput == "60" ? rsi60 : rsi4h
+bool bullDivHTF = useDivInput and ta.falling(close, 5) and ta.rising(htfRsi, 5)
+bool bearDivHTF = useDivInput and ta.rising(close, 5) and ta.falling(htfRsi, 5)
+
+float mtfFastClose = request.security(syminfo.tickerid, mtfFastTfInput, close)
+float mtfFastOpen  = request.security(syminfo.tickerid, mtfFastTfInput, open)
+float mtfSlowClose = request.security(syminfo.tickerid, mtfSlowTfInput, close)
+float mtfSlowOpen  = request.security(syminfo.tickerid, mtfSlowTfInput, open)
+bool mtfFastBull = nz(mtfFastClose) >= nz(mtfFastOpen)
+bool mtfSlowBull = nz(mtfSlowClose) >= nz(mtfSlowOpen)
+bool mtfFastBear = not mtfFastBull
+bool mtfSlowBear = not mtfSlowBull
+bool mtfAligned  = useMtfBiasInput ? (mtfFastBull and mtfSlowBull) or (mtfFastBear and mtfSlowBear) : true
+bool htf4hBull   = nz(c4h) >= nz(o4h)
+bool htf4hBear   = not htf4hBull
+
+float obvVal    = ta.obv
+bool  obvRising = ta.change(obvVal) > 0
+bool  obvFalling = ta.change(obvVal) < 0
+bool  choppyMarket = volRegime == 3 and not strongTrend
+
+bool trapLongRaw   = clsNow == -2 and close > open
+bool trapShortRaw  = clsNow == 2 and close < open
+bool trapWickOk    = rng > 0 and (trapLongRaw ? dnWick / rng >= 0.45 : trapShortRaw ? upWick / rng >= 0.45 : false)
+bool trapReclaimOk = trapLongRaw ? close > (high[1] + low[1]) * 0.5 : trapShortRaw ? close < (high[1] + low[1]) * 0.5 : false
+bool trapVolOk     = not hasVolume or volSma <= 0 or volume >= volSma
+bool trapQualityOk = (not trapLongRaw and not trapShortRaw) or (trapWickOk and trapReclaimOk and trapVolOk)
+
+float rsiPullHi = math.min(rsiObInput, 58.0)
+float rsiPullLo = math.max(rsiOsInput, 42.0)
+
+// ══════════════════════════════════════════════════════════
+// 9. PATTERN ENGINE WITH MEMORY
+// ══════════════════════════════════════════════════════════
+var array<int>    seq      = array.new<int>()
+var matrix<int>   patM     = matrix.new<int>()
+var array<string> patNames = array.new<string>()
+var array<float>  patWinRates = array.new<float>()
+var array<int>    patCounts   = array.new<int>()
+
+if barstate.isfirst
+    addPat(patM, patNames, 1,  1, "2-2-2-2 RJ",     4,  2, -2,  2,  2)
+    addPat(patM, patNames, 1, -1, "2-2-2-2 RJ",     4, -2,  2, -2, -2)
+    addPat(patM, patNames, 1,  1, "2-2-2 Cont",     3,  2,  2,  2,  0)
+    addPat(patM, patNames, 1, -1, "2-2-2 Cont",     3, -2, -2, -2,  0)
+    addPat(patM, patNames, 0,  1, "3-2-2 Rev",      3,  2, -2,  3,  0)
+    addPat(patM, patNames, 0, -1, "3-2-2 Rev",      3, -2,  2,  3,  0)
+    addPat(patM, patNames, 0,  1, "3-1-2",          3,  2,  1,  3,  0)
+    addPat(patM, patNames, 0, -1, "3-1-2",          3, -2,  1,  3,  0)
+    addPat(patM, patNames, 0,  1, "2-1-2 Rev",      3,  2,  1, -2,  0)
+    addPat(patM, patNames, 0, -1, "2-1-2 Rev",      3, -2,  1,  2,  0)
+    addPat(patM, patNames, 0,  1, "2-1-2 Cont",     3,  2,  1,  2,  0)
+    addPat(patM, patNames, 0, -1, "2-1-2 Cont",     3, -2,  1, -2,  0)
+    addPat(patM, patNames, 0,  1, "1-2-2 RevStrat", 3,  2, -2,  1,  0)
+    addPat(patM, patNames, 0, -1, "1-2-2 RevStrat", 3, -2,  2,  1,  0)
+    addPat(patM, patNames, 0,  1, "3-2",            2,  2,  3,  0,  0)
+    addPat(patM, patNames, 0, -1, "3-2",            2, -2,  3,  0,  0)
+    addPat(patM, patNames, 0,  1, "2-2 Rev",        2,  2, -2,  0,  0)
+    addPat(patM, patNames, 0, -1, "2-2 Rev",        2, -2,  2,  0,  0)
+    addPat(patM, patNames, 0,  1, "2-2 Cont",       2,  2,  2,  0,  0)
+    addPat(patM, patNames, 0, -1, "2-2 Cont",       2, -2, -2,  0,  0)
+    for i = 0 to patM.rows() - 1
+        patWinRates.push(0.5)
+        patCounts.push(0)
+
+// ══════════════════════════════════════════════════════════
+// 10. SIGNAL LOGIC — FSM
+// ══════════════════════════════════════════════════════════
+var int    fsmState    = ST_IDLE
+var float  pendHi      = na
+var float  pendLo      = na
+var int    setupDir    = 0
+var string pendName    = ""
+var int    barsPending = 0
+var int    pendPatIdx  = -1
+var line   hiLn        = na
+var line   loLn        = na
+var array<line>  lnFifo  = array.new<line>()
+var array<label> lblFifo = array.new<label>()
+
+bool setupBullSig = false
+bool setupBearSig = false
+bool trigBullSig  = false
+bool trigBearSig  = false
+string trigPat = ""
+float  trigLvl = na
+float  trigStp = na
+int    trigPatIdx = -1
+
+var int    rawSignalDir    = 0
+var int    rawSignalBar    = na
+var string rawSignalPat    = ""
+var float  rawSignalSl     = na
+var float  rawSignalLvl    = na
+var float  rawSignalAnchor = na
+var int    rawSignalIdx    = -1
+var bool   rawSignalTrap   = false
+
+if barstate.isconfirmed and bar_index > 0
+    seq.push(clsNow)
+    if seq.size() > 10
+        seq.shift()
+
+    if fsmState == ST_PEND
+        barsPending += 1
+        bool brokeTrig  = setupDir > 0 ? high > pendHi : low < pendLo
+        bool failedStop = setupDir > 0 ? close < pendLo : close > pendHi
+        if failedStop
+            fsmState := ST_IDLE
+            if not na(hiLn) and not na(loLn)
+                line.set_x2(hiLn, bar_index)
+                line.set_x2(loLn, bar_index)
+                line.set_color(hiLn, C_MUTED)
+                line.set_color(loLn, C_MUTED)
+            if patMemoryInput and pendPatIdx >= 0 and pendPatIdx < patCounts.size()
+                int cnt = patCounts.get(pendPatIdx)
+                float wr = patWinRates.get(pendPatIdx)
+                patCounts.set(pendPatIdx, cnt + 1)
+                patWinRates.set(pendPatIdx, (wr * cnt + 0.0) / (cnt + 1))
+        else if brokeTrig
+            if setupDir > 0
+                trigBullSig := true
+            else
+                trigBearSig := true
+            if not na(hiLn) and not na(loLn)
+                line.set_x2(hiLn, bar_index)
+                line.set_x2(loLn, bar_index)
+            trigPat := pendName
+            trigLvl := setupDir > 0 ? pendHi : pendLo
+            trigStp := setupDir > 0 ? pendLo : pendHi
+            trigPatIdx := pendPatIdx
+            fsmState := ST_IDLE
+        else if barsPending >= expiryInput
+            fsmState := ST_IDLE
+            if not na(hiLn) and not na(loLn)
+                line.set_x2(hiLn, bar_index)
+                line.set_x2(loLn, bar_index)
+                line.set_color(hiLn, C_MUTED)
+                line.set_color(loLn, C_MUTED)
+
+    int mIdx = -1
+    for r = 0 to patM.rows() - 1
+        bool skipExt = patM.get(r, 0) == 1 and not extInput
+        int plen = patM.get(r, 2)
+        if not skipExt and seq.size() >= plen
+            bool ok = true
+            for k = 0 to plen - 1
+                if seqGet(seq, k) != patM.get(r, 3 + k)
+                    ok := false
+                    break
+            if ok
+                mIdx := r
+                break
+
+    string mName = mIdx >= 0 ? patNames.get(mIdx) : ""
+    int    mDir  = mIdx >= 0 ? patM.get(mIdx, 1) : 0
+    if mIdx == -1 and extInput and clsNow == 3
+        if close > high[1]
+            mName := "3 RevStrat"
+            mDir  := 1
+        else if close < low[1]
+            mName := "3 RevStrat"
+            mDir  := -1
+
+    if mDir != 0
+        if fsmState == ST_PEND and not na(hiLn) and not na(loLn)
+            line.set_x2(hiLn, bar_index)
+            line.set_x2(loLn, bar_index)
+            line.set_color(hiLn, C_MUTED)
+            line.set_color(loLn, C_MUTED)
+        fsmState    := ST_PEND
+        pendHi      := high
+        pendLo      := low
+        setupDir    := mDir
+        pendName    := mName
+        pendPatIdx  := mIdx >= 0 ? mIdx : -1
+        barsPending := 0
+        if mDir > 0
+            setupBullSig := true
+        else
+            setupBearSig := true
+        if showSetupLblInput
+            float wr = mIdx >= 0 and patMemoryInput ? patWinRates.get(mIdx) * 100.0 : 50.0
+            string wrStr = patMemoryInput ? "\nWinRate: " + str.tostring(wr, "#.") + "%" : ""
+            label sl = label.new(bar_index, mDir > 0 ? low : high, mName + " " + clsName(clsNow) + wrStr,
+                 style = mDir > 0 ? label.style_label_up : label.style_label_down,
+                 color = color.new(mDir > 0 ? BULL : BEAR, 80), textcolor = C_TEXT, size = strSize(signalSizeInput),
+                 tooltip = "Bar: " + clsName(clsNow) + "\nTrigger: " + str.tostring(mDir > 0 ? high : low, format.mintick) + "\nStop: " + str.tostring(mDir > 0 ? low : high, format.mintick) + "\nExpiry: " + str.tostring(expiryInput) + " bars")
+            lblFifo.push(sl)
+        if showLinesInput
+            hiLn := line.new(bar_index, high, bar_index, high,
+                 color = mDir > 0 ? BULL : C_MUTED, width = mDir > 0 ? 2 : 1,
+                 style = mDir > 0 ? line.style_solid : line.style_dotted)
+            loLn := line.new(bar_index, low, bar_index, low,
+                 color = mDir < 0 ? BEAR : C_MUTED, width = mDir < 0 ? 2 : 1,
+                 style = mDir < 0 ? line.style_solid : line.style_dotted)
+            lnFifo.push(hiLn)
+            lnFifo.push(loLn)
+
+    while lblFifo.size() > maxDrawInput
+        label.delete(lblFifo.shift())
+    while lnFifo.size() > maxDrawInput * 2
+        line.delete(lnFifo.shift())
+
+if fsmState == ST_PEND and not na(hiLn) and not na(loLn)
+    line.set_x2(hiLn, bar_index)
+    line.set_x2(loLn, bar_index)
+
+// ══════════════════════════════════════════════════════════
+// 11. CONFIDENCE + PRECISION GATES
+// ══════════════════════════════════════════════════════════
+var int  lastSignalBar    = -1
+var bool lastCloseWasLoss = false
+
+getConfidence(int dir, int patIdx, bool isTrap) =>
+    float score = 0.0
+    bool mtfWithTrade = dir == 1 ? (mtfSlowBull and mtfFastBull) : (mtfSlowBear and mtfFastBear)
+    bool mtfSlowOk    = dir == 1 ? mtfSlowBull : mtfSlowBear
+    if mtfWithTrade
+        score += 18.0
+    else if mtfSlowOk
+        score += 8.0
+    if dir == 1 and trendBull
+        score += 14.0
+    else if dir == -1 and trendBear
+        score += 14.0
+    if ((dir == 1 and close > kamaTrend) or (dir == -1 and close < kamaTrend))
+        score += 3.0
+    if ((dir == 1 and htf4hBull) or (dir == -1 and htf4hBear))
+        score += 8.0
+    if strongTrend
+        score += 10.0
+    else if adxVal >= 20
+        score += 4.0
+    if ((dir == 1 and dmiBull) or (dir == -1 and dmiBear))
+        score += 6.0
+    if ((dir == 1 and rsiVal > rsiOsInput and rsiVal < rsiPullHi) or (dir == -1 and rsiVal < rsiObInput and rsiVal > rsiPullLo))
+        score += 10.0
+    else if ((dir == 1 and rsiVal > 50 and rsiVal < rsiObInput) or (dir == -1 and rsiVal < 50 and rsiVal > rsiOsInput))
+        score += 4.0
+    if hasVolume and volSma > 0 and volume > volSma * volMultInput and ((dir == 1 and obvRising) or (dir == -1 and obvFalling))
+        score += 10.0
+    else if hasVolume and volSma > 0 and volume > volSma
+        score += 4.0
+    int aligned = dir == 1 ? ftcAlignedBull : ftcAlignedBear
+    if ftcVisible > 0
+        score += math.min(12.0, (aligned / math.max(ftcVisible, 1)) * 12.0)
+    if useSmcInput
+        if ((dir == 1 and bullStruct) or (dir == -1 and bearStruct))
+            score += 10.0
+        if ((dir == 1 and inBullOB) or (dir == -1 and inBearOB))
+            score += 6.0
+        if ((dir == 1 and inFvgBull) or (dir == -1 and inFvgBear))
+            score += 4.0
+        if ((dir == 1 and sweepBull) or (dir == -1 and sweepBear))
+            score += 6.0
+    if useDivInput
+        if ((dir == 1 and bullDivHTF) or (dir == -1 and bearDivHTF))
+            score += 8.0
+    if patMemoryInput and patIdx >= 0 and patIdx < patWinRates.size()
+        float wr = patWinRates.get(patIdx)
+        if wr >= 0.7
+            score += 8.0
+        else if wr >= 0.55
+            score += 4.0
+        else if wr < 0.4
+            score -= 12.0
+    if isTrap and trapQualityOk
+        score += 6.0
+    math.max(0.0, math.min(100.0, score))
+
+confluenceCount(int dir, bool viaTrap) =>
+    int n = 0
+    bool mtfHit = dir == 1 ? (mtfSlowBull and mtfFastBull) : (mtfSlowBear and mtfFastBear)
+    bool trendHit = dir == 1 ? trendBull : trendBear
+    bool structHit = dir == 1 ? bullStruct : bearStruct
+    bool obHit = dir == 1 ? inBullOB : inBearOB
+    bool fvgHit = dir == 1 ? inFvgBull : inFvgBear
+    bool sweepHit = dir == 1 ? sweepBull : sweepBear
+    bool dmiHit = dir == 1 ? dmiBull : dmiBear
+    bool volHit = (dir == 1 and hasVolume and obvRising) or (dir == -1 and hasVolume and obvFalling)
+    if mtfHit
+        n += 1
+    if trendHit
+        n += 1
+    if structHit
+        n += 1
+    if obHit
+        n += 1
+    if fvgHit
+        n += 1
+    if sweepHit
+        n += 1
+    if strongTrend
+        n += 1
+    if volHit
+        n += 1
+    if dmiHit
+        n += 1
+    if viaTrap and trapQualityOk
+        n += 1
+    n
+
+evalGates(int dir, int patIdx, bool viaTrap) =>
+    float conf  = getConfidence(dir, patIdx, viaTrap)
+    int   confl = confluenceCount(dir, viaTrap)
+    int extraCd = lastCloseWasLoss ? int(math.round(cooldownBarsInput * lossCooldownMultInput)) : cooldownBarsInput
+    bool inCooldown = lastSignalBar >= 0 and (bar_index - lastSignalBar) < extraCd
+    bool mtfSlowOk = dir == 1 ? mtfSlowBull : mtfSlowBear
+    bool mtfFastOk = dir == 1 ? mtfFastBull : mtfFastBear
+    bool mtfDirOk = not useMtfBiasInput or (precisionModeInput and requireFastMtfInput ? (mtfSlowOk and mtfFastOk) : mtfSlowOk)
+    bool trendDirOk = not useTrendFilterInput or (dir == 1 ? trendBull : trendBear)
+    if not precisionModeInput and useTrendFilterInput
+        trendDirOk := dir == 1 ? (trendBull or close > ema50) : (trendBear or close < ema50)
+    bool smcDirOk = not useSmcInput or (dir == 1 ? (bullStruct or inBullOB) : (bearStruct or inBearOB))
+    if precisionModeInput and useSmcInput
+        smcDirOk := dir == 1 ? (bullStruct and (inBullOB or inFvgBull or sweepBull)) : (bearStruct and (inBearOB or inFvgBear or sweepBear))
+    bool locOk = not (precisionModeInput and requireLocationInput) or (dir == 1 ? (inBullOB or inFvgBull or sweepBull) : (inBearOB or inFvgBear or sweepBear))
+    bool htfBiasOk = not (precisionModeInput and requireHtfBiasInput) or (dir == 1 ? htf4hBull : htf4hBear)
+    bool rsiDirOk = not useRsiFilterInput or (dir == 1 ? rsiOkLong : rsiOkShort)
+    if precisionModeInput and rsiPullbackInput and useRsiFilterInput
+        rsiDirOk := dir == 1 ? (rsiVal > rsiOsInput and rsiVal < rsiPullHi) : (rsiVal < rsiObInput and rsiVal > rsiPullLo)
+    bool extOk = not (precisionModeInput and useExtFilterInput) or riskAtr <= 0 or (dir == 1 ? close < ema21 + riskAtr * maxExtAtrInput : close > ema21 - riskAtr * maxExtAtrInput)
+    bool chopOk = not (precisionModeInput and blockChopInput and choppyMarket)
+    bool trapOk = not viaTrap or not (precisionModeInput and useTrapQualityInput) or trapQualityOk
+    bool insideOk = not (precisionModeInput and skipInsideInput and insideNow)
+    bool dmiOk = not precisionModeInput or (dir == 1 ? dmiBull : dmiBear)
+    bool volOk = not useVolFilterInput or not hasVolume or (volSma > 0 and volume > volSma * volMultInput)
+    if precisionModeInput and useVolFilterInput and hasVolume
+        volOk := volOk and (dir == 1 ? obvRising : obvFalling)
+    int alignedN = dir == 1 ? ftcAlignedBull : ftcAlignedBear
+    bool ftcOk = minFtcInput == 0 or alignedN >= math.min(minFtcInput, ftcVisible)
+    bool adxOk = not useAdxFilterInput or strongTrend
+    bool sessOk = not useSessionInput or inSession
+    bool confOk = not useConfInput or conf >= minConfInput
+    bool conflOk = not precisionModeInput or confl >= minConflInput
+    bool patWrOk = true
+    if precisionModeInput and patMemoryInput and patIdx >= 0 and patIdx < patCounts.size()
+        int samples = patCounts.get(patIdx)
+        if samples >= 3
+            patWrOk := patWinRates.get(patIdx) >= minPatWrInput
+    string reason = "OK"
+    if not mtfDirOk
+        reason := "MTF against"
+    else if not trendDirOk
+        reason := "Trend stack"
+    else if not smcDirOk
+        reason := "SMC weak"
+    else if not locOk
+        reason := "No OB/FVG/Sweep"
+    else if not htfBiasOk
+        reason := "4H against"
+    else if not rsiDirOk
+        reason := "RSI zone"
+    else if not extOk
+        reason := "Extended"
+    else if not chopOk
+        reason := "Chop"
+    else if not trapOk
+        reason := "Trap quality"
+    else if not insideOk
+        reason := "Inside bar"
+    else if not dmiOk
+        reason := "DMI against"
+    else if not patWrOk
+        reason := "Pattern WR"
+    else if inCooldown and cooldownBarsInput > 0
+        reason := "Cooldown"
+    else if not volOk
+        reason := "Volume"
+    else if not ftcOk
+        reason := "FTC"
+    else if not adxOk
+        reason := "ADX"
+    else if not sessOk
+        reason := "Session"
+    else if not confOk
+        reason := "Conf:" + str.tostring(conf, "#.")
+    else if not conflOk
+        reason := "Confl " + str.tostring(confl) + "/" + str.tostring(minConflInput)
+    bool pass = reason == "OK"
+    [pass, reason, conf, confl]
+
+// ══════════════════════════════════════════════════════════
+// 12. TRADE ENGINE
+// ══════════════════════════════════════════════════════════
+var float activeEntry = na
+var float activeSL    = na
+var float activeTP1   = na
+var float activeTP2   = na
+var float activeTP3   = na
+var int   activeDir   = 0
+var int   entryBarIdx = na
+var bool  tp1Reached  = false
+var bool  tp2Reached  = false
+var bool  tp3Reached  = false
+var bool  beActive    = false
+var bool  partial1Done = false
+var bool  partial2Done = false
+
+var float trailHighest = na
+var float trailLowest  = na
+var float trailStopPx  = na
+
+var int    winCount  = 0
+var int    lossCount = 0
+var string formStr   = ""
+var array<int>  tradeTimes = array.new<int>()
+var array<bool> tradeWins  = array.new<bool>()
+
+float effectiveSL       = activeSL
+bool canCheckHit = enableTradesInput and activeDir != 0 and not na(entryBarIdx) and bar_index > entryBarIdx and barstate.isconfirmed
+
+bool slHitRaw  = canCheckHit and (activeDir == 1 ? low <= effectiveSL : high >= effectiveSL)
+bool tp1HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP1 : low <= activeTP1)
+bool tp2HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP2 : low <= activeTP2)
+bool tp3HitRaw = canCheckHit and (activeDir == 1 ? high >= activeTP3 : low <= activeTP3)
+
+bool tp1FirstTouch = tp1HitRaw and not tp1Reached
+bool tp2FirstTouch = tp2HitRaw and not tp2Reached
+bool tp3FirstTouch = tp3HitRaw and not tp3Reached
+
+if tp1FirstTouch
+    tp1Reached := true
+    if partialExitInput
+        partial1Done := true
+if tp2FirstTouch
+    tp2Reached := true
+    if partialExitInput
+        partial2Done := true
+if tp3FirstTouch
+    tp3Reached := true
+
+bool beJustActivated = false
+if beInput and tp1FirstTouch and not beActive and activeDir != 0
+    activeSL := activeEntry
+    beActive := true
+    beJustActivated := true
+
+bool closeBySl = slHitRaw and not tp1FirstTouch and not tp3FirstTouch
+bool tradeWin  = false
+
+if ((tp3HitRaw or closeBySl) and activeDir != 0)
+    tradeWin := tp1Reached
+    lastCloseWasLoss := not tradeWin
+    lastSignalBar := bar_index
+    if tradeWin
+        winCount += 1
+    else
+        lossCount += 1
+    array.push(tradeTimes, time)
+    array.push(tradeWins, tradeWin)
+    while array.size(tradeTimes) > 0 and array.get(tradeTimes, 0) < time - MS_DAY * STAT_DAYS
+        array.shift(tradeTimes)
+        array.shift(tradeWins)
+    formStr := formStr + (tradeWin ? "▰" : "▱")
+    if str.length(formStr) > FORM_LEN
+        formStr := str.substring(formStr, str.length(formStr) - FORM_LEN)
+    activeDir    := 0
+    activeEntry  := na
+    activeSL     := na
+    activeTP1    := na
+    activeTP2    := na
+    activeTP3    := na
+    entryBarIdx  := na
+    tp1Reached   := false
+    tp2Reached   := false
+    tp3Reached   := false
+    beActive     := false
+    partial1Done := false
+    partial2Done := false
+    trailHighest := na
+    trailLowest  := na
+    trailStopPx  := na
+
+if useTrailInput and activeDir != 0 and barstate.isconfirmed
+    if activeDir == 1
+        trailHighest := na(trailHighest) ? high : math.max(trailHighest, high)
+        float chandelier = trailHighest - riskAtr * trailAtrMultInput
+        float newTrail = na(trailStopPx) ? chandelier : math.max(trailStopPx, chandelier)
+        if na(trailStopPx)
+            trailStopPx := newTrail
+        else if newTrail > trailStopPx + riskAtr * trailStepInput
+            trailStopPx := newTrail
+        if not na(trailStopPx) and trailStopPx > activeSL
+            activeSL := trailStopPx
+    else
+        trailLowest := na(trailLowest) ? low : math.min(trailLowest, low)
+        float chandelier = trailLowest + riskAtr * trailAtrMultInput
+        float newTrail = na(trailStopPx) ? chandelier : math.min(trailStopPx, chandelier)
+        if na(trailStopPx)
+            trailStopPx := newTrail
+        else if newTrail < trailStopPx - riskAtr * trailStepInput
+            trailStopPx := newTrail
+        if not na(trailStopPx) and trailStopPx < activeSL
+            activeSL := trailStopPx
+
+// ══════════════════════════════════════════════════════════
+// 13. ENTRY PROCESSING
+// ══════════════════════════════════════════════════════════
+bool evLongEntry   = false
+bool evShortEntry  = false
+string entryPat    = ""
+int    entryPatIdx = -1
+float  entryConf   = 0.0
+int    entryConfl  = 0
+
+bool allowTrig = entryModeInput != "Trap Bar"
+bool allowTrap = entryModeInput != "STRAT Trigger"
+
+bool confirmLong  = false
+bool confirmShort = false
+if useConfirmInput and barstate.isconfirmed
+    if rawSignalDir != 0 and bar_index == rawSignalBar + 1
+        bool confirmOk = false
+        if confirmTypeInput == "Close vs Close"
+            confirmOk := rawSignalDir == 1 ? close > close[1] : close < close[1]
+        else if confirmTypeInput == "Close vs Open"
+            confirmOk := rawSignalDir == 1 ? close > open : close < open
+        else
+            confirmOk := rawSignalDir == 1 ? close > math.max(open[1], close[1]) : close < math.min(open[1], close[1])
+        if confirmOk
+            if rawSignalDir == 1
+                confirmLong := true
+            else
+                confirmShort := true
+        rawSignalDir := 0
+        rawSignalBar := na
+
+string diagReason = ""
+bool diagTriggered = false
+
+int   tDir       = 0
+float slAnchorPx = na
+bool  viaTrap    = false
+int   candPatIdx = -1
+
+if enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
+    if allowTrap and (trapLongRaw or trapShortRaw)
+        tDir       := trapLongRaw ? 1 : -1
+        entryPat   := trapLongRaw ? "Trap 2D" : "Trap 2U"
+        slAnchorPx := trapLongRaw ? low : high
+        viaTrap    := true
+        candPatIdx := -1
+    else if allowTrig and (trigBullSig or trigBearSig)
+        tDir         := trigBullSig ? 1 : -1
+        entryPat     := trigPat
+        slAnchorPx   := resolveSlAnchor(tDir, slAnchorInput, trigLvl, trigStp, tDir == 1 ? lastSwingLow : lastSwingHigh)
+        candPatIdx   := trigPatIdx
+
+int confirmDir = (enableTradesInput and (confirmLong or confirmShort) and activeDir == 0 and riskAtr > 0) ? (confirmLong ? 1 : -1) : 0
+int biasDir    = trendBull ? 1 : trendBear ? -1 : (close >= ema50 ? 1 : -1)
+[gPass, gReason, gConf, gConfl] = evalGates(tDir != 0 ? tDir : biasDir, candPatIdx, viaTrap)
+[cPass, cReason, cConf, cConfl] = evalGates(confirmDir != 0 ? confirmDir : biasDir, confirmDir != 0 ? rawSignalIdx : -1, confirmDir != 0 ? rawSignalTrap : false)
+
+if tDir != 0
+    entryConf := gConf
+    entryConfl := gConfl
+    if not gPass
+        diagReason := gReason
+        diagTriggered := true
+        tDir := 0
+
+if tDir != 0 and useConfirmInput
+    rawSignalDir    := tDir
+    rawSignalBar    := bar_index
+    rawSignalPat    := entryPat
+    rawSignalLvl    := trigLvl
+    rawSignalSl     := trigStp
+    rawSignalAnchor := slAnchorPx
+    rawSignalIdx    := candPatIdx
+    rawSignalTrap   := viaTrap
+    tDir := 0
+
+if tDir != 0 and enableTradesInput and barstate.isconfirmed and activeDir == 0 and riskAtr > 0
+    float slPx = na
+    if not viaTrap and slAnchorInput == "ATR"
+        slPx := tDir == 1 ? close - riskAtr * adaptSl : close + riskAtr * adaptSl
+    else
+        slPx := tDir == 1 ? math.min(slAnchorPx - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(slAnchorPx + riskAtr * slBufferInput, close + riskAtr * 0.5)
+    float riskPx = tDir == 1 ? close - slPx : slPx - close
+    bool riskOk = riskPx > 0 and (maxRiskAtrInput == 0.0 or riskPx <= riskAtr * maxRiskAtrInput)
+    if riskOk
+        activeEntry := close
+        activeSL    := slPx
+        activeTP1   := tDir == 1 ? close + riskPx * adaptT1 : close - riskPx * adaptT1
+        activeTP2   := tDir == 1 ? close + riskPx * adaptT2 : close - riskPx * adaptT2
+        activeTP3   := tDir == 1 ? close + riskPx * adaptT3 : close - riskPx * adaptT3
+        activeDir   := tDir
+        entryBarIdx := bar_index
+        lastSignalBar := bar_index
+        lastCloseWasLoss := false
+        tp1Reached  := false
+        tp2Reached  := false
+        tp3Reached  := false
+        beActive    := false
+        partial1Done:= false
+        partial2Done:= false
+        trailHighest:= na
+        trailLowest := na
+        trailStopPx := na
+        evLongEntry := tDir == 1
+        evShortEntry:= tDir == -1
+        entryPatIdx := candPatIdx
+    else
+        diagReason := "Risk"
+        diagTriggered := true
+
+if confirmDir != 0
+    entryPat := rawSignalPat
+    float confSlAnchor = resolveSlAnchor(confirmDir, slAnchorInput, rawSignalLvl, rawSignalSl, confirmDir == 1 ? lastSwingLow : lastSwingHigh)
+    if na(confSlAnchor)
+        confSlAnchor := rawSignalAnchor
+    entryConf := cConf
+    entryConfl := cConfl
+    int confGo = cPass ? confirmDir : 0
+    if not cPass
+        diagReason := cReason
+        diagTriggered := true
+    if confGo != 0
+        float slPxC = na
+        if slAnchorInput == "ATR"
+            slPxC := confGo == 1 ? close - riskAtr * adaptSl : close + riskAtr * adaptSl
+        else
+            slPxC := confGo == 1 ? math.min(confSlAnchor - riskAtr * slBufferInput, close - riskAtr * 0.5) : math.max(confSlAnchor + riskAtr * slBufferInput, close + riskAtr * 0.5)
+        float riskPxC = confGo == 1 ? close - slPxC : slPxC - close
+        bool riskOkC = riskPxC > 0 and (maxRiskAtrInput == 0.0 or riskPxC <= riskAtr * maxRiskAtrInput)
+        if riskOkC
+            activeEntry := close
+            activeSL    := slPxC
+            activeTP1   := confGo == 1 ? close + riskPxC * adaptT1 : close - riskPxC * adaptT1
+            activeTP2   := confGo == 1 ? close + riskPxC * adaptT2 : close - riskPxC * adaptT2
+            activeTP3   := confGo == 1 ? close + riskPxC * adaptT3 : close - riskPxC * adaptT3
+            activeDir   := confGo
+            entryBarIdx := bar_index
+            lastSignalBar := bar_index
+            lastCloseWasLoss := false
+            tp1Reached  := false
+            tp2Reached  := false
+            tp3Reached  := false
+            beActive    := false
+            partial1Done:= false
+            partial2Done:= false
+            trailHighest:= na
+            trailLowest := na
+            trailStopPx := na
+            evLongEntry := confGo == 1
+            evShortEntry:= confGo == -1
+            entryPatIdx := rawSignalIdx
+        else
+            diagReason := "Risk"
+            diagTriggered := true
+
+// ══════════════════════════════════════════════════════════
+// 14. VISUALIZATION
+// ══════════════════════════════════════════════════════════
+barcolor(clsColor(clsNow))
+plotshape(hammerNow,  "Hammer",  shape.triangleup,   location.belowbar, BULL, size = size.tiny)
+plotshape(shooterNow, "Shooter", shape.triangledown, location.abovebar, BEAR, size = size.tiny)
+plotshape(showSwingsInput and swingHigh, "Swing High", shape.triangledown, location.abovebar, BEAR, size = size.tiny)
+plotshape(showSwingsInput and swingLow,  "Swing Low",  shape.triangleup,   location.belowbar, BULL, size = size.tiny)
+
+var box obBullBox = na
+var box obBearBox = na
+if showObInput and strongUp and close[1] < open[1] and not na(obBullTop)
+    if not na(obBullBox)
+        box.delete(obBullBox)
+    obBullBox := box.new(nz(obBullBar, bar_index - 1), obBullTop, bar_index, obBullBot, bgcolor = OB_BULL, border_color = color.new(BULL, 50))
+if showObInput and strongDn and close[1] > open[1] and not na(obBearTop)
+    if not na(obBearBox)
+        box.delete(obBearBox)
+    obBearBox := box.new(nz(obBearBar, bar_index - 1), obBearTop, bar_index, obBearBot, bgcolor = OB_BEAR, border_color = color.new(BEAR, 50))
+if showObInput and barstate.islast
+    if not na(obBullBox)
+        box.set_right(obBullBox, bar_index)
+    if not na(obBearBox)
+        box.set_right(obBearBox, bar_index)
+
+var box fvgBullBox = na
+var box fvgBearBox = na
+if showFvgInput and fvgBull and not na(fvgBullTop)
+    if not na(fvgBullBox)
+        box.delete(fvgBullBox)
+    fvgBullBox := box.new(bar_index - 2, fvgBullTop, bar_index + 5, fvgBullBot, bgcolor = FVG_BULL, border_color = na)
+if showFvgInput and fvgBear and not na(fvgBearTop)
+    if not na(fvgBearBox)
+        box.delete(fvgBearBox)
+    fvgBearBox := box.new(bar_index - 2, fvgBearTop, bar_index + 5, fvgBearBot, bgcolor = FVG_BEAR, border_color = na)
+
+if evLongEntry
+    color longCol = entryConf >= 85 ? VIP_COL : entryConf >= 70 ? BULL : color.new(BULL, 30)
+    string longTxt = "LONG" + (showConfInput ? "\nConf: " + str.tostring(entryConf, "#.") + "%" : "")
+    lblFifo.push(label.new(bar_index, low, longTxt, style = label.style_label_up, color = longCol, textcolor = color.white, size = strSize(signalSizeInput), tooltip = entryPat + "  Conf " + str.tostring(entryConf, "#.") + "  Confl " + str.tostring(entryConfl)))
+if evShortEntry
+    color shortCol = entryConf >= 85 ? VIP_COL : entryConf >= 70 ? BEAR : color.new(BEAR, 30)
+    string shortTxt = "SHORT" + (showConfInput ? "\nConf: " + str.tostring(entryConf, "#.") + "%" : "")
+    lblFifo.push(label.new(bar_index, high, shortTxt, style = label.style_label_down, color = shortCol, textcolor = color.white, size = strSize(signalSizeInput), tooltip = entryPat + "  Conf " + str.tostring(entryConf, "#.") + "  Confl " + str.tostring(entryConfl)))
+
+var line entryLine = na
+var line slLine    = na
+var line tp1Line   = na
+var line tp2Line   = na
+var line tp3Line   = na
+var label slLbl    = na
+
+if activeDir != 0 and barstate.islast
+    int x1 = nz(entryBarIdx, bar_index)
+    if na(entryLine)
+        entryLine := line.new(x1, activeEntry, bar_index, activeEntry, color = ENT_COL, style = line.style_dotted, width = 2)
+        slLine    := line.new(x1, activeSL,    bar_index, activeSL,    color = beActive ? BE_COL : SL_COL, style = line.style_solid, width = 2)
+        tp1Line   := line.new(x1, activeTP1,   bar_index, activeTP1,   color = TP1_COL, style = lineStyle("Dashed"), width = 1)
+        tp2Line   := line.new(x1, activeTP2,   bar_index, activeTP2,   color = TP2_COL, style = lineStyle("Dashed"), width = 1)
+        tp3Line   := line.new(x1, activeTP3,   bar_index, activeTP3,   color = TP3_COL, style = lineStyle("Dashed"), width = 2)
+        slLbl     := label.new(bar_index, activeSL, "", style = label.style_label_left, color = beActive ? BE_COL : SL_COL, textcolor = color.white, size = size.tiny)
+    else
+        line.set_xy1(entryLine, x1, activeEntry)
+        line.set_xy2(entryLine, bar_index, activeEntry)
+        line.set_xy1(slLine,    x1, activeSL)
+        line.set_xy2(slLine,    bar_index, activeSL)
+        line.set_xy1(tp1Line,   x1, activeTP1)
+        line.set_xy2(tp1Line,   bar_index, activeTP1)
+        line.set_xy1(tp2Line,   x1, activeTP2)
+        line.set_xy2(tp2Line,   bar_index, activeTP2)
+        line.set_xy1(tp3Line,   x1, activeTP3)
+        line.set_xy2(tp3Line,   bar_index, activeTP3)
+        line.set_color(slLine, beActive ? BE_COL : SL_COL)
+        if partial1Done or tp1Reached
+            line.set_color(tp1Line, color.new(TP1_COL, 70))
+        if partial2Done or tp2Reached
+            line.set_color(tp2Line, color.new(TP2_COL, 70))
+        if tp3Reached
+            line.set_color(tp3Line, color.new(TP3_COL, 70))
+        if not na(slLbl)
+            label.set_xy(slLbl, bar_index, activeSL)
+            label.set_text(slLbl, (beActive ? "BE " : "SL ") + fmtP(activeSL) + fmtPct(activeSL, activeEntry))
+            label.set_color(slLbl, beActive ? BE_COL : SL_COL)
+else if activeDir == 0
+    if not na(entryLine)
+        line.delete(entryLine)
+        line.delete(slLine)
+        line.delete(tp1Line)
+        line.delete(tp2Line)
+        line.delete(tp3Line)
+        entryLine := na
+        slLine    := na
+        tp1Line   := na
+        tp2Line   := na
+        tp3Line   := na
+    if not na(slLbl)
+        label.delete(slLbl)
+        slLbl := na
+
+if diagTriggered and showConfInput
+    lblFifo.push(label.new(bar_index, close, diagReason, style = label.style_label_center, color = color.new(DIAG_COL, 80), textcolor = DIAG_COL, size = size.tiny, tooltip = "Signal blocked by filter"))
+
+// ══════════════════════════════════════════════════════════
+// 15. DASHBOARD
+// ══════════════════════════════════════════════════════════
+bool   qPass   = tDir != 0 ? gPass : (confirmDir != 0 ? cPass : gPass)
+string qReason = tDir != 0 ? gReason : (confirmDir != 0 ? cReason : gReason)
+float  qConf   = tDir != 0 ? gConf : (confirmDir != 0 ? cConf : gConf)
+int    qConfl  = tDir != 0 ? gConfl : (confirmDir != 0 ? cConfl : gConfl)
+
+var table dash = na
+if showDashInput and barstate.islast
+    string dashPos = dashPosInput == "Top Left" ? position.top_left : dashPosInput == "Bottom Left" ? position.bottom_left : dashPosInput == "Bottom Right" ? position.bottom_right : position.top_right
+    if na(dash)
+        dash := table.new(dashPos, 2, 12, bgcolor = PANEL_BG, frame_color = C_MUTED, frame_width = 1, border_color = color.new(C_TEXT, 90))
+
+    int totalTrades = winCount + lossCount
+    float winRate = totalTrades > 0 ? winCount / totalTrades * 100.0 : 0.0
+    string regimeStr = volRegime == 1 ? "LOW VOL" : volRegime == 3 ? "HIGH VOL" : "NORMAL"
+    string trendStr = trendBull ? "BULLISH" : trendBear ? "BEARISH" : "NEUTRAL"
+    float dashConf = activeDir != 0 ? entryConf : qConf
+    string confStrDash = str.tostring(dashConf, "#.") + "%"
+    string smcStr = (sweepBull ? "Sweep+ " : "") + (sweepBear ? "Sweep- " : "") + (inBullOB ? "OB+ " : "") + (inBearOB ? "OB- " : "") + (inFvgBull ? "FVG+ " : "") + (inFvgBear ? "FVG-" : "")
+    string ftcDash = str.tostring(math.max(ftcAlignedBull, ftcAlignedBear)) + "/" + str.tostring(ftcVisible)
+    if ftcInsideN > 0
+        ftcDash += " I" + str.tostring(ftcInsideN)
+    if ftcOutsideN > 0
+        ftcDash += " O" + str.tostring(ftcOutsideN)
+    string qualityStr = activeDir != 0 ? "IN TRADE" : rawSignalDir != 0 ? "WAIT CONFIRM" : qPass ? "READY" : qReason
+    int dashConfl = activeDir != 0 ? entryConfl : qConfl
+
+    table.cell(dash, 0, 0, "STRAT ULTRA v3.1", text_color = C_TEXT, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 0, ftcDash, text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 1, "Trend:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 1, trendStr, text_color = trendBull ? BULL : trendBear ? BEAR : C_TEXT, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 2, "Vol Regime:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 2, regimeStr, text_color = volRegime == 3 ? BEAR : volRegime == 1 ? BULL : C_TEXT, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 3, "ADX:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 3, str.tostring(adxVal, "#.") + (strongTrend ? " ✓" : " ✗"), text_color = strongTrend ? BULL : C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 4, "RSI:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 4, str.tostring(rsiVal, "#.") + " D:" + str.tostring(rsiD, "#."), text_color = rsiVal > 70 ? BEAR : rsiVal < 30 ? BULL : C_TEXT, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 5, "Win Rate:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 5, str.tostring(winRate, "#.##") + "% (" + str.tostring(totalTrades) + ")", text_color = winRate >= 60 ? BULL : winRate >= 40 ? C_TEXT : BEAR, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 6, "Last 15:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 6, formStr, text_color = C_TEXT, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 7, "Active:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 7, activeDir == 1 ? "LONG @ " + fmtP(activeEntry) : activeDir == -1 ? "SHORT @ " + fmtP(activeEntry) : "FLAT", text_color = activeDir == 1 ? BULL : activeDir == -1 ? BEAR : C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 8, "Confidence:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 8, confStrDash, text_color = dashConf >= 85 ? VIP_COL : dashConf >= 78 ? BULL : C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 9, "SMC:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 9, smcStr, text_color = C_TEXT, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 10, "Confluence:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 10, str.tostring(dashConfl) + "/" + str.tostring(minConflInput), text_color = dashConfl >= minConflInput ? BULL : C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 0, 11, "Quality:", text_color = C_MUTED, text_size = strSize(dashSizeInput))
+    table.cell(dash, 1, 11, qualityStr, text_color = qualityStr == "READY" ? BULL : (qualityStr == "IN TRADE" or qualityStr == "WAIT CONFIRM" ? VIP_COL : DIAG_COL), text_size = strSize(dashSizeInput))
+else if not showDashInput and not na(dash)
+    table.delete(dash)
+    dash := na
+
+// ══════════════════════════════════════════════════════════
+// 16. ALERTS
+// ══════════════════════════════════════════════════════════
+if enableAlertsInput
+    if evLongEntry or evShortEntry
+        string action = evLongEntry ? "LONG" : "SHORT"
+        string msg = ""
+        if alertFmtInput == "JSON"
+            msg := '{"ind":"' + JSON_IND + '","v":"' + VERSION + '","sym":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","action":"' + action + '","pat":"' + entryPat + '","conf":' + str.tostring(entryConf) + ',"confl":' + str.tostring(entryConfl) + ',"price":' + str.tostring(close) + '}'
+        else
+            msg := "STRAT ULTRA " + action + " " + entryPat + " " + syminfo.ticker + " @ " + str.tostring(close, format.mintick) + " | Conf: " + str.tostring(entryConf, "#.") + "% | Confl: " + str.tostring(entryConfl)
+        alert(msg, alert.freq_once_per_bar)
+
+    if beJustActivated
+        string msgBe = ""
+        if alertFmtInput == "JSON"
+            msgBe := '{"ind":"' + JSON_IND + '","action":"BE","sym":"' + syminfo.ticker + '","price":' + str.tostring(close) + '}'
+        else
+            msgBe := "STRAT ULTRA BREAK-EVEN " + syminfo.ticker + " @ " + str.tostring(close, format.mintick)
+        alert(msgBe, alert.freq_once_per_bar)
+
+    if closeBySl
+        string msgSl = ""
+        if alertFmtInput == "JSON"
+            msgSl := '{"ind":"' + JSON_IND + '","action":"SL","sym":"' + syminfo.ticker + '","price":' + str.tostring(close) + ',"win":false}'
+        else
+            msgSl := "STRAT ULTRA STOP LOSS " + syminfo.ticker + " @ " + str.tostring(close, format.mintick)
+        alert(msgSl, alert.freq_once_per_bar)
+
+alertcondition(evLongEntry, "ULTRA Long", "STRAT ULTRA Long entry")
+alertcondition(evShortEntry, "ULTRA Short", "STRAT ULTRA Short entry")
+alertcondition(setupBullSig, "ULTRA Setup Long", "STRAT setup long")
+alertcondition(setupBearSig, "ULTRA Setup Short", "STRAT setup short")
+
+// ══════════════════════════════════════════════════════════
+// 17. WATERMARK
+// ══════════════════════════════════════════════════════════
+var label wm = na
+if showWatermarkInput and barstate.islast
+    if na(wm)
+        wm := label.new(bar_index, high, "STRAT ULTRA PRO v3.1\nPrecision + Smart Money + AI", style = label.style_label_center, color = color.new(C_TEXT, 100), textcolor = color.new(C_TEXT, 60), size = size.large, yloc = yloc.abovebar)
+    label.set_x(wm, bar_index)
+    label.set_y(wm, high)
+else if not showWatermarkInput and not na(wm)
+    label.delete(wm)
+    wm := na
