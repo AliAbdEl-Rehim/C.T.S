@@ -1,0 +1,1363 @@
+//@version=6
+indicator("🔥 Buy/Sell + Divergências Pro • v6 + EGX Boost • PREDICTIVE A++", overlay=true, max_labels_count=500, max_lines_count=200)
+
+//====================================================================================
+// 📋 1. مدخلات مؤشر الانحرافات
+//====================================================================================
+
+groupMode    = "🎛️ Modo de Detecção"
+modeTop      = input.bool(true,  "Analisar TOPO (bearish)", group=groupMode)
+modeBottom   = input.bool(true,  "Analisar FUNDO (bullish)", group=groupMode)
+
+groupTrend   = "🔄 فلتر الاتجاه الرئيسي (TREND FILTER)"
+useTrendFilter = input.bool(true, "تفعيل فلتر الاتجاه (يمنع الإشارات المعاكسة)", group=groupTrend)
+trendLength    = input.int(50, "فترة الاتجاه الرئيسي", minval=20, maxval=200, group=groupTrend)
+trendThreshold = input.float(0.6, "قوة الاتجاه المطلوبة (0-1)", minval=0.3, maxval=0.9, step=0.05, group=groupTrend)
+
+groupPivot   = "📍 Detecção Rápida (Sem Atraso)"
+L            = input.int(3, "Left bars (lookback)", minval=1, group=groupPivot)
+
+groupRSI     = "📊 RSI"
+rsiLen       = input.int(14, "Período RSI", minval=2, group=groupRSI)
+
+groupStoch   = "📊 Stochastic (Filtro Adicional)"
+useStoch     = input.bool(true, "Usar Stochastic para confirmar", group=groupStoch)
+stochLen     = input.int(14, "Stochastic Length", minval=5, group=groupStoch)
+stochOverbought = input.int(80, "Stoch Overbought", minval=70, maxval=90, group=groupStoch)
+stochOversold   = input.int(20, "Stoch Oversold", minval=10, maxval=30, group=groupStoch)
+
+groupConfirm = "⏱️ Confirmação Temporal"
+confirmBars  = input.int(5, "Janela máx. entre pivots (barras)", minval=1, group=groupConfirm)
+needBoth     = input.bool(true, "Exigir RSI E OBV dentro da janela", group=groupConfirm)
+
+groupVol     = "📈 Volume Financeiro"
+useFinVol    = input.bool(true, "Usar Volume Financeiro para validação", group=groupVol)
+minVolumeRatio = input.float(1.2, "Volume mínimo (média móvel x)", minval=0.8, maxval=2.0, step=0.1, group=groupVol)
+
+groupScore   = "🎯 Sistema de Score Estatístico"
+highProbCutoff = input.float(0.70, "Corte Alta Probabilidade", minval=0.60, maxval=0.85, step=0.01, group=groupScore)
+medProbCutoff  = input.float(0.50, "Corte Média Probabilidade", minval=0.35, maxval=0.65, step=0.01, group=groupScore)
+useVolatilityFilter = input.bool(true, "Filtrar por Volatilidade (ATR)", group=groupScore)
+
+groupStyle   = "🎨 Exibição Divergências"
+showTableDiv = input.bool(true, "Mostrar painel de estados (divergências)", group=groupStyle)
+showLines    = input.bool(true, "Desenhar retas do PREÇO", group=groupStyle)
+showLabels   = input.bool(true, "Marcar divergências", group=groupStyle)
+showTierFilter = input.string("Todos", "فلتر درجة الإشارة", options=["Todos", "A+ e A++ apenas", "A++ apenas"], group=groupStyle)
+
+//====================================================================================
+// ⭐ EGX Filters
+//====================================================================================
+
+groupBurst = "🚀 فلتر الزخم المفاجئ (EGX Burst)"
+useBurstFilter = input.bool(true, "تفعيل فلتر الزخم المفاجئ", group=groupBurst)
+burstLookback = input.int(5, "فترة مقارنة الزخم", minval=3, maxval=20, group=groupBurst)
+burstThreshold = input.float(2.5, "عتبة الزخم (x المتوسط)", minval=1.5, maxval=5.0, step=0.1, group=groupBurst)
+volumeBurstMult = input.float(2.0, "ضعف متوسط الحجم", minval=1.0, maxval=5.0, step=0.1, group=groupBurst)
+
+groupLimit = "📈 فلتر الحد الأقصى (EGX Limit Up)"
+useLimitFilter = input.bool(true, "تفعيل فلتر الحد الأقصى", group=groupLimit)
+limitProximity = input.float(0.7, "نسبة القرب من الحد (0-1)", minval=0.5, maxval=0.95, step=0.05, group=groupLimit)
+
+groupAccum = "🧠 تراكم ذكي (Smart Accumulation)"
+useAccum = input.bool(true, "تفعيل مؤشر التراكم", group=groupAccum)
+accumPeriod = input.int(10, "فترة التراكم", minval=5, maxval=30, group=groupAccum)
+accumThreshold = input.float(1.5, "عتبة نسبة التراكم", minval=1.0, maxval=3.0, step=0.1, group=groupAccum)
+
+groupEGXWeight = "⚖️ أوزان EGX في Score"
+egxBurstWeight = input.float(1.5, "وزن Burst Filter", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
+egxLimitWeight = input.float(1.3, "وزن Limit Filter", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
+egxAccumWeight = input.float(1.2, "وزن Accumulation", minval=0.5, maxval=3.0, step=0.1, group=groupEGXWeight)
+
+//====================================================================================
+// 🔮 BUY A++ التنبؤي — قبل الانفجار السعري
+// الإشارة القديمة كانت تنتظر شمعة Burst (جسم 2.5x + حجم 2x) و/أو قرب الحد 10%
+// لذلك كانت تظهر بعد انطلاق السعر. هنا A++ تُبنَى على الانحراف + التراكم + بناء الحجم.
+//====================================================================================
+
+groupPredApp = "🔮 BUY A++ قبل الانفجار (Predictive)"
+usePredictiveAPlusPlus = input.bool(true, "تفعيل A++ التنبؤي (دخول قبل الانفجار)", group=groupPredApp)
+predictiveAppCutoff = input.float(0.75, "حد Score لـ BUY A++ المبكر", minval=0.60, maxval=0.90, step=0.01, group=groupPredApp)
+predictiveAccumMin = input.float(1.15, "حد أدنى للتراكم (أضعف من عتبة Burst)", minval=0.80, maxval=2.50, step=0.05, group=groupPredApp)
+preBurstVolMin = input.float(1.05, "حد بناء الحجم (x المتوسط)", minval=0.80, maxval=2.00, step=0.05, group=groupPredApp)
+preBurstMinVotes = input.int(3, "عدد شروط ما قبل الانفجار المطلوبة", minval=2, maxval=6, group=groupPredApp)
+blockAppOnBurst = input.bool(true, "منع BUY A++ على شمعة الانفجار (متأخر)", group=groupPredApp)
+blockAppOnLimit = input.bool(true, "منع BUY A++ قرب الحد الأقصى (متأخر)", group=groupPredApp)
+requireAccumForApp = input.bool(true, "اشتراط تراكم ذكي لـ BUY A++", group=groupPredApp)
+appCooldown = input.int(5, "فاصل أدنى بين إشارات BUY A++ (شموع)", minval=1, maxval=30, group=groupPredApp)
+
+//====================================================================================
+// 📋 2. Predictor
+//====================================================================================
+
+grp_st = '🏷️ Hybrid Supertrend Settings'
+atrP1 = input.int(1, "Fast ATR", group=grp_st)
+fac1  = input.float(1.0, "Fast Factor", step=0.1, group=grp_st)
+atrP2 = input.int(2, "Med ATR", group=grp_st)
+fac2  = input.float(2.0, "Med Factor", step=0.1, group=grp_st)
+atrP3 = input.int(3, "Slow ATR", group=grp_st)
+fac3  = input.float(3.0, "Slow Factor", step=0.1, group=grp_st)
+
+grp_td = "📈 Trend & Scalp Settings"
+h_len   = input.int(50, "HMA Length", group=grp_td)
+ema_len = input.int(20, "Scalp EMA Length", group=grp_td)
+
+grp_pred = "🧠 Advanced Predictor Settings"
+min_signals_required = input.int(2, "Min Signals Required", minval=1, maxval=5, step=1, group=grp_pred)
+min_confidence       = input.float(70.0, "Min Confidence %", minval=50, maxval=90, step=1, group=grp_pred)
+tp1_percent          = input.float(1.0, "TP1 %", minval=0.5, maxval=5.0, step=0.1, group=grp_pred)
+tp2_percent          = input.float(2.0, "TP2 %", minval=1.0, maxval=8.0, step=0.1, group=grp_pred)
+tp3_percent          = input.float(3.5, "TP3 %", minval=2.0, maxval=12.0, step=0.1, group=grp_pred)
+stop_loss_percent    = input.float(1.5, "Stop Loss %", minval=0.5, maxval=5.0, step=0.1, group=grp_pred)
+show_pred_table      = input.bool(true, "Show Prediction Table", group=grp_pred)
+
+showTables = input.bool(true, "📊 إظهار جميع الجداول", group="عرض الجداول")
+
+//====================================================================================
+// 📋 3. Helper Functions
+//====================================================================================
+
+logit(p) =>
+    float denom = 1.0 - p + 0.0001
+    math.log(p / denom)
+
+clamp(v, lo, hi) =>
+    math.max(lo, math.min(hi, v))
+
+absI(x) =>
+    x >= 0 ? x : -x
+
+f_state(float cur, float prev) =>
+    na(cur) or na(prev) ? 0 : cur > prev ? 1 : cur < prev ? -1 : 0
+
+f_seg(float y1, int x1, float y2, int x2) =>
+    int a = x1
+    int b = x2
+    float ya = y1
+    float yb = y2
+    float slope = a != b ? (ya - yb) / (a - b) : na
+    bool inRange = bar_index >= b and bar_index <= a
+    inRange and not na(slope) ? (yb + slope * (bar_index - b)) : na
+
+f_stateTxt(int s) =>
+    s == 1 ? "HH/HL" : s == -1 ? "LH/LL" : "EQ"
+
+//====================================================================================
+// ⭐ EGX Functions
+//====================================================================================
+
+f_burstFilter() =>
+    realBody = math.abs(close - open)
+    avgBody = ta.sma(realBody, burstLookback)
+    bodyRatio = realBody / (avgBody > 0 ? avgBody : syminfo.mintick)
+    volumeRatio = volume / ta.sma(volume, 20)
+
+    isStrongBullish = close > open and bodyRatio >= burstThreshold and volumeRatio >= volumeBurstMult
+    isStrongBearish = close < open and bodyRatio >= burstThreshold and volumeRatio >= volumeBurstMult
+
+    [isStrongBullish, isStrongBearish, bodyRatio, volumeRatio]
+
+f_limitFilter() =>
+    prevClose = close[1]
+    limitUpPrice = prevClose * 1.10
+    limitDownPrice = prevClose * 0.90
+
+    upProgress = (close - prevClose) / (limitUpPrice - prevClose + 0.0001)
+    downProgress = (prevClose - close) / (prevClose - limitDownPrice + 0.0001)
+
+    nearLimitUp = upProgress >= limitProximity
+    nearLimitDown = downProgress >= limitProximity
+
+    [nearLimitUp, nearLimitDown, upProgress, downProgress]
+
+f_smartAccumulation() =>
+    buyingPressure = (close - low) / (high - low + 0.0001)
+    sellingPressure = (high - close) / (high - low + 0.0001)
+
+    accumulationIndex = ta.ema(buyingPressure * volume, accumPeriod)
+    distributionIndex = ta.ema(sellingPressure * volume, accumPeriod)
+
+    accumRatio = accumulationIndex / (distributionIndex + 0.0001)
+    isAccumulating = accumRatio >= accumThreshold
+
+    [isAccumulating, accumRatio]
+
+//====================================================================================
+// 📋 4. Indicators
+//====================================================================================
+
+const int BIG = 10000000
+
+atr_div = ta.atr(14)
+atrSmooth = ta.ema(atr_div, 20)
+volatilityRegime = atr_div / atrSmooth
+isVolatile = volatilityRegime > 1.2
+isCalm = volatilityRegime < 0.8
+
+rsi_div = ta.rsi(close, rsiLen)
+
+var float obv = 0.0
+float delta = close > close[1] ? volume : close < close[1] ? -volume : 0
+obv := nz(obv[1], 0) + delta
+obv_smooth = ta.ema(obv, 5)
+
+stochK = ta.sma(ta.stoch(close, high, low, stochLen), 3)
+stochD = ta.sma(stochK, 3)
+
+float finVol = close * volume
+finVolMA = ta.sma(finVol, 20)
+volumeStrong = finVol > finVolMA * minVolumeRatio
+
+[isStrongBullish, isStrongBearish, bodyRatio, volumeRatio] = f_burstFilter()
+[nearLimitUp, nearLimitDown, upProgress, downProgress] = f_limitFilter()
+[isAccumulating, accumRatio] = f_smartAccumulation()
+
+//====================================================================================
+// 🔮 Pre-Burst: ملف الانفجار قبل أن يحدث
+// حجم يبنى، مشترين يسيطرون على الشمعة، ضغط تراكمي، تقلب منضغط — بدون شمعة Burst.
+//====================================================================================
+
+volSma20 = ta.sma(volume, 20)
+volSma5 = ta.sma(volume, 5)
+volumeBuilding = volSma20 > 0 and volume >= volSma20 * preBurstVolMin and volSma5 >= volSma20 * 0.95
+volumeNotExploded = volSma20 > 0 ? volume < volSma20 * volumeBurstMult : true
+
+rngBar = high - low
+closeStrength = rngBar > 0 ? (close - low) / rngBar : 0.0
+buyersInControl = closeStrength >= 0.55 and close >= open
+rsiTurningUp = rsi_div > rsi_div[1]
+rsiNotOverbought = rsi_div < 70
+stochTurningUp = stochK > stochK[1] and stochK <= 55
+earlyBullBody = close >= open and bodyRatio >= 0.80 and bodyRatio < burstThreshold
+compressedCoil = isCalm or volatilityRegime < 1.05
+accumBuilding = accumRatio >= predictiveAccumMin
+notLateForEntry = not isStrongBullish and not nearLimitUp
+
+int preBurstVotes =
+     (volumeBuilding ? 1 : 0) +
+     (buyersInControl ? 1 : 0) +
+     (rsiTurningUp and rsiNotOverbought ? 1 : 0) +
+     (stochTurningUp or (useStoch and stochK <= stochOversold + 15) ? 1 : 0) +
+     (earlyBullBody or compressedCoil ? 1 : 0) +
+     (accumBuilding ? 1 : 0)
+
+isPreBurstBuy = notLateForEntry and volumeNotExploded and preBurstVotes >= preBurstMinVotes
+
+//====================================================================================
+// Trend Filter
+//====================================================================================
+
+calcADX(len) =>
+    float up = ta.change(high)
+    float down = -ta.change(low)
+    float plusDM = na(up) ? na : (up > down and up > 0 ? up : 0)
+    float minusDM = na(down) ? na : (down > up and down > 0 ? down : 0)
+    float tr = ta.tr(true)
+    float plusDI = 100 * ta.rma(plusDM, len) / ta.rma(tr, len)
+    float minusDI = 100 * ta.rma(minusDM, len) / ta.rma(tr, len)
+    float adx = 100 * ta.rma(math.abs(plusDI - minusDI) / (plusDI + minusDI), len)
+    [plusDI, minusDI, adx]
+
+[diPlus, diMinus, adxValue] = calcADX(14)
+
+adxStrength = adxValue > 25 ? 0.7 : adxValue > 20 ? 0.5 : 0.3
+adxDirection = diPlus > diMinus ? 1 : -1
+
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+
+maTrend = (ema20 > ema50 ? 1 : -1) + (ema20 > ema100 ? 1 : -1) + (ema50 > ema100 ? 1 : -1)
+maTrendStrength = maTrend / 3
+
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+macdTrend = macdLine > signalLine ? 1 : -1
+macdHistogramStrength = math.abs(macdLine - signalLine) / ta.atr(14) * 10
+macdStrength = math.min(0.8, macdHistogramStrength)
+
+bbMiddle = ta.sma(close, 20)
+bbUpper = bbMiddle + ta.stdev(close, 20) * 2
+bbLower = bbMiddle - ta.stdev(close, 20) * 2
+bbPosition = (close - bbLower) / (bbUpper - bbLower)
+bbTrend = bbPosition > 0.7 ? 1 : bbPosition < 0.3 ? -1 : 0
+
+var float trendStrengthValue = 0.0
+var int overallTrend = 0
+
+if useTrendFilter
+    float uptrendVotes = 0.0
+    float downtrendVotes = 0.0
+
+    if maTrendStrength > 0.2
+        uptrendVotes := uptrendVotes + math.abs(maTrendStrength)
+    else if maTrendStrength < -0.2
+        downtrendVotes := downtrendVotes + math.abs(maTrendStrength)
+
+    if adxDirection == 1 and adxStrength > 0.4
+        uptrendVotes := uptrendVotes + adxStrength
+    else if adxDirection == -1 and adxStrength > 0.4
+        downtrendVotes := downtrendVotes + adxStrength
+
+    if macdTrend == 1 and macdStrength > 0.3
+        uptrendVotes := uptrendVotes + macdStrength
+    else if macdTrend == -1 and macdStrength > 0.3
+        downtrendVotes := downtrendVotes + macdStrength
+
+    if bbTrend == 1
+        uptrendVotes := uptrendVotes + 0.5
+    else if bbTrend == -1
+        downtrendVotes := downtrendVotes + 0.5
+
+    float totalVotes = uptrendVotes + downtrendVotes
+
+    if totalVotes > 0
+        if uptrendVotes > downtrendVotes
+            overallTrend := 1
+            trendStrengthValue := uptrendVotes / totalVotes
+        else if downtrendVotes > uptrendVotes
+            overallTrend := -1
+            trendStrengthValue := downtrendVotes / totalVotes
+        else
+            overallTrend := 0
+            trendStrengthValue := 0.5
+    else
+        overallTrend := 0
+        trendStrengthValue := 0.5
+
+    trendStrengthValue := ta.ema(trendStrengthValue, 5)
+else
+    overallTrend := 0
+    trendStrengthValue := 0.5
+
+isStrongUptrend = overallTrend == 1 and trendStrengthValue >= trendThreshold
+isStrongDowntrend = overallTrend == -1 and trendStrengthValue >= trendThreshold
+isSideways = overallTrend == 0 or trendStrengthValue < trendThreshold
+
+allowBuySignals = not useTrendFilter or not isStrongDowntrend
+allowSellSignals = not useTrendFilter or not isStrongUptrend
+
+isUptrend = ema20 > ema50
+isDowntrend = ema20 < ema50
+
+//====================================================================================
+// 📍 Pivot Detection
+//====================================================================================
+
+isPeakPrice = high == ta.highest(high, L)
+isPeakRSI = rsi_div == ta.highest(rsi_div, L)
+isPeakOBV = obv_smooth == ta.highest(obv_smooth, L)
+isPeakVol = finVol == ta.highest(finVol, L)
+isPeakStoch = stochK == ta.highest(stochK, L)
+
+isTroughPrice = low == ta.lowest(low, L)
+isTroughRSI = rsi_div == ta.lowest(rsi_div, L)
+isTroughOBV = obv_smooth == ta.lowest(obv_smooth, L)
+isTroughVol = finVol == ta.lowest(finVol, L)
+isTroughStoch = stochK == ta.lowest(stochK, L)
+
+//====================================================================================
+// Pivot Storage
+//====================================================================================
+
+var float priceHigh1 = na
+var float priceHigh2 = na
+var int priceHBar1 = na
+var int priceHBar2 = na
+
+var float rsiHigh1 = na
+var float rsiHigh2 = na
+var int rsiHBar1 = na
+var int rsiHBar2 = na
+
+var float obvHigh1 = na
+var float obvHigh2 = na
+var int obvHBar1 = na
+var int obvHBar2 = na
+
+var float finVolHigh1 = na
+var float finVolHigh2 = na
+var int finVolHBar1 = na
+var int finVolHBar2 = na
+
+var float stochHigh1 = na
+var float stochHigh2 = na
+var int stochHBar1 = na
+var int stochHBar2 = na
+
+var float priceLow1 = na
+var float priceLow2 = na
+var int priceLBar1 = na
+var int priceLBar2 = na
+
+var float rsiLow1 = na
+var float rsiLow2 = na
+var int rsiLBar1 = na
+var int rsiLBar2 = na
+
+var float obvLow1 = na
+var float obvLow2 = na
+var int obvLBar1 = na
+var int obvLBar2 = na
+
+var float finVolLow1 = na
+var float finVolLow2 = na
+var int finVolLBar1 = na
+var int finVolLBar2 = na
+
+var float stochLow1 = na
+var float stochLow2 = na
+var int stochLBar1 = na
+var int stochLBar2 = na
+
+//====================================================================================
+// Update Highs
+//====================================================================================
+
+if isPeakPrice
+    priceHigh2 := priceHigh1
+    priceHBar2 := priceHBar1
+    priceHigh1 := high
+    priceHBar1 := bar_index
+
+if isPeakRSI
+    rsiHigh2 := rsiHigh1
+    rsiHBar2 := rsiHBar1
+    rsiHigh1 := rsi_div
+    rsiHBar1 := bar_index
+
+if isPeakOBV
+    obvHigh2 := obvHigh1
+    obvHBar2 := obvHBar1
+    obvHigh1 := obv_smooth
+    obvHBar1 := bar_index
+
+if isPeakVol
+    finVolHigh2 := finVolHigh1
+    finVolHBar2 := finVolHBar1
+    finVolHigh1 := finVol
+    finVolHBar1 := bar_index
+
+if isPeakStoch
+    stochHigh2 := stochHigh1
+    stochHBar2 := stochHBar1
+    stochHigh1 := stochK
+    stochHBar1 := bar_index
+
+//====================================================================================
+// Update Lows
+//====================================================================================
+
+if isTroughPrice
+    priceLow2 := priceLow1
+    priceLBar2 := priceLBar1
+    priceLow1 := low
+    priceLBar1 := bar_index
+
+if isTroughRSI
+    rsiLow2 := rsiLow1
+    rsiLBar2 := rsiLBar1
+    rsiLow1 := rsi_div
+    rsiLBar1 := bar_index
+
+if isTroughOBV
+    obvLow2 := obvLow1
+    obvLBar2 := obvLBar1
+    obvLow1 := obv_smooth
+    obvLBar1 := bar_index
+
+if isTroughVol
+    finVolLow2 := finVolLow1
+    finVolLBar2 := finVolLBar1
+    finVolLow1 := finVol
+    finVolLBar1 := bar_index
+
+if isTroughStoch
+    stochLow2 := stochLow1
+    stochLBar2 := stochLBar1
+    stochLow1 := stochK
+    stochLBar1 := bar_index
+
+//====================================================================================
+// States
+//====================================================================================
+
+statePriceTop = f_state(priceHigh1, priceHigh2)
+stateRSITop = f_state(rsiHigh1, rsiHigh2)
+stateOBVTop = f_state(obvHigh1, obvHigh2)
+stateVolTop = f_state(finVolHigh1, finVolHigh2)
+stateStochTop = f_state(stochHigh1, stochHigh2)
+
+distTopRSI = not na(priceHBar1) and not na(rsiHBar1) ? absI(priceHBar1 - rsiHBar1) : BIG
+distTopOBV = not na(priceHBar1) and not na(obvHBar1) ? absI(priceHBar1 - obvHBar1) : BIG
+distTopVol = not na(priceHBar1) and not na(finVolHBar1) ? absI(priceHBar1 - finVolHBar1) : BIG
+distTopStoch = not na(priceHBar1) and not na(stochHBar1) ? absI(priceHBar1 - stochHBar1) : BIG
+
+timeTopRSI = distTopRSI <= confirmBars
+timeTopOBV = distTopOBV <= confirmBars
+timeTopVol = distTopVol <= confirmBars
+timeTopStoch = distTopStoch <= confirmBars
+
+statePriceLow = f_state(priceLow1, priceLow2)
+stateRSILow = f_state(rsiLow1, rsiLow2)
+stateOBVLow = f_state(obvLow1, obvLow2)
+stateVolLow = f_state(finVolLow1, finVolLow2)
+stateStochLow = f_state(stochLow1, stochLow2)
+
+distLowRSI = not na(priceLBar1) and not na(rsiLBar1) ? absI(priceLBar1 - rsiLBar1) : BIG
+distLowOBV = not na(priceLBar1) and not na(obvLBar1) ? absI(priceLBar1 - obvLBar1) : BIG
+distLowVol = not na(priceLBar1) and not na(finVolLBar1) ? absI(priceLBar1 - finVolLBar1) : BIG
+distLowStoch = not na(priceLBar1) and not na(stochLBar1) ? absI(priceLBar1 - stochLBar1) : BIG
+
+timeLowRSI = distLowRSI <= confirmBars
+timeLowOBV = distLowOBV <= confirmBars
+timeLowVol = distLowVol <= confirmBars
+timeLowStoch = distLowStoch <= confirmBars
+
+bullishDivergence = statePriceLow == -1 and (needBoth ? (stateRSILow >= 0 and stateOBVLow >= 0) : (stateRSILow >= 0 or stateOBVLow >= 0))
+
+//====================================================================================
+// ⭐ Scores
+//====================================================================================
+
+getTierEGX(score, isBearish) =>
+    highScore = score >= highProbCutoff
+    medScore = score >= medProbCutoff
+
+    hasMultipleConf = isBearish ? (timeTopRSI and timeTopOBV) : (timeLowRSI and timeLowOBV)
+    hasStochConf = useStoch ? (isBearish ? timeTopStoch : timeLowStoch) : false
+    hasVolConf = useFinVol ? (isBearish ? timeTopVol : timeLowVol) : false
+
+    hasBurst = useBurstFilter ? (isBearish ? isStrongBearish : isStrongBullish) : false
+    hasLimit = useLimitFilter ? (isBearish ? nearLimitDown : nearLimitUp) : false
+    hasAccumEGX = useAccum ? (isBearish ? false : isAccumulating) : false
+
+    classicApp = score >= 0.85 and hasMultipleConf and hasBurst and (hasLimit or hasAccumEGX)
+
+    lateChase = (blockAppOnBurst and isStrongBullish) or (blockAppOnLimit and nearLimitUp)
+    accumOK = not requireAccumForApp or hasAccumEGX or accumRatio >= predictiveAccumMin
+    preQuality = hasMultipleConf and accumOK and (hasStochConf or hasVolConf or isPreBurstBuy or rsiTurningUp)
+    predictiveApp = usePredictiveAPlusPlus and not isBearish and not lateChase and score >= predictiveAppCutoff and preQuality and bullishDivergence
+
+    string tier = "C"
+    if isBearish
+        if classicApp
+            tier := "A++"
+        else if highScore and hasMultipleConf and (hasStochConf or hasVolConf or hasBurst)
+            tier := "A+"
+        else if highScore and (hasMultipleConf or hasStochConf or hasVolConf or hasBurst)
+            tier := "A"
+        else if medScore
+            tier := "B"
+        else
+            tier := "C"
+    else
+        if predictiveApp
+            tier := "A++"
+        else if (not usePredictiveAPlusPlus or not blockAppOnBurst) and classicApp
+            tier := "A++"
+        else if highScore and hasMultipleConf and (hasStochConf or hasVolConf or hasBurst or isPreBurstBuy)
+            tier := "A+"
+        else if highScore and (hasMultipleConf or hasStochConf or hasVolConf or hasBurst or isPreBurstBuy)
+            tier := "A"
+        else if medScore
+            tier := "B"
+        else
+            tier := "C"
+    tier
+
+//====================================================================================
+// Bearish Score
+//====================================================================================
+
+calcBearishScoreEGX() =>
+    f1 = (statePriceTop == 1 and stateRSITop <= 0) ? (stateRSITop == -1 ? 0.85 : 0.65) : 0.25
+
+    f2 = (statePriceTop == 1 and stateOBVTop <= 0) ? (stateOBVTop == -1 ? 0.80 : 0.60) : 0.25
+
+    f3 = 0.25
+
+    if useStoch and timeTopStoch
+        if stochK > stochOverbought and stateStochTop <= 0
+            f3 := 0.75
+        else if stochK > stochOverbought
+            f3 := 0.55
+
+    f4 = 0.40
+
+    if useFinVol and timeTopVol
+        if stateVolTop <= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolTop <= 0
+            f4 := 0.55
+
+    f5 = isUptrend ? 0.35 : isDowntrend ? 0.75 : 0.50
+
+    f6 = 0.50
+
+    if timeTopRSI and timeTopOBV
+        f6 := 0.85
+    else if timeTopRSI or timeTopOBV
+        f6 := 0.65
+
+    f7 = useVolatilityFilter ? (isVolatile ? 0.70 : isCalm ? 0.30 : 0.50) : 0.50
+
+    confCount = (timeTopRSI ? 1 : 0) +
+         (timeTopOBV ? 1 : 0) +
+         (timeTopVol and useFinVol ? 1 : 0) +
+         (timeTopStoch and useStoch ? 1 : 0)
+
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+
+    f_egx1 = 0.25
+    if useBurstFilter and isStrongBearish
+        f_egx1 := 0.90
+
+    f_egx2 = 0.25
+    if useLimitFilter and nearLimitDown
+        f_egx2 := 0.85
+
+    f_egx3 = 0.25
+
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) +
+         1.2 * logit(clamp(f2, 0.1, 0.9)) +
+         1.0 * logit(clamp(f3, 0.1, 0.9)) +
+         0.8 * logit(clamp(f4, 0.1, 0.9)) +
+         1.1 * logit(clamp(f5, 0.1, 0.9)) +
+         1.4 * logit(clamp(f6, 0.1, 0.9)) +
+         0.9 * logit(clamp(f7, 0.1, 0.9)) +
+         1.0 * logit(clamp(f8, 0.1, 0.9)) +
+         egxBurstWeight * logit(clamp(f_egx1, 0.1, 0.9)) +
+         egxLimitWeight * logit(clamp(f_egx2, 0.1, 0.9)) +
+         egxAccumWeight * logit(clamp(f_egx3, 0.1, 0.9))
+
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+
+    clamp(prob, 0.05, 0.95)
+
+//====================================================================================
+// Bullish Score — يعطي وزن للملف قبل الانفجار بدل انتظار Burst/Limit
+//====================================================================================
+
+calcBullishScoreEGX() =>
+    f1 = (statePriceLow == -1 and stateRSILow >= 0) ? (stateRSILow == 1 ? 0.85 : 0.65) : 0.25
+
+    f2 = (statePriceLow == -1 and stateOBVLow >= 0) ? (stateOBVLow == 1 ? 0.80 : 0.60) : 0.25
+
+    f3 = 0.25
+
+    if useStoch and timeLowStoch
+        if stochK < stochOversold and stateStochLow >= 0
+            f3 := 0.75
+        else if stochK < stochOversold
+            f3 := 0.55
+        else if stochTurningUp
+            f3 := 0.50
+
+    f4 = 0.40
+
+    if useFinVol and timeLowVol
+        if stateVolLow >= 0 and volumeStrong
+            f4 := 0.70
+        else if stateVolLow >= 0
+            f4 := 0.55
+    else if volumeBuilding
+        f4 := 0.58
+
+    f5 = isDowntrend ? 0.35 : isUptrend ? 0.75 : 0.50
+
+    f6 = 0.50
+
+    if timeLowRSI and timeLowOBV
+        f6 := 0.85
+    else if timeLowRSI or timeLowOBV
+        f6 := 0.65
+
+    // قبل الانفجار: الضغط (Calm) أفضل من التقلب العالي — النابض المنضغط
+    f7 = 0.50
+    if useVolatilityFilter
+        if usePredictiveAPlusPlus
+            f7 := compressedCoil ? 0.72 : isVolatile ? 0.38 : 0.55
+        else
+            f7 := isVolatile ? 0.70 : isCalm ? 0.30 : 0.50
+
+    confCount = (timeLowRSI ? 1 : 0) +
+         (timeLowOBV ? 1 : 0) +
+         (timeLowVol and useFinVol ? 1 : 0) +
+         (timeLowStoch and useStoch ? 1 : 0)
+
+    f8 = confCount == 0 ? 0.20 : confCount == 1 ? 0.40 : confCount == 2 ? 0.60 : confCount >= 3 ? 0.80 : 0.50
+
+    f_egx1 = 0.25
+    if usePredictiveAPlusPlus and isPreBurstBuy
+        f_egx1 := 0.82
+    else if useBurstFilter and isStrongBullish
+        f_egx1 := usePredictiveAPlusPlus ? 0.35 : 0.90
+
+    f_egx2 = 0.25
+    if usePredictiveAPlusPlus and nearLimitUp
+        f_egx2 := 0.18
+    else if useLimitFilter and nearLimitUp
+        f_egx2 := 0.85
+    else if upProgress >= 0.20 and upProgress < limitProximity and close > close[1]
+        f_egx2 := 0.52
+
+    f_egx3 = 0.25
+    if useAccum and isAccumulating
+        f_egx3 := 0.85
+    else if useAccum and accumBuilding
+        f_egx3 := 0.68
+
+    ll = 1.3 * logit(clamp(f1, 0.1, 0.9)) +
+         1.2 * logit(clamp(f2, 0.1, 0.9)) +
+         1.0 * logit(clamp(f3, 0.1, 0.9)) +
+         0.8 * logit(clamp(f4, 0.1, 0.9)) +
+         1.1 * logit(clamp(f5, 0.1, 0.9)) +
+         1.4 * logit(clamp(f6, 0.1, 0.9)) +
+         0.9 * logit(clamp(f7, 0.1, 0.9)) +
+         1.0 * logit(clamp(f8, 0.1, 0.9)) +
+         egxBurstWeight * logit(clamp(f_egx1, 0.1, 0.9)) +
+         egxLimitWeight * logit(clamp(f_egx2, 0.1, 0.9)) +
+         egxAccumWeight * logit(clamp(f_egx3, 0.1, 0.9))
+
+    prob = 1.0 / (1.0 + math.exp(-(-0.50 + ll)))
+
+    clamp(prob, 0.05, 0.95)
+
+//====================================================================================
+// Divergence Results
+//====================================================================================
+
+bearishScore = modeTop ? calcBearishScoreEGX() : 0.0
+bullishScore = modeBottom ? calcBullishScoreEGX() : 0.0
+
+bearishValid = modeTop and bearishScore >= medProbCutoff and allowSellSignals
+bullishValid = modeBottom and bullishScore >= medProbCutoff and allowBuySignals
+
+bearishTier = modeTop ? getTierEGX(bearishScore, true) : ""
+bullishTier = modeBottom ? getTierEGX(bullishScore, false) : ""
+
+isPredictiveBuyApp = bullishTier == "A++" and usePredictiveAPlusPlus and not isStrongBullish and not nearLimitUp
+
+showBearish =
+     bearishValid and
+     barstate.isconfirmed and
+     (
+         showTierFilter == "Todos" or
+         (showTierFilter == "A+ e A++ apenas" and (bearishTier == "A+" or bearishTier == "A++")) or
+         (showTierFilter == "A++ apenas" and bearishTier == "A++")
+     )
+
+showBullish =
+     bullishValid and
+     barstate.isconfirmed and
+     (
+         showTierFilter == "Todos" or
+         (showTierFilter == "A+ e A++ apenas" and (bullishTier == "A+" or bullishTier == "A++")) or
+         (showTierFilter == "A++ apenas" and bullishTier == "A++")
+     )
+
+//====================================================================================
+// ⭐ NO BACKPAINT SIGNALS
+// الإشارة تظهر على شمعة التأكيد الحالية فقط
+//====================================================================================
+
+newBearishSignal = showBearish and not showBearish[1]
+newBullishSignalRaw = showBullish and not showBullish[1]
+
+var int lastBuyAppBar = -9999
+bool buyAppCooldownOK = (bar_index - lastBuyAppBar) > appCooldown
+newBullishSignal = newBullishSignalRaw and (bullishTier != "A++" or buyAppCooldownOK)
+
+if newBullishSignal and bullishTier == "A++"
+    lastBuyAppBar := bar_index
+
+atr_offset = ta.atr(14) * 0.3
+divOffset = atr_offset * 0.6
+
+if showLabels and newBearishSignal
+    string labelTextBear =
+         bearishTier == "A++" ?
+         "🔻🔻🔻 SELL A++ | Score: " + str.tostring(math.round(bearishScore * 100)) + "%" :
+         bearishTier == "A+" ?
+         "🔻🔻 SELL A+ | Score: " + str.tostring(math.round(bearishScore * 100)) + "%" :
+         "🔻 SELL " + bearishTier + " | Score: " + str.tostring(math.round(bearishScore * 100)) + "%"
+
+    color labelColorBear =
+         bearishTier == "A++" ? color.new(#b71c1c, 20) :
+         bearishTier == "A+" ? color.new(#ff1744, 20) :
+         bearishTier == "A" ? color.new(#ff6d00, 20) :
+         color.new(#ffa000, 20)
+
+    labelSizeBear =
+         bearishTier == "A++" ? size.large :
+         bearishTier == "A+" ? size.normal :
+         size.small
+
+    label.new(
+         x=bar_index,
+         y=high + divOffset,
+         text=labelTextBear,
+         style=label.style_label_down,
+         color=labelColorBear,
+         textcolor=color.white,
+         size=labelSizeBear,
+         yloc=yloc.price)
+
+if showLabels and newBullishSignal
+    string labelTextBull =
+         bullishTier == "A++" and isPredictiveBuyApp ?
+         "🟢🟢🟢 BUY A++ PRE | Score: " + str.tostring(math.round(bullishScore * 100)) + "%" :
+         bullishTier == "A++" ?
+         "🟢🟢🟢 BUY A++ | Score: " + str.tostring(math.round(bullishScore * 100)) + "%" :
+         bullishTier == "A+" ?
+         "🟢🟢 BUY A+ | Score: " + str.tostring(math.round(bullishScore * 100)) + "%" :
+         "🟢 BUY " + bullishTier + " | Score: " + str.tostring(math.round(bullishScore * 100)) + "%"
+
+    color labelColorBull =
+         bullishTier == "A++" ? color.new(#1b5e20, 20) :
+         bullishTier == "A+" ? color.new(#00e676, 20) :
+         bullishTier == "A" ? color.new(#26a69a, 20) :
+         color.new(#4caf50, 20)
+
+    labelSizeBull =
+         bullishTier == "A++" ? size.large :
+         bullishTier == "A+" ? size.normal :
+         size.small
+
+    label.new(
+         x=bar_index,
+         y=low - divOffset,
+         text=labelTextBull,
+         style=label.style_label_up,
+         color=labelColorBull,
+         textcolor=color.white,
+         size=labelSizeBull,
+         yloc=yloc.price)
+
+//====================================================================================
+// Price Lines
+//====================================================================================
+
+var float segTop = na
+var float segBottom = na
+
+if showLines
+    if not na(priceHigh1) and not na(priceHigh2)
+        segTop := f_seg(priceHigh1, priceHBar1, priceHigh2, priceHBar2)
+
+    if not na(priceLow1) and not na(priceLow2)
+        segBottom := f_seg(priceLow1, priceLBar1, priceLow2, priceLBar2)
+
+plot(showLines and modeTop ? segTop : na, "Reta Topos", color.new(#ff1744, 60), linewidth=1)
+plot(showLines and modeBottom ? segBottom : na, "Reta Fundos", color.new(#00e676, 60), linewidth=1)
+
+//====================================================================================
+// Predictor
+//====================================================================================
+
+[st1, dir1] = ta.supertrend(fac1, atrP1)
+[st2, dir2] = ta.supertrend(fac2, atrP2)
+[st3, dir3] = ta.supertrend(fac3, atrP3)
+
+is_hybrid_green = dir1 < 0 and dir2 < 0 and dir3 < 0
+is_hybrid_red   = dir1 > 0 and dir2 > 0 and dir3 > 0
+
+hma = ta.hma(close, h_len)
+ema_high = ta.ema(high, ema_len)
+ema_low  = ta.ema(low, ema_len)
+
+is_hma_green = hma > hma[1]
+is_hma_red   = hma < hma[1]
+
+trend_buy_cond = is_hybrid_green and is_hma_green
+trend_sell_cond = is_hybrid_red and is_hma_red
+
+scalp_buy_cond = ta.crossover(close, ema_high)
+scalp_sell_cond = ta.crossunder(close, ema_low)
+
+atr_v = ta.atr(14)
+osc_val = (close - hma) / (atr_v > 0 ? atr_v : syminfo.mintick)
+
+color col_green = color.rgb(18, 228, 158)
+color col_red = color.rgb(236, 86, 16)
+
+color hist_col =
+     trend_buy_cond ? col_green :
+     trend_sell_cond ? col_red :
+     color.gray
+
+int bullish_signals = 0
+int bearish_signals = 0
+
+if trend_buy_cond
+    bullish_signals += 2
+
+if trend_sell_cond
+    bearish_signals += 2
+
+if scalp_buy_cond
+    bullish_signals += 1
+
+if scalp_sell_cond
+    bearish_signals += 1
+
+if is_hybrid_green
+    bullish_signals += 1
+
+if is_hma_green
+    bullish_signals += 1
+
+if is_hybrid_red
+    bearish_signals += 1
+
+if is_hma_red
+    bearish_signals += 1
+
+if useBurstFilter and isStrongBullish
+    bullish_signals += 1
+
+if useBurstFilter and isStrongBearish
+    bearish_signals += 1
+
+if useLimitFilter and nearLimitUp
+    bullish_signals += 1
+
+if useLimitFilter and nearLimitDown
+    bearish_signals += 1
+
+if useAccum and isAccumulating
+    bullish_signals += 1
+
+if isPreBurstBuy
+    bullish_signals += 1
+
+string signal_type_adv = "محايد"
+
+if bullish_signals > bearish_signals and bullish_signals >= min_signals_required
+    signal_type_adv := "شراء 🟢"
+else if bearish_signals > bullish_signals and bearish_signals >= min_signals_required
+    signal_type_adv := "بيع 🔴"
+
+float final_confidence = 50.0
+
+if signal_type_adv != "محايد"
+    int max_signals = math.max(bullish_signals, bearish_signals)
+
+    final_confidence := 65.0 + max_signals * 5.0
+
+    if (signal_type_adv == "شراء 🟢" and is_hybrid_green and is_hma_green) or
+       (signal_type_adv == "بيع 🔴" and is_hybrid_red and is_hma_red)
+        final_confidence += 5
+
+    if (signal_type_adv == "شراء 🟢" and scalp_buy_cond) or
+       (signal_type_adv == "بيع 🔴" and scalp_sell_cond)
+        final_confidence += 5
+
+    if (signal_type_adv == "شراء 🟢" and isStrongBullish) or
+       (signal_type_adv == "بيع 🔴" and isStrongBearish)
+        final_confidence += 3
+
+    if (signal_type_adv == "شراء 🟢" and nearLimitUp) or
+       (signal_type_adv == "بيع 🔴" and nearLimitDown)
+        final_confidence += 2
+
+    if signal_type_adv == "شراء 🟢" and isPreBurstBuy
+        final_confidence += 4
+
+    final_confidence := math.min(final_confidence, 95)
+
+float tp1_adv = na
+float tp2_adv = na
+float tp3_adv = na
+float sl_adv = na
+
+if signal_type_adv == "شراء 🟢"
+    tp1_adv := close * (1 + tp1_percent / 100)
+    tp2_adv := close * (1 + tp2_percent / 100)
+    tp3_adv := close * (1 + tp3_percent / 100)
+    sl_adv := close * (1 - stop_loss_percent / 100)
+else if signal_type_adv == "بيع 🔴"
+    tp1_adv := close * (1 - tp1_percent / 100)
+    tp2_adv := close * (1 - tp2_percent / 100)
+    tp3_adv := close * (1 - tp3_percent / 100)
+    sl_adv := close * (1 + stop_loss_percent / 100)
+
+//====================================================================================
+// Predictor Histogram
+//====================================================================================
+
+plot(osc_val, "Signal Histogram", color=color.new(hist_col, 20), style=plot.style_columns, linewidth=2)
+plot(osc_val, "Momentum Line", color=color.white, linewidth=2)
+
+hline(0, "Neutral Line", color=color.new(color.gray, 50), linestyle=hline.style_dotted)
+
+//====================================================================================
+// Predictor Labels
+//====================================================================================
+
+int signalCountBuy = 0
+int signalCountSell = 0
+
+isNewTrendBuy = trend_buy_cond and not trend_buy_cond[1]
+isNewTrendSell = trend_sell_cond and not trend_sell_cond[1]
+
+if isNewTrendBuy
+    signalCountBuy += 1
+    float off = atr_offset * (signalCountBuy - 1) * 0.8
+
+    label.new(
+         bar_index,
+         high + off,
+         "TREND BUY",
+         style=label.style_label_up,
+         color=col_green,
+         textcolor=color.black,
+         size=size.tiny,
+         yloc=yloc.price)
+
+if isNewTrendSell
+    signalCountSell += 1
+    float off = atr_offset * (signalCountSell - 1) * 0.8
+
+    label.new(
+         bar_index,
+         low - off,
+         "TREND SELL",
+         style=label.style_label_down,
+         color=col_red,
+         textcolor=color.white,
+         size=size.tiny,
+         yloc=yloc.price)
+
+if scalp_buy_cond
+    signalCountBuy += 1
+    float off = atr_offset * (signalCountBuy - 1) * 0.8
+
+    label.new(
+         bar_index,
+         high + off,
+         "▲",
+         style=label.style_label_down,
+         color=color.new(color.lime, 50),
+         textcolor=color.black,
+         size=size.small,
+         yloc=yloc.price)
+
+if scalp_sell_cond
+    signalCountSell += 1
+    float off = atr_offset * (signalCountSell - 1) * 0.8
+
+    label.new(
+         bar_index,
+         low - off,
+         "▼",
+         style=label.style_label_up,
+         color=color.new(color.red, 50),
+         textcolor=color.white,
+         size=size.small,
+         yloc=yloc.price)
+
+//====================================================================================
+// EGX Burst Labels
+//====================================================================================
+
+isNewBurstBuy = useBurstFilter and isStrongBullish and not isStrongBullish[1]
+isNewBurstSell = useBurstFilter and isStrongBearish and not isStrongBearish[1]
+
+if isNewBurstBuy
+    signalCountBuy += 1
+    float off = atr_offset * (signalCountBuy - 1) * 0.8
+
+    label.new(
+         bar_index,
+         high + off,
+         "🚀 BURST",
+         style=label.style_label_up,
+         color=color.new(#ff00ff, 30),
+         textcolor=color.white,
+         size=size.tiny,
+         yloc=yloc.price)
+
+if isNewBurstSell
+    signalCountSell += 1
+    float off = atr_offset * (signalCountSell - 1) * 0.8
+
+    label.new(
+         bar_index,
+         low - off,
+         "🚀 BURST",
+         style=label.style_label_down,
+         color=color.new(#ff00ff, 30),
+         textcolor=color.white,
+         size=size.tiny,
+         yloc=yloc.price)
+
+//====================================================================================
+// EGX Limit Labels
+//====================================================================================
+
+isNewLimitUp = useLimitFilter and nearLimitUp and not nearLimitUp[1]
+isNewLimitDown = useLimitFilter and nearLimitDown and not nearLimitDown[1]
+
+if isNewLimitUp
+    signalCountBuy += 1
+    float off = atr_offset * (signalCountBuy - 1) * 0.8
+
+    label.new(
+         bar_index,
+         high + off,
+         "⚡ LIMIT+",
+         style=label.style_label_up,
+         color=color.new(#ffd700, 30),
+         textcolor=color.black,
+         size=size.tiny,
+         yloc=yloc.price)
+
+if isNewLimitDown
+    signalCountSell += 1
+    float off = atr_offset * (signalCountSell - 1) * 0.8
+
+    label.new(
+         bar_index,
+         low - off,
+         "⚡ LIMIT-",
+         style=label.style_label_down,
+         color=color.new(#ffd700, 30),
+         textcolor=color.black,
+         size=size.tiny,
+         yloc=yloc.price)
+
+//====================================================================================
+// Auto Cleanup
+//====================================================================================
+
+if barstate.islast
+    if array.size(label.all) > 50
+        for i = 0 to array.size(label.all) - 51
+            label.delete(array.get(label.all, i))
+
+//====================================================================================
+// Tables
+//====================================================================================
+
+if showTableDiv and showTables and barstate.islast
+    var table tDiv = table.new(
+         position.bottom_right,
+         5,
+         15,
+         bgcolor=color.new(#0d1117, 95),
+         border_color=color.new(#58a6ff, 40))
+
+    table.cell(tDiv, 0, 0, "Série", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(tDiv, 1, 0, "Topo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(tDiv, 2, 0, "Δ Topo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(tDiv, 3, 0, "Fundo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+    table.cell(tDiv, 4, 0, "Δ Fundo", text_color=color.white, bgcolor=color.new(#161b22, 0))
+
+    table.cell(tDiv, 0, 1, "Preço", text_color=color.gray)
+    table.cell(tDiv, 1, 1, f_stateTxt(statePriceTop), text_color=statePriceTop == 1 ? color.red : color.gray)
+    table.cell(tDiv, 3, 1, f_stateTxt(statePriceLow), text_color=statePriceLow == -1 ? color.green : color.gray)
+
+    table.cell(tDiv, 0, 2, "RSI", text_color=color.gray)
+    table.cell(tDiv, 1, 2, f_stateTxt(stateRSITop), text_color=stateRSITop <= 0 ? color.orange : color.gray)
+    table.cell(tDiv, 2, 2, str.tostring(distTopRSI), text_color=distTopRSI <= confirmBars ? color.green : color.gray)
+    table.cell(tDiv, 3, 2, f_stateTxt(stateRSILow), text_color=stateRSILow >= 0 ? color.green : color.gray)
+    table.cell(tDiv, 4, 2, str.tostring(distLowRSI), text_color=distLowRSI <= confirmBars ? color.green : color.gray)
+
+    table.cell(tDiv, 0, 3, "OBV", text_color=color.gray)
+    table.cell(tDiv, 1, 3, f_stateTxt(stateOBVTop), text_color=stateOBVTop <= 0 ? color.orange : color.gray)
+    table.cell(tDiv, 2, 3, str.tostring(distTopOBV), text_color=distTopOBV <= confirmBars ? color.green : color.gray)
+    table.cell(tDiv, 3, 3, f_stateTxt(stateOBVLow), text_color=stateOBVLow >= 0 ? color.green : color.gray)
+    table.cell(tDiv, 4, 3, str.tostring(distLowOBV), text_color=distLowOBV <= confirmBars ? color.green : color.gray)
+
+    if useStoch
+        table.cell(tDiv, 0, 4, "Stoch", text_color=color.gray)
+        table.cell(tDiv, 1, 4, f_stateTxt(stateStochTop), text_color=stateStochTop <= 0 ? color.orange : color.gray)
+        table.cell(tDiv, 2, 4, str.tostring(distTopStoch), text_color=distTopStoch <= confirmBars ? color.green : color.gray)
+        table.cell(tDiv, 3, 4, f_stateTxt(stateStochLow), text_color=stateStochLow >= 0 ? color.green : color.gray)
+        table.cell(tDiv, 4, 4, str.tostring(distLowStoch), text_color=distLowStoch <= confirmBars ? color.green : color.gray)
+
+    table.cell(tDiv, 0, 6, "SINAL TOPO", text_color=color.red)
+    sellText = showBearish ? bearishTier + " " + str.tostring(math.round(bearishScore * 100)) + "%" : (allowSellSignals ? "---" : "🚫 BLOQ")
+    table.cell(tDiv, 1, 6, sellText, text_color=color.red)
+
+    table.cell(tDiv, 0, 7, "SINAL FUNDO", text_color=color.green)
+    buyText = showBullish ? bullishTier + " " + str.tostring(math.round(bullishScore * 100)) + "%" : (allowBuySignals ? "---" : "🚫 BLOQ")
+    table.cell(tDiv, 1, 7, buyText, text_color=color.green)
+
+    table.cell(tDiv, 0, 9, "TREND", text_color=color.gray)
+
+    string trendDisplay =
+         useTrendFilter ?
+         (
+             overallTrend == 1 ?
+             "▲ " + str.tostring(math.round(trendStrengthValue * 100)) + "%" :
+             overallTrend == -1 ?
+             "▼ " + str.tostring(math.round(trendStrengthValue * 100)) + "%" :
+             "● SIDEWAYS"
+         ) :
+         "FILTER OFF"
+
+    color trendDisplayColor =
+         overallTrend == 1 ? color.green :
+         overallTrend == -1 ? color.red :
+         color.gray
+
+    table.cell(tDiv, 1, 9, trendDisplay, text_color=trendDisplayColor)
+
+    table.cell(tDiv, 0, 10, "Config", text_color=color.gray)
+    table.cell(tDiv, 1, 10, "L" + str.tostring(L), text_color=color.gray)
+    table.cell(tDiv, 2, 10, "Jan:" + str.tostring(confirmBars), text_color=color.gray)
+    table.cell(tDiv, 3, 10, "Threshold:" + str.tostring(math.round(trendThreshold * 100)) + "%", text_color=color.gray)
+
+    table.cell(tDiv, 0, 11, "🚀 EGX BOOST", text_color=color.fuchsia, bgcolor=color.new(#1a0033, 80))
+    table.cell(tDiv, 1, 11, "Burst:" + (useBurstFilter ? (isStrongBullish ? "🟢" : isStrongBearish ? "🔴" : "⚪") : "OFF"), text_color=color.gray)
+    table.cell(tDiv, 2, 11, "Limit:" + (useLimitFilter ? (nearLimitUp ? "🟢" : nearLimitDown ? "🔴" : "⚪") : "OFF"), text_color=color.gray)
+    table.cell(tDiv, 3, 11, "Accum:" + (useAccum ? (isAccumulating ? "🟢" : "⚪") : "OFF"), text_color=color.gray)
+
+    table.cell(tDiv, 0, 12, "BodyRatio", text_color=color.gray)
+    table.cell(tDiv, 1, 12, str.tostring(bodyRatio, "#.##"), text_color=bodyRatio >= burstThreshold ? color.green : color.gray)
+    table.cell(tDiv, 2, 12, "VolRatio", text_color=color.gray)
+    table.cell(tDiv, 3, 12, str.tostring(volumeRatio, "#.##"), text_color=volumeRatio >= volumeBurstMult ? color.green : color.gray)
+
+    table.cell(tDiv, 0, 13, "🔮 A++ PRE", text_color=color.aqua, bgcolor=color.new(#001a33, 80))
+    string preStatus = isPredictiveBuyApp ? "READY" : (isPreBurstBuy ? "COIL" : (isStrongBullish or nearLimitUp ? "LATE" : "WAIT"))
+    color preColor = isPredictiveBuyApp ? color.lime : (isPreBurstBuy ? color.yellow : (preStatus == "LATE" ? color.red : color.gray))
+    table.cell(tDiv, 1, 13, preStatus, text_color=preColor)
+    table.cell(tDiv, 2, 13, "Votes:" + str.tostring(preBurstVotes), text_color=preBurstVotes >= preBurstMinVotes ? color.green : color.gray)
+    table.cell(tDiv, 3, 13, "Div:" + (bullishDivergence ? "YES" : "NO"), text_color=bullishDivergence ? color.green : color.gray)
+
+//====================================================================================
+// Predictor Table
+//====================================================================================
+
+if show_pred_table and showTables and barstate.islast
+    var table predTable = table.new(
+         position.top_right,
+         2,
+         8,
+         bgcolor=color.rgb(0, 0, 0, 80),
+         border_color=color.rgb(48, 54, 61, 60),
+         border_width=2)
+
+    table.cell(predTable, 0, 0, "📊 PREDICTOR", text_color=color.yellow, text_size=size.large)
+    table.cell(predTable, 1, 0, "القيمة", text_color=color.yellow, text_size=size.large)
+
+    table.cell(predTable, 0, 1, "الإشارة", text_color=color.gray)
+
+    color predColor =
+         signal_type_adv == "شراء 🟢" ? color.green :
+         signal_type_adv == "بيع 🔴" ? color.red :
+         color.white
+
+    table.cell(
+         predTable,
+         1,
+         1,
+         signal_type_adv != "محايد" ? signal_type_adv : "انتظار",
+         text_color=predColor)
+
+    table.cell(predTable, 0, 2, "الثقة", text_color=color.gray)
+    table.cell(predTable, 1, 2, str.tostring(final_confidence, "#.#") + "%", text_color=color.yellow)
+
+    table.cell(predTable, 0, 3, "الإشارات", text_color=color.gray)
+    table.cell(predTable, 1, 3, "↑" + str.tostring(bullish_signals) + " | ↓" + str.tostring(bearish_signals), text_color=color.aqua)
+
+    table.cell(predTable, 0, 4, "TP1", text_color=color.gray)
+    table.cell(predTable, 1, 4, not na(tp1_adv) ? str.tostring(tp1_adv, "#.##") : "---", text_color=color.yellow)
+
+    table.cell(predTable, 0, 5, "TP2", text_color=color.gray)
+    table.cell(predTable, 1, 5, not na(tp2_adv) ? str.tostring(tp2_adv, "#.##") : "---", text_color=color.green)
+
+    table.cell(predTable, 0, 6, "TP3", text_color=color.gray)
+    table.cell(predTable, 1, 6, not na(tp3_adv) ? str.tostring(tp3_adv, "#.##") : "---", text_color=color.lime)
+
+    table.cell(predTable, 0, 7, "SL", text_color=color.gray)
+    table.cell(predTable, 1, 7, not na(sl_adv) ? str.tostring(sl_adv, "#.##") : "---", text_color=color.red)
+
+//====================================================================================
+// Alerts
+//====================================================================================
+
+alertcondition(newBearishSignal and bearishTier == "A+", "🔻 VENDA A+ (Divergência)", "Venda A+ confirmada")
+
+alertcondition(newBullishSignal and bullishTier == "A+", "🟢 COMPRA A+ (Divergência)", "Compra A+ confirmada")
+
+alertcondition(newBearishSignal and bearishTier == "A++", "🔻🔻 VENDA A++ (EGX Super Signal)", "Venda A++ confirmada - sem backpainting")
+
+alertcondition(newBullishSignal and bullishTier == "A++" and isPredictiveBuyApp, "🟢🟢 COMPRA A++ PRE (قبل الانفجار)", "Compra A++ تنبؤية — انحراف + تراكم قبل الانفجار السعري")
+
+alertcondition(newBullishSignal and bullishTier == "A++", "🟢🟢 COMPRA A++ (EGX Super Signal)", "Compra A++ confirmada - sem backpainting")
+
+alertcondition(
+     trend_buy_cond and not trend_buy_cond[1],
+     "Trend Buy",
+     "Hybrid ST + HMA are Green")
+
+alertcondition(
+     trend_sell_cond and not trend_sell_cond[1],
+     "Trend Sell",
+     "Hybrid ST + HMA are Red")
+
+alertcondition(
+     scalp_buy_cond,
+     "Scalp Buy",
+     "Price closed above the Upper EMA line!")
+
+alertcondition(
+     scalp_sell_cond,
+     "Scalp Sell",
+     "Price closed below the Lower EMA line!")
+
+alertcondition(
+     signal_type_adv == "شراء 🟢" and final_confidence >= min_confidence,
+     "Advanced Buy",
+     "Advanced Buy Signal")
+
+alertcondition(
+     signal_type_adv == "بيع 🔴" and final_confidence >= min_confidence,
+     "Advanced Sell",
+     "Advanced Sell Signal")
+
+alertcondition(
+     useBurstFilter and isStrongBullish and not isStrongBullish[1],
+     "🚀 EGX Burst Buy",
+     "Strong bullish burst detected!")
+
+alertcondition(
+     useBurstFilter and isStrongBearish and not isStrongBearish[1],
+     "🚀 EGX Burst Sell",
+     "Strong bearish burst detected!")
+
+alertcondition(
+     useLimitFilter and nearLimitUp and not nearLimitUp[1],
+     "📈 EGX Near Limit Up",
+     "Price approaching daily limit up!")
+
+alertcondition(
+     useLimitFilter and nearLimitDown and not nearLimitDown[1],
+     "📉 EGX Near Limit Down",
+     "Price approaching daily limit down!")
+
+alertcondition(
+     isPreBurstBuy and not isPreBurstBuy[1],
+     "🔮 Pre-Burst Coil",
+     "Pre-burst coil detected — accumulation and volume building before explosion")
+
+//====================================================================================
+// Hidden Plots
+//====================================================================================
+
+plot(showLabels ? rsi_div : na, "RSI", display=display.none)
+plot(showLabels ? obv_smooth : na, "OBV Smooth", display=display.none)
+plot(useStoch and showLabels ? stochK : na, "Stoch K", display=display.none)
+
+plot(showLabels ? bearishScore : na, "Bearish Score", display=display.none)
+plot(showLabels ? bullishScore : na, "Bullish Score", display=display.none)
+
+plot(useBurstFilter ? bodyRatio : na, "Body Ratio", display=display.none)
+plot(useBurstFilter ? volumeRatio : na, "Volume Ratio", display=display.none)
+plot(useAccum ? accumRatio : na, "Accumulation Ratio", display=display.none)
+plot(useLimitFilter ? upProgress : na, "Limit Up Progress", display=display.none)
+plot(isPreBurstBuy ? 1 : 0, "Pre-Burst Buy", display=display.none)
+plot(preBurstVotes, "Pre-Burst Votes", display=display.none)
