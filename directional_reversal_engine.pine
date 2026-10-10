@@ -1,0 +1,629 @@
+//@version=6
+indicator(title="🔄 محرك الانعكاس الاتجاهي — Directional Reversal Engine", 
+     shorttitle="DRE v1.0", 
+     overlay=false, 
+     format=format.price, 
+     precision=2, 
+     max_labels_count=500, 
+     max_lines_count=500)
+
+// ========================================================================
+// 📦 PART 0: شرح مفصل لكلمة "انعكاس"
+// ========================================================================
+// الانعكاس (Reversal) = تغير اتجاه السعر:
+//   🟢 Bullish Reversal = السعر كان نازل ←→ سيصعد (انعكاس صاعد)
+//   🔴 Bearish Reversal = السعر كان طالع ←→ سينزل (انعكاس هابط)
+// 
+// لتحديد الاتجاه نحتاج 3 عناصر:
+//   1. Divergence (اختلاف بين السعر والمؤشر)
+//   2. نمط شمعداني انعكاسي (Hammer / Shooting Star / Doji)
+//   3. موقع Stochastic (K < 50 للشراء | K > 50 للبيع)
+
+// ========================================================================
+// 📦 PART 1: SETTINGS
+// ========================================================================
+grp_stoch = "⚙️ إعدادات الستوكاستيك"
+periodK = input.int(14, title="%K Length", minval=1, group=grp_stoch)
+smoothK = input.int(1, title="%K Smoothing", minval=1, group=grp_stoch)
+periodD = input.int(3, title="%D Smoothing", minval=1, group=grp_stoch)
+
+grp_bbpt = "⚙️ إعدادات BBPT+ Trend"
+atr_length = input.int(5, "ATR Length", minval=1, group=grp_bbpt)
+lookback_lowest = input.int(50, "Lowest/Highest Lookback", minval=1, group=grp_bbpt)
+
+grp_div = "⚙️ إعدادات الاختلاف (Divergence)"
+div_lookback = input.int(15, "فترة البحث عن الاختلاف (شمعات)", minval=5, maxval=50, step=1, group=grp_div)
+min_div_bars = input.int(3, "الحد الأدنى لمسافة القمم/القيعان", minval=2, maxval=10, step=1, group=grp_div)
+show_div_lines = input.bool(true, "رسم خطوط الاختلاف", group=grp_div)
+show_div_labels = input.bool(true, "إظهار إشارات الاختلاف", group=grp_div)
+show_k_reversal = input.bool(true, "إظهار الشمعات الانعكاسية على %K", group=grp_div)
+relaxed_reversal_mode = input.bool(true, "وضع الانعكاس المخفف (إشارات أكثر)", group=grp_div, tooltip="عند التفعيل: لا يشترط وجود Divergence + Candle معاً، يكفي أحدهما")
+
+grp_trend = "🔄 فلتر الاتجاه الرئيسي (Trend Filter)"
+useTrendFilter = input.bool(true, "تفعيل فلتر الاتجاه (يمنع الإشارات المعاكسة)", group=grp_trend)
+trendLength = input.int(50, "فترة الاتجاه الرئيسي", minval=20, maxval=200, group=grp_trend)
+trendThreshold = input.float(0.6, "قوة الاتجاه المطلوبة (0-1)", minval=0.3, maxval=0.9, step=0.05, group=grp_trend)
+
+grp_voting = "⚙️ نظام التصويت"
+min_signals_required = input.int(2, "الحد الأدنى للإشارات", minval=1, maxval=5, step=1, group=grp_voting)
+min_confidence = input.float(70.0, "الحد الأدنى للثقة %", minval=50, maxval=90, step=1, group=grp_voting)
+tp1_percent = input.float(1.0, "TP1 %", minval=0.5, maxval=5.0, step=0.1, group=grp_voting)
+tp2_percent = input.float(2.0, "TP2 %", minval=1.0, maxval=8.0, step=0.1, group=grp_voting)
+tp3_percent = input.float(3.5, "TP3 %", minval=2.0, maxval=12.0, step=0.1, group=grp_voting)
+stop_loss_percent = input.float(1.5, "Stop Loss %", minval=0.5, maxval=5.0, step=0.1, group=grp_voting)
+show_voting_table = input.bool(true, "إظهار جدول التصويت", group=grp_voting)
+
+// ========================================================================
+// 📦 NEW: إعدادات ربط إشارات BUY/SELL بالانعكاس
+// ========================================================================
+grp_signal_control = "🎯 التحكم في إشارات BUY/SELL"
+require_reversal_for_buysell = input.bool(true, "إظهار BUY/SELL فقط مع إشارة الانعكاس", group=grp_signal_control, tooltip="عند التفعيل: لن تظهر إشارات BUY/SELL إلا إذا كانت هناك إشارة انعكاس على نفس الشمعة")
+
+// ========================================================================
+// 📦 PART 2: SUPER STOCHASTIC CALCULATIONS
+// ========================================================================
+rawK = ta.stoch(close, high, low, periodK)
+k = ta.sma(rawK, smoothK)
+d = ta.sma(k, periodD)
+
+crossDown = ta.crossunder(k, d)
+crossUp = ta.crossover(k, d)
+
+// Pivot points on K
+kPivotHigh80 = k[1] > 80 and k[1] > k[2] and k < k[1]
+kPivotLow80 = k[1] > 80 and k[1] < k[2] and k > k[1]
+midPivotHigh75 = k[1] >= 50 and k[1] <= 75 and k[1] > k[2] and k < k[1]
+midPivotLow75 = k[1] >= 50 and k[1] <= 75 and k[1] < k[2] and k > k[1]
+midPivotHigh40 = k[1] >= 20 and k[1] <= 40 and k[1] > k[2] and k < k[1]
+midPivotLow40 = k[1] >= 20 and k[1] <= 40 and k[1] < k[2] and k > k[1]
+kPivotLow20 = k[1] < 20 and k[1] < k[2] and k > k[1]
+
+// ========================================================================
+// 📦 PART 3: BBPT+ TREND CALCULATIONS
+// ========================================================================
+atr5 = ta.atr(atr_length)
+BullTrend = (close - ta.lowest(low, lookback_lowest)) / atr5
+BearTrend = (ta.highest(high, lookback_lowest) - close) / atr5
+BearTrend2 = -1 * BearTrend
+Trend = BullTrend - BearTrend
+
+// ========================================================================
+// 📦 PART 4: TREND FILTER (من الكود الثالث)
+// ========================================================================
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+maTrend = (ema20 > ema50 ? 1 : -1) + (ema20 > ema100 ? 1 : -1) + (ema50 > ema100 ? 1 : -1)
+maTrendStrength = maTrend / 3
+
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+macdTrend = macdLine > signalLine ? 1 : -1
+macdHistogramStrength = math.abs(macdLine - signalLine) / ta.atr(14) * 10
+macdStrength = math.min(0.8, macdHistogramStrength)
+
+bbMiddle = ta.sma(close, 20)
+bbUpper = bbMiddle + ta.stdev(close, 20) * 2
+bbLower = bbMiddle - ta.stdev(close, 20) * 2
+bbPosition = (close - bbLower) / (bbUpper - bbLower)
+bbTrend = bbPosition > 0.7 ? 1 : bbPosition < 0.3 ? -1 : 0
+
+// حساب قوة الاتجاه الإجمالية
+var float trendStrengthValue = 0.0
+var int overallTrend = 0
+
+if useTrendFilter
+    float uptrendVotes = 0.0
+    float downtrendVotes = 0.0
+    
+    if maTrendStrength > 0.2
+        uptrendVotes := uptrendVotes + math.abs(maTrendStrength)
+    else if maTrendStrength < -0.2
+        downtrendVotes := downtrendVotes + math.abs(maTrendStrength)
+    
+    if macdTrend == 1 and macdStrength > 0.3
+        uptrendVotes := uptrendVotes + macdStrength
+    else if macdTrend == -1 and macdStrength > 0.3
+        downtrendVotes := downtrendVotes + macdStrength
+    
+    if bbTrend == 1
+        uptrendVotes := uptrendVotes + 0.5
+    else if bbTrend == -1
+        downtrendVotes := downtrendVotes + 0.5
+    
+    float totalVotes = uptrendVotes + downtrendVotes
+    if totalVotes > 0
+        if uptrendVotes > downtrendVotes
+            overallTrend := 1
+            trendStrengthValue := uptrendVotes / totalVotes
+        else if downtrendVotes > uptrendVotes
+            overallTrend := -1
+            trendStrengthValue := downtrendVotes / totalVotes
+        else
+            overallTrend := 0
+            trendStrengthValue := 0.5
+    else
+        overallTrend := 0
+        trendStrengthValue := 0.5
+    
+    trendStrengthValue := ta.ema(trendStrengthValue, 5)
+else
+    overallTrend := 0
+    trendStrengthValue := 0.5
+
+isStrongUptrend = overallTrend == 1 and trendStrengthValue >= trendThreshold
+isStrongDowntrend = overallTrend == -1 and trendStrengthValue >= trendThreshold
+
+// ========================================================================
+// 📦 PART 5: PIVOT DETECTION FOR DIVERGENCE
+// ========================================================================
+k_pivot_high = ta.pivothigh(k, min_div_bars, min_div_bars)
+k_pivot_low = ta.pivotlow(k, min_div_bars, min_div_bars)
+
+trend_pivot_high = ta.pivothigh(Trend, min_div_bars, min_div_bars)
+trend_pivot_low = ta.pivotlow(Trend, min_div_bars, min_div_bars)
+
+var float last_k_high = na
+var int last_k_high_bar = na
+var float last_k_low = na
+var int last_k_low_bar = na
+
+var float last_trend_high = na
+var int last_trend_high_bar = na
+var float last_trend_low = na
+var int last_trend_low_bar = na
+
+if not na(k_pivot_high)
+    last_k_high := k_pivot_high
+    last_k_high_bar := bar_index[min_div_bars]
+
+if not na(k_pivot_low)
+    last_k_low := k_pivot_low
+    last_k_low_bar := bar_index[min_div_bars]
+
+if not na(trend_pivot_high)
+    last_trend_high := trend_pivot_high
+    last_trend_high_bar := bar_index[min_div_bars]
+
+if not na(trend_pivot_low)
+    last_trend_low := trend_pivot_low
+    last_trend_low_bar := bar_index[min_div_bars]
+
+// ========================================================================
+// 📦 PART 6: DIVERGENCE DETECTION (Corrected)
+// ========================================================================
+var float prev_k_low = na
+var int prev_k_low_bar = na
+var float prev_trend_low = na
+var int prev_trend_low_bar = na
+
+var float prev_k_high = na
+var int prev_k_high_bar = na
+var float prev_trend_high = na
+var int prev_trend_high_bar = na
+
+bullishDivergence = false
+
+if not na(last_k_low) and not na(last_k_low_bar) and not na(last_trend_low) and not na(last_trend_low_bar)
+    prev_k_low := na
+    prev_k_low_bar := na
+    for i = min_div_bars + 1 to div_lookback
+        if not na(ta.pivotlow(k, min_div_bars, min_div_bars)[i])
+            prev_k_low := ta.pivotlow(k, min_div_bars, min_div_bars)[i]
+            prev_k_low_bar := bar_index[i + min_div_bars]
+            break
+
+    prev_trend_low := na
+    prev_trend_low_bar := na
+    for i = min_div_bars + 1 to div_lookback
+        if not na(ta.pivotlow(Trend, min_div_bars, min_div_bars)[i])
+            prev_trend_low := ta.pivotlow(Trend, min_div_bars, min_div_bars)[i]
+            prev_trend_low_bar := bar_index[i + min_div_bars]
+            break
+
+    if not na(prev_k_low) and not na(prev_trend_low)
+        if last_k_low > prev_k_low and last_trend_low < prev_trend_low and k < 50
+            bullishDivergence := true
+
+bearishDivergence = false
+
+if not na(last_k_high) and not na(last_k_high_bar) and not na(last_trend_high) and not na(last_trend_high_bar)
+    prev_k_high := na
+    prev_k_high_bar := na
+    for i = min_div_bars + 1 to div_lookback
+        if not na(ta.pivothigh(k, min_div_bars, min_div_bars)[i])
+            prev_k_high := ta.pivothigh(k, min_div_bars, min_div_bars)[i]
+            prev_k_high_bar := bar_index[i + min_div_bars]
+            break
+
+    prev_trend_high := na
+    prev_trend_high_bar := na
+    for i = min_div_bars + 1 to div_lookback
+        if not na(ta.pivothigh(Trend, min_div_bars, min_div_bars)[i])
+            prev_trend_high := ta.pivothigh(Trend, min_div_bars, min_div_bars)[i]
+            prev_trend_high_bar := bar_index[i + min_div_bars]
+            break
+
+    if not na(prev_k_high) and not na(prev_trend_high)
+        if last_k_high < prev_k_high and last_trend_high > prev_trend_high and k > 50
+            bearishDivergence := true
+
+// ========================================================================
+// 📦 PART 7: REVERSAL CANDLE ON K
+// ========================================================================
+k_open = k[1]
+k_close = k
+k_high = math.max(k, k[1])
+k_low = math.min(k, k[1])
+k_body = math.abs(k_close - k_open)
+k_range = k_high - k_low
+k_upper_wick = k_high - math.max(k_open, k_close)
+k_lower_wick = math.min(k_open, k_close) - k_low
+
+isKHammer = k_lower_wick > k_body * 2.0 and k_body > 0.3 and k_range > 1.5 and k < 40
+isKShootingStar = k_upper_wick > k_body * 2.0 and k_body > 0.3 and k_range > 1.5 and k > 60
+isKDoji = k_body <= k_range * 0.15 and k_range > 2.0
+
+// ========================================================================
+// 📦 PART 8: DIRECTION DIVERGENCE (معاكسة الاتجاه)
+// ========================================================================
+bool k_up   = k > k[1]
+bool k_down = k < k[1]
+bool trend_up   = Trend > Trend[1]
+bool trend_down = Trend < Trend[1]
+
+bool directionDivergence = (k_up and trend_down) or (k_down and trend_up)
+
+// ========================================================================
+// 📦 PART 9: COMBINED STRONG SIGNAL مع Trend Filter + شروط مخففة
+// ========================================================================
+// شروط انعكاس قابلة للتعديل من الإعدادات
+
+if relaxed_reversal_mode
+    // 🟢 وضع مخفف: Divergence OR Candle OR Stochastic extreme
+    strongBullishSignal = (
+        bullishDivergence or 
+        (isKHammer or isKDoji) or 
+        kPivotLow20 or 
+        (k < 25 and crossUp)
+    ) and k < 50
+    
+    // 🔴 وضع مخفف: Divergence OR Candle OR Stochastic extreme
+    strongBearishSignal = (
+        bearishDivergence or 
+        (isKShootingStar or isKDoji) or 
+        kPivotHigh80 or 
+        (k > 75 and crossDown)
+    ) and k > 50
+else
+    // 🟢 وضع صارم: يحتاج Divergence AND Candle
+    strongBullishSignal = bullishDivergence and (isKHammer or isKDoji) and k < 50
+    
+    // 🔴 وضع صارم: يحتاج Divergence AND Candle
+    strongBearishSignal = bearishDivergence and (isKShootingStar or isKDoji) and k > 50
+
+// تطبيق فلتر الاتجاه
+allowBullishSignal = not useTrendFilter or not isStrongDowntrend
+allowBearishSignal = not useTrendFilter or not isStrongUptrend
+
+finalBullishSignal = strongBullishSignal and allowBullishSignal
+finalBearishSignal = strongBearishSignal and allowBearishSignal
+
+// ========================================================================
+// 📦 PART 10: VOTING ENGINE
+// ========================================================================
+int bullish_signals = 0
+int bearish_signals = 0
+
+if crossUp
+    bullish_signals := bullish_signals + 2
+if crossDown
+    bearish_signals := bearish_signals + 2
+
+if (kPivotLow80 or midPivotLow75 or midPivotLow40 or kPivotLow20)
+    bullish_signals := bullish_signals + 2
+if (kPivotHigh80 or midPivotHigh75 or midPivotHigh40)
+    bearish_signals := bearish_signals + 2
+
+if close > ta.sma(close, 50)
+    bullish_signals := bullish_signals + 1
+else
+    bearish_signals := bearish_signals + 1
+
+if close > ta.ema(close, 20)
+    bullish_signals := bullish_signals + 1
+else
+    bearish_signals := bearish_signals + 1
+
+if k > 80 and close < ta.ema(close, 20)
+    bearish_signals := bearish_signals + 1
+if k < 20 and close > ta.ema(close, 20)
+    bullish_signals := bullish_signals + 1
+
+if finalBullishSignal
+    bullish_signals := bullish_signals + 3
+if finalBearishSignal
+    bearish_signals := bearish_signals + 3
+
+if isKHammer
+    bullish_signals := bullish_signals + 2
+if isKShootingStar
+    bearish_signals := bearish_signals + 2
+
+// ========================================================================
+// 📦 PART 11: SIGNAL DETERMINATION مع توضيح الاتجاه
+// ========================================================================
+string signal_type_adv = "محايد"
+if bullish_signals > bearish_signals and bullish_signals >= min_signals_required
+    signal_type_adv := "🟢 انعكاس صاعد ← السعر سيصعد"
+else if bearish_signals > bullish_signals and bearish_signals >= min_signals_required
+    signal_type_adv := "🔴 انعكاس هابط ← السعر سينزل"
+
+float final_confidence = 50.0
+if signal_type_adv != "محايد"
+    int max_signals = math.max(bullish_signals, bearish_signals)
+    final_confidence := 65.0 + (max_signals * 5.0)
+    if (close > ta.ema(close, 200))
+        final_confidence := final_confidence + 5
+    if (math.abs(close - open) > ta.atr(14) * 0.5)
+        final_confidence := final_confidence + 5
+    if finalBullishSignal or finalBearishSignal
+        final_confidence := final_confidence + 5
+    final_confidence := math.min(final_confidence, 95)
+
+float tp1_adv = na
+float tp2_adv = na
+float tp3_adv = na
+float sl_adv = na
+if signal_type_adv == "🟢 انعكاس صاعد ← السعر سيصعد"
+    tp1_adv := close * (1 + tp1_percent / 100)
+    tp2_adv := close * (1 + tp2_percent / 100)
+    tp3_adv := close * (1 + tp3_percent / 100)
+    sl_adv := close * (1 - stop_loss_percent / 100)
+else if signal_type_adv == "🔴 انعكاس هابط ← السعر سينزل"
+    tp1_adv := close * (1 - tp1_percent / 100)
+    tp2_adv := close * (1 - tp2_percent / 100)
+    tp3_adv := close * (1 - tp3_percent / 100)
+    sl_adv := close * (1 + stop_loss_percent / 100)
+
+// ========================================================================
+// 📦 PART 12: PLOTTING
+// ========================================================================
+var int kLineState = 0
+if crossDown
+    kLineState := 1
+else if crossUp
+    kLineState := 2
+else if finalBearishSignal
+    kLineState := 3
+else if finalBullishSignal
+    kLineState := 4
+
+kColor = kLineState == 1 ? color.white : kLineState == 2 ? color.green : kLineState == 3 ? color.red : kLineState == 4 ? color.lime : #2962FF
+
+p_k = plot(k, title="%K", color=kColor, linewidth=2, style=plot.style_linebr)
+p_d = plot(d, title="%D", color=#FF6D00, linewidth=2)
+
+p_trend = plot(Trend, title="Trend (Original)", color=color.new(color.purple, 20), linewidth=2, style=plot.style_line)
+
+fillColorK = k > 80 ? color.new(#FF0000, 70) : color.new(#089981, 100)
+fillColorD = d > 80 ? color.new(#FF0000, 70) : color.new(#089981, 100)
+p_80 = plot(80, display=display.none)
+fill(p_k, p_80, color=fillColorK, title="K 80 Fill")
+fill(p_d, p_80, color=fillColorD, title="D 80 Fill")
+
+h_upper = hline(80, "Upper Band", color=#787B86)
+hline(75, "75 Line", color=color.new(#787B86, 80), linestyle=hline.style_dotted)
+hline(50, "Middle Band", color=color.new(#787B86, 50))
+hline(40, "40 Line", color=color.new(#787B86, 80), linestyle=hline.style_dotted)
+h_lower = hline(20, "Lower Band", color=#787B86)
+fill(h_upper, h_lower, color=color.rgb(33, 150, 243, 95), title="Main BG")
+
+// ========================================================================
+// 📦 PART 13: DIVERGENCE LINES
+// ========================================================================
+if show_div_lines
+    if bullishDivergence and not na(last_k_low_bar) and not na(prev_k_low_bar)
+        line.new(prev_k_low_bar, prev_k_low, last_k_low_bar, last_k_low, 
+                 color=color.green, style=line.style_solid, width=2)
+        if not na(prev_trend_low_bar) and not na(last_trend_low_bar)
+            line.new(prev_trend_low_bar, prev_trend_low, last_trend_low_bar, last_trend_low, 
+                     color=color.red, style=line.style_solid, width=2)
+
+    if bearishDivergence and not na(last_k_high_bar) and not na(prev_k_high_bar)
+        line.new(prev_k_high_bar, prev_k_high, last_k_high_bar, last_k_high, 
+                 color=color.red, style=line.style_solid, width=2)
+        if not na(prev_trend_high_bar) and not na(last_trend_high_bar)
+            line.new(prev_trend_high_bar, prev_trend_high, last_trend_high_bar, last_trend_high, 
+                     color=color.green, style=line.style_solid, width=2)
+
+// ========================================================================
+// 📦 PART 14: REVERSAL CANDLE LABELS ON K
+// ========================================================================
+if show_k_reversal
+    if isKHammer
+        label.new(bar_index, k - 3, "🔨", yloc=yloc.price, color=color.new(color.green, 0), 
+                  textcolor=color.white, style=label.style_label_up, size=size.small)
+    if isKShootingStar
+        label.new(bar_index, k + 3, "⭐", yloc=yloc.price, color=color.new(color.red, 0), 
+                  textcolor=color.white, style=label.style_label_down, size=size.small)
+    if isKDoji
+        label.new(bar_index, k, "✝️", yloc=yloc.price, color=color.new(color.gray, 0), 
+                  textcolor=color.white, style=label.style_label_center, size=size.small)
+
+// ========================================================================
+// 📦 PART 15: DIRECTION DIVERGENCE LABEL
+// ========================================================================
+show_dir_div = input.bool(true, "إظهار إشارة عكس الاتجاه", group="Display")
+if show_dir_div and directionDivergence
+    label.new(bar_index, k + 8, "🔄 انعكاس", 
+              yloc=yloc.price, 
+              color=color.new(color.rgb(255, 152, 0), 90),
+              textcolor=color.white, 
+              style=label.style_label_up, 
+              size=size.large,
+              text_font_family=font.family_default)
+    
+    line.new(bar_index, k - 2, bar_index, k + 8, 
+             color=color.new(color.rgb(255, 152, 0), 70), 
+             style=line.style_dashed, 
+             width=1)
+
+// ========================================================================
+// 📦 PART 16: STRONG DIVERGENCE SIGNALS مع توضيح الاتجاه
+// ========================================================================
+if show_div_labels
+    if finalBullishSignal
+        label.new(bar_index, k - 8, "🟢 انعكاس صاعد\n⚡ السعر سيصعد ⚡\nK=" + str.tostring(k, "#.##") + "\nTrend=" + str.tostring(Trend, "#.##"), 
+                  yloc=yloc.price, color=color.new(color.green, 0), textcolor=color.white, 
+                  style=label.style_label_up, size=size.normal)
+
+    if finalBearishSignal
+        label.new(bar_index, k + 8, "🔴 انعكاس هابط\n⚡ السعر سينزل ⚡\nK=" + str.tostring(k, "#.##") + "\nTrend=" + str.tostring(Trend, "#.##"), 
+                  yloc=yloc.price, color=color.new(color.red, 0), textcolor=color.white, 
+                  style=label.style_label_down, size=size.normal)
+
+// ========================================================================
+// 📦 PART 17: ORIGINAL STOCHASTIC LABELS - مع التحكم بالربط بالانعكاس
+// ========================================================================
+show_original_labels = input.bool(true, "إظهار ملصقات BUY/SELL الأصلية", group="Display")
+show_debug_info = input.bool(false, "إظهار معلومات Debug", group="Display", tooltip="عرض معلومات التشخيص للتأكد من عمل الربط")
+
+// شروط إشارات البيع والشراء - يتم التحقق أولاً قبل الربط
+isSellSignal = kPivotHigh80 or midPivotHigh75 or midPivotHigh40
+isBuySignal = kPivotLow80 or midPivotLow75 or midPivotLow40 or kPivotLow20
+
+// شروط العرض مع ربط الانعكاس
+bool canShowSell = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBearishSignal)
+bool canShowBuy = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBullishSignal)
+
+// Debug labels
+if show_debug_info
+    if isSellSignal
+        label.new(bar_index, k + 15, "SELL Signal: " + str.tostring(isSellSignal) + "\nBearish Rev: " + str.tostring(finalBearishSignal) + "\nCan Show: " + str.tostring(canShowSell), 
+                  yloc=yloc.price, color=color.new(color.yellow, 50), textcolor=color.black, 
+                  style=label.style_label_down, size=size.tiny)
+    if isBuySignal
+        label.new(bar_index, k - 15, "BUY Signal: " + str.tostring(isBuySignal) + "\nBullish Rev: " + str.tostring(finalBullishSignal) + "\nCan Show: " + str.tostring(canShowBuy), 
+                  yloc=yloc.price, color=color.new(color.yellow, 50), textcolor=color.black, 
+                  style=label.style_label_up, size=size.tiny)
+
+if show_original_labels
+    // إشارات البيع (SELL)
+    if isSellSignal and canShowSell
+        label.new(x=bar_index, y=k, text="SELL", 
+                  yloc=yloc.price, color=#FFFFFF, textcolor=color.red, 
+                  style=label.style_label_down, size=size.small)
+
+    if crossDown and canShowSell
+        label.new(x=bar_index, y=80, text="⚡SELL", yloc=yloc.price, 
+                  color=color.new(#FF0000, 80), textcolor=color.white, 
+                  style=label.style_label_down, size=size.small)
+
+    // إشارات الشراء (BUY)
+    if isBuySignal and canShowBuy
+        label.new(x=bar_index, y=k, text="BUY", 
+                  yloc=yloc.price, color=#14b105, textcolor=color.white, 
+                  style=label.style_label_up, size=size.small)
+
+    if crossUp and canShowBuy
+        label.new(x=bar_index, y=20, text="⚡BUY", yloc=yloc.price, 
+                  color=color.new(#14b105, 80), textcolor=color.white, 
+                  style=label.style_label_up, size=size.small)
+
+// ========================================================================
+// 📦 PART 18: ALERTS
+// ========================================================================
+// تطبيق شرط الانعكاس على التنبيهات أيضاً
+bool canAlertBuy = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBullishSignal)
+bool canAlertSell = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBearishSignal)
+
+alertcondition(isBuySignal and canAlertBuy, title="Super Stochastic BUY", message="Stochastic Alım: {{ticker}} - Fiyat: {{close}}")
+alertcondition(isSellSignal and canAlertSell, title="Super Stochastic SELL", message="Stochastic Satış: {{ticker}} - Fiyat: {{close}}")
+alertcondition(finalBullishSignal, title="🟢 انعكاس صاعد — السعر سيصعد", message="انعكاس صاعد: {{ticker}} - K: {{plot_0}} - Trend: {{plot_2}}")
+alertcondition(finalBearishSignal, title="🔴 انعكاس هابط — السعر سينزل", message="انعكاس هابط: {{ticker}} - K: {{plot_0}} - Trend: {{plot_2}}")
+
+if isBuySignal and canAlertBuy
+    alert("BUY! " + syminfo.ticker + " K=" + str.tostring(k, "#.##"), alert.freq_once_per_bar_close)
+if isSellSignal and canAlertSell
+    alert("SELL! " + syminfo.ticker + " K=" + str.tostring(k, "#.##"), alert.freq_once_per_bar_close)
+if finalBullishSignal
+    alert("🟢 انعكاس صاعد! " + syminfo.ticker + " K=" + str.tostring(k, "#.##") + " Trend=" + str.tostring(Trend, "#.##"), alert.freq_once_per_bar_close)
+if finalBearishSignal
+    alert("🔴 انعكاس هابط! " + syminfo.ticker + " K=" + str.tostring(k, "#.##") + " Trend=" + str.tostring(Trend, "#.##"), alert.freq_once_per_bar_close)
+
+// ========================================================================
+// 📦 PART 19: VOTING TABLE مع توضيح الاتجاه
+// ========================================================================
+f_display_table() =>
+    if show_voting_table and barstate.islast and signal_type_adv != "محايد" and final_confidence >= min_confidence
+        var table predTable = table.new(position.top_right, 2, 10, 
+            bgcolor=color.rgb(0, 0, 0, 80), 
+            border_color=color.rgb(48, 54, 61, 60), 
+            border_width=2)
+        table.cell(predTable, 0, 0, "📊 VOTING", bgcolor=color.rgb(26,26,26,100), text_color=color.rgb(255,204,0,100), text_size=size.large, text_halign=text.align_center)
+        table.cell(predTable, 1, 0, "القيمة", bgcolor=color.rgb(26,26,26,100), text_color=color.rgb(255,204,0,100), text_size=size.large, text_halign=text.align_center)
+        
+        table.cell(predTable, 0, 1, "الإشارة", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        color predColor = signal_type_adv == "🟢 انعكاس صاعد ← السعر سيصعد" ? color.rgb(0,255,0,100) : color.rgb(255,0,0,100)
+        table.cell(predTable, 1, 1, signal_type_adv, bgcolor=color.rgb(10,10,10,100), text_color=predColor)
+        
+        table.cell(predTable, 0, 2, "الثقة", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 2, str.tostring(final_confidence, "#.#") + "%", bgcolor=color.rgb(10,10,10,100), text_color=color.rgb(255,255,0,100))
+        
+        table.cell(predTable, 0, 3, "الاتجاه المتوقع", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        string directionText = signal_type_adv == "🟢 انعكاس صاعد ← السعر سيصعد" ? "↑ صعود" : "↓ هبوط"
+        color directionColor = signal_type_adv == "🟢 انعكاس صاعد ← السعر سيصعد" ? color.green : color.red
+        table.cell(predTable, 1, 3, directionText, bgcolor=color.rgb(10,10,10,100), text_color=directionColor)
+        
+        table.cell(predTable, 0, 4, "TP1", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 4, str.tostring(tp1_adv, "#.##"), bgcolor=color.rgb(10,10,10,100), text_color=color.rgb(255,255,0,100))
+        table.cell(predTable, 0, 5, "TP2", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 5, str.tostring(tp2_adv, "#.##"), bgcolor=color.rgb(10,10,10,100), text_color=color.rgb(0,255,136,100))
+        table.cell(predTable, 0, 6, "TP3", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 6, str.tostring(tp3_adv, "#.##"), bgcolor=color.rgb(10,10,10,100), text_color=color.rgb(0,255,136,100))
+        table.cell(predTable, 0, 7, "SL", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        table.cell(predTable, 1, 7, str.tostring(sl_adv, "#.##"), bgcolor=color.rgb(10,10,10,100), text_color=color.rgb(255,68,68,100))
+        
+        table.cell(predTable, 0, 8, "Divergence", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        string divStatus = bullishDivergence ? "🟢 صاعد" : bearishDivergence ? "🔴 هابط" : "لا يوجد"
+        color divColor = bullishDivergence ? color.green : bearishDivergence ? color.red : color.gray
+        table.cell(predTable, 1, 8, divStatus, bgcolor=color.rgb(10,10,10,100), text_color=divColor)
+        
+        table.cell(predTable, 0, 9, "Trend Filter", bgcolor=color.rgb(10,10,10,100), text_color=color.gray)
+        string trendStatus = isStrongUptrend ? "📈 صاعد قوي" : isStrongDowntrend ? "📉 هابط قوي" : "↔️ جانبي"
+        color trendStatusColor = isStrongUptrend ? color.green : isStrongDowntrend ? color.red : color.gray
+        table.cell(predTable, 1, 9, trendStatus, bgcolor=color.rgb(10,10,10,100), text_color=trendStatusColor)
+
+f_display_table()
+
+// ========================================================================
+// 📦 PART 20: INFO TABLE
+// ========================================================================
+if barstate.islast
+    var table infoTable = table.new(position.bottom_right, 2, 8, bgcolor=color.new(#0d1117, 90), border_color=color.gray)
+    table.cell(infoTable, 0, 0, "Variable", bgcolor=color.new(#161b22, 100), text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 0, "Value", bgcolor=color.new(#161b22, 100), text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 0, 1, "%K", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
+    table.cell(infoTable, 1, 1, str.tostring(k, "#.##"), text_color=color.blue)
+    table.cell(infoTable, 0, 2, "Trend", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
+    table.cell(infoTable, 1, 2, str.tostring(Trend, "#.##"), text_color=color.purple)
+    table.cell(infoTable, 0, 3, "K Direction", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
+    kDir = k > k[1] ? "↑ UP" : k < k[1] ? "↓ DOWN" : "→ FLAT"
+    table.cell(infoTable, 1, 3, kDir, text_color=k > k[1] ? color.green : k < k[1] ? color.red : color.gray)
+    table.cell(infoTable, 0, 4, "Trend Direction", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
+    tDir = Trend > Trend[1] ? "↑ UP" : Trend < Trend[1] ? "↓ DOWN" : "→ FLAT"
+    table.cell(infoTable, 1, 4, tDir, text_color=Trend > Trend[1] ? color.green : Trend < Trend[1] ? color.red : color.gray)
+    table.cell(infoTable, 0, 5, "Divergence", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
+    string divText = bullishDivergence ? "🟢 BULLISH" : bearishDivergence ? "🔴 BEARISH" : "لا يوجد"
+    color divC = bullishDivergence ? color.green : bearishDivergence ? color.red : color.gray
+    table.cell(infoTable, 1, 5, divText, text_color=divC)
+    table.cell(infoTable, 0, 6, "Overall Trend", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
+    string overallTrendText = overallTrend == 1 ? "📈 صاعد" : overallTrend == -1 ? "📉 هابط" : "↔️ جانبي"
+    color overallTrendColor = overallTrend == 1 ? color.green : overallTrend == -1 ? color.red : color.gray
+    table.cell(infoTable, 1, 6, overallTrendText + " (" + str.tostring(math.round(trendStrengthValue * 100)) + "%)", text_color=overallTrendColor)
+    
+    // إضافة صف جديد لحالة الربط بالانعكاس
+    table.cell(infoTable, 0, 7, "BUY/SELL Mode", bgcolor=color.new(#0d1117, 80), text_color=color.gray)
+    string modeText = require_reversal_for_buysell ? "🔗 مرتبط بالانعكاس" : "🔓 مستقل"
+    color modeColor = require_reversal_for_buysell ? color.orange : color.gray
+    table.cell(infoTable, 1, 7, modeText, text_color=modeColor)
