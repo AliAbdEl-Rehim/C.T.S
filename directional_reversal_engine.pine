@@ -1,0 +1,415 @@
+//@version=6
+indicator(title="🔄 محرك الانعكاس الاتجاهي — Directional Reversal Engine", shorttitle="DRE v1.1", overlay=false, format=format.price, precision=2, max_labels_count=500, max_lines_count=500)
+
+// الانعكاس الصاعد: الزخم يصنع قاعاً أعلى بينما الاتجاه يصنع قاعاً أدنى، ثم تغلق شمعة انعكاس تحت 50.
+// الانعكاس الهابط: الزخم يصنع قمة أدنى بينما الاتجاه يصنع قمة أعلى، ثم تغلق شمعة انعكاس فوق 50.
+// الإشارة تُرسم مرة واحدة عند تأكيد القمة أو القاع. لا تبقى مضيئة في الشموع التالية.
+
+grp_stoch = "⚙️ إعدادات الستوكاستيك"
+periodK = input.int(14, "%K Length", minval=1, group=grp_stoch)
+smoothK = input.int(1, "%K Smoothing", minval=1, group=grp_stoch)
+periodD = input.int(3, "%D Smoothing", minval=1, group=grp_stoch)
+
+grp_bbpt = "⚙️ إعدادات BBPT+ Trend"
+atr_length = input.int(5, "ATR Length", minval=1, group=grp_bbpt)
+lookback_lowest = input.int(50, "Lowest/Highest Lookback", minval=1, group=grp_bbpt)
+
+grp_div = "⚙️ إعدادات الاختلاف (Divergence)"
+div_lookback = input.int(15, "فترة البحث عن الاختلاف (شمعات)", minval=5, maxval=50, step=1, group=grp_div)
+min_div_bars = input.int(3, "الحد الأدنى لمسافة القمم/القيعان", minval=2, maxval=10, step=1, group=grp_div)
+show_div_lines = input.bool(true, "رسم خطوط الاختلاف", group=grp_div)
+show_div_labels = input.bool(true, "إظهار إشارات الاختلاف", group=grp_div)
+show_k_reversal = input.bool(true, "إظهار الشمعات الانعكاسية على %K", group=grp_div)
+
+grp_trend = "🔄 فلتر الاتجاه الرئيسي"
+useTrendFilter = input.bool(true, "تفعيل فلتر الاتجاه", group=grp_trend, tooltip="الإشارات الضعيفة عكس اتجاه قوي تُحذف. اختلاف مؤكد يُسمح به لأنه هو الانعكاس.")
+trendThreshold = input.float(0.6, "قوة الاتجاه المطلوبة (0-1)", minval=0.3, maxval=0.9, step=0.05, group=grp_trend)
+
+grp_voting = "⚙️ نظام التصويت"
+min_signals_required = input.int(3, "الحد الأدنى للنقاط", minval=2, maxval=8, step=1, group=grp_voting)
+min_confidence = input.float(70.0, "الحد الأدنى للثقة %", minval=50, maxval=90, step=1, group=grp_voting)
+signal_gap = input.int(6, "أقل عدد شموع بين إشارتين", minval=1, maxval=30, group=grp_voting)
+tp1_percent = input.float(1.0, "TP1 %", minval=0.5, maxval=5.0, step=0.1, group=grp_voting)
+tp2_percent = input.float(2.0, "TP2 %", minval=1.0, maxval=8.0, step=0.1, group=grp_voting)
+tp3_percent = input.float(3.5, "TP3 %", minval=2.0, maxval=12.0, step=0.1, group=grp_voting)
+stop_loss_percent = input.float(1.5, "Stop Loss %", minval=0.5, maxval=5.0, step=0.1, group=grp_voting)
+show_voting_table = input.bool(true, "إظهار جدول التصويت", group=grp_voting)
+
+grp_display = "عرض"
+show_dir_div = input.bool(true, "إظهار انعكاس الاتجاه المستمر", group=grp_display)
+show_original_labels = input.bool(false, "إظهار BUY/SELL على كل تقاطع", group=grp_display, tooltip="هذه العلامات كثيرة. الافتراضي إخفاؤها والإبقاء على إشارة التصويت.")
+show_vote_labels = input.bool(true, "إظهار إشارة التصويت مع الأهداف", group=grp_display)
+
+// ------------------------------------------------------------------------
+// Stochastic
+// ------------------------------------------------------------------------
+rawK = ta.stoch(close, high, low, periodK)
+k = ta.sma(rawK, smoothK)
+d = ta.sma(k, periodD)
+crossDown = ta.crossunder(k, d)
+crossUp = ta.crossover(k, d)
+
+kPivotHigh80 = k[1] > 80 and k[1] > k[2] and k < k[1]
+kPivotLow80 = k[1] > 80 and k[1] < k[2] and k > k[1]
+midPivotHigh75 = k[1] >= 50 and k[1] <= 75 and k[1] > k[2] and k < k[1]
+midPivotLow75 = k[1] >= 50 and k[1] <= 75 and k[1] < k[2] and k > k[1]
+midPivotHigh40 = k[1] >= 20 and k[1] <= 40 and k[1] > k[2] and k < k[1]
+midPivotLow40 = k[1] >= 20 and k[1] <= 40 and k[1] < k[2] and k > k[1]
+kPivotLow20 = k[1] < 20 and k[1] < k[2] and k > k[1]
+
+// ------------------------------------------------------------------------
+// BBPT trend: قرب السعر من أعلى المدى ناقص قربه من أسفل المدى
+// ------------------------------------------------------------------------
+atr5 = ta.atr(atr_length)
+atr14 = ta.atr(14)
+BullTrend = (close - ta.lowest(low, lookback_lowest)) / math.max(atr5, syminfo.mintick)
+BearTrend = (ta.highest(high, lookback_lowest) - close) / math.max(atr5, syminfo.mintick)
+Trend = BullTrend - BearTrend
+
+// ------------------------------------------------------------------------
+// Trend filter. Every ta.* call stays in the global scope.
+// ------------------------------------------------------------------------
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+ema200 = ta.ema(close, 200)
+maTrend = (ema20 > ema50 ? 1.0 : -1.0) + (ema20 > ema100 ? 1.0 : -1.0) + (ema50 > ema100 ? 1.0 : -1.0)
+maTrendStrength = maTrend / 3.0
+
+[macdLine, signalLine, _] = ta.macd(close, 12, 26, 9)
+macdTrend = macdLine > signalLine ? 1 : -1
+macdStrength = math.min(0.8, math.abs(macdLine - signalLine) / math.max(atr14, syminfo.mintick) * 10)
+
+bbMiddle = ta.sma(close, 20)
+bbDev = ta.stdev(close, 20)
+bbUpper = bbMiddle + bbDev * 2
+bbLower = bbMiddle - bbDev * 2
+bbSpan = math.max(bbUpper - bbLower, syminfo.mintick)
+bbPosition = (close - bbLower) / bbSpan
+bbTrend = bbPosition > 0.7 ? 1 : bbPosition < 0.3 ? -1 : 0
+
+upVotes = (maTrendStrength > 0.2 ? math.abs(maTrendStrength) : 0.0) + (macdTrend == 1 and macdStrength > 0.3 ? macdStrength : 0.0) + (bbTrend == 1 ? 0.5 : 0.0)
+downVotes = (maTrendStrength < -0.2 ? math.abs(maTrendStrength) : 0.0) + (macdTrend == -1 and macdStrength > 0.3 ? macdStrength : 0.0) + (bbTrend == -1 ? 0.5 : 0.0)
+voteTotal = upVotes + downVotes
+rawTrendSide = (not useTrendFilter or voteTotal == 0) ? 0 : upVotes > downVotes ? 1 : downVotes > upVotes ? -1 : 0
+rawTrendStrength = voteTotal > 0 ? math.max(upVotes, downVotes) / voteTotal : 0.5
+trendStrengthValue = ta.ema(rawTrendStrength, 5)
+overallTrend = rawTrendSide
+isStrongUptrend = useTrendFilter and overallTrend == 1 and trendStrengthValue >= trendThreshold
+isStrongDowntrend = useTrendFilter and overallTrend == -1 and trendStrengthValue >= trendThreshold
+
+// ------------------------------------------------------------------------
+// Confirmed pivots. A divergence is true only on the bar the new pivot closes.
+// ------------------------------------------------------------------------
+kPivotHigh = ta.pivothigh(k, min_div_bars, min_div_bars)
+kPivotLow = ta.pivotlow(k, min_div_bars, min_div_bars)
+trendPivotHigh = ta.pivothigh(Trend, min_div_bars, min_div_bars)
+trendPivotLow = ta.pivotlow(Trend, min_div_bars, min_div_bars)
+
+var float[] kHighVals = array.new<float>()
+var int[] kHighBars = array.new<int>()
+var float[] kLowVals = array.new<float>()
+var int[] kLowBars = array.new<int>()
+var float[] trHighVals = array.new<float>()
+var int[] trHighBars = array.new<int>()
+var float[] trLowVals = array.new<float>()
+var int[] trLowBars = array.new<int>()
+
+f_push(float[] vals, int[] bars, float val, int b) =>
+    array.push(vals, val)
+    array.push(bars, b)
+    if array.size(vals) > 10
+        array.shift(vals)
+        array.shift(bars)
+
+if not na(kPivotHigh)
+    f_push(kHighVals, kHighBars, kPivotHigh, bar_index - min_div_bars)
+if not na(kPivotLow)
+    f_push(kLowVals, kLowBars, kPivotLow, bar_index - min_div_bars)
+if not na(trendPivotHigh)
+    f_push(trHighVals, trHighBars, trendPivotHigh, bar_index - min_div_bars)
+if not na(trendPivotLow)
+    f_push(trLowVals, trLowBars, trendPivotLow, bar_index - min_div_bars)
+
+bool bullishDivergence = false
+bool bearishDivergence = false
+int bullK1 = na
+int bullK2 = na
+float bullKv1 = na
+float bullKv2 = na
+int bullT1 = na
+int bullT2 = na
+float bullTv1 = na
+float bullTv2 = na
+int bearK1 = na
+int bearK2 = na
+float bearKv1 = na
+float bearKv2 = na
+int bearT1 = na
+int bearT2 = na
+float bearTv1 = na
+float bearTv2 = na
+
+if not na(kPivotLow) and array.size(kLowVals) >= 2 and array.size(trLowVals) >= 2
+    float kNew = array.last(kLowVals)
+    float kPrev = array.get(kLowVals, array.size(kLowVals) - 2)
+    int kNewBar = array.last(kLowBars)
+    int kPrevBar = array.get(kLowBars, array.size(kLowBars) - 2)
+    float tNew = array.last(trLowVals)
+    float tPrev = array.get(trLowVals, array.size(trLowVals) - 2)
+    int tNewBar = array.last(trLowBars)
+    int tPrevBar = array.get(trLowBars, array.size(trLowBars) - 2)
+    int kSpan = kNewBar - kPrevBar
+    int aligned = math.abs(kNewBar - tNewBar)
+    if kNew > kPrev and tNew < tPrev and k < 50 and kSpan >= min_div_bars and kSpan <= div_lookback and aligned <= div_lookback
+        bullishDivergence := true
+        bullK1 := kPrevBar
+        bullK2 := kNewBar
+        bullKv1 := kPrev
+        bullKv2 := kNew
+        bullT1 := tPrevBar
+        bullT2 := tNewBar
+        bullTv1 := tPrev
+        bullTv2 := tNew
+
+if not na(kPivotHigh) and array.size(kHighVals) >= 2 and array.size(trHighVals) >= 2
+    float kNew = array.last(kHighVals)
+    float kPrev = array.get(kHighVals, array.size(kHighVals) - 2)
+    int kNewBar = array.last(kHighBars)
+    int kPrevBar = array.get(kHighBars, array.size(kHighBars) - 2)
+    float tNew = array.last(trHighVals)
+    float tPrev = array.get(trHighVals, array.size(trHighVals) - 2)
+    int tNewBar = array.last(trHighBars)
+    int tPrevBar = array.get(trHighBars, array.size(trHighBars) - 2)
+    int kSpan = kNewBar - kPrevBar
+    int aligned = math.abs(kNewBar - tNewBar)
+    if kNew < kPrev and tNew > tPrev and k > 50 and kSpan >= min_div_bars and kSpan <= div_lookback and aligned <= div_lookback
+        bearishDivergence := true
+        bearK1 := kPrevBar
+        bearK2 := kNewBar
+        bearKv1 := kPrev
+        bearKv2 := kNew
+        bearT1 := tPrevBar
+        bearT2 := tNewBar
+        bearTv1 := tPrev
+        bearTv2 := tNew
+
+// ------------------------------------------------------------------------
+// Reversal shape on %K. A real hammer is mostly wick, not a small body.
+// ------------------------------------------------------------------------
+kBody = math.abs(k - k[1])
+kRange = math.max(math.abs(k - k[1]), 0.0)
+kUpper = 0.0
+kLower = 0.0
+// Shape uses the last two K values as a synthetic candle. Range must include both wicks,
+// so measure the excursion around the open/close pair against a short window.
+kWinHigh = math.max(k, math.max(k[1], k[2]))
+kWinLow = math.min(k, math.min(k[1], k[2]))
+kRange := math.max(kWinHigh - kWinLow, 0.0001)
+kUpper := kWinHigh - math.max(k, k[1])
+kLower := math.min(k, k[1]) - kWinLow
+isKHammer = k < 40 and kLower / kRange >= 0.55 and kLower > kBody * 1.5 and k >= k[1]
+isKShootingStar = k > 60 and kUpper / kRange >= 0.55 and kUpper > kBody * 1.5 and k <= k[1]
+isKDoji = kBody <= kRange * 0.12 and kRange >= 4 and (k < 30 or k > 70)
+newHammer = isKHammer and not isKHammer[1]
+newStar = isKShootingStar and not isKShootingStar[1]
+newDoji = isKDoji and not isKDoji[1]
+
+strongBullishSignal = bullishDivergence and (isKHammer or isKDoji) and k < 50
+strongBearishSignal = bearishDivergence and (isKShootingStar or isKDoji) and k > 50
+
+// Opposite movement must last 3 bars and sit at an extreme. One opposite bar is noise.
+bool oppositeNow = (k > k[1] and Trend < Trend[1]) or (k < k[1] and Trend > Trend[1])
+var int oppositeRun = 0
+oppositeRun := oppositeNow ? oppositeRun + 1 : 0
+directionDivergence = oppositeRun == 3 and (k <= 35 or k >= 65)
+
+// ------------------------------------------------------------------------
+// Votes count events on this bar. Price sitting above an average is not an event.
+// ------------------------------------------------------------------------
+int bullish_signals = 0
+int bearish_signals = 0
+
+if crossUp
+    bullish_signals += 2
+if crossDown
+    bearish_signals += 2
+if kPivotLow80 or midPivotLow75 or midPivotLow40 or kPivotLow20
+    bullish_signals += 2
+if kPivotHigh80 or midPivotHigh75 or midPivotHigh40
+    bearish_signals += 2
+if bullishDivergence
+    bullish_signals += 3
+if bearishDivergence
+    bearish_signals += 3
+if isKHammer
+    bullish_signals += 2
+if isKShootingStar
+    bearish_signals += 2
+if bullish_signals > 0 and overallTrend == 1
+    bullish_signals += 1
+if bearish_signals > 0 and overallTrend == -1
+    bearish_signals += 1
+
+string signal_type_adv = "محايد"
+if bullish_signals > bearish_signals and bullish_signals >= min_signals_required
+    signal_type_adv := "🟢 انعكاس صاعد ← السعر سيصعد"
+else if bearish_signals > bullish_signals and bearish_signals >= min_signals_required
+    signal_type_adv := "🔴 انعكاس هابط ← السعر سينزل"
+
+int maxSignals = math.max(bullish_signals, bearish_signals)
+float final_confidence = signal_type_adv == "محايد" ? 0.0 : math.min(95.0, 40.0 + maxSignals * 10.0)
+if signal_type_adv != "محايد" and close > ema200 and signal_type_adv == "🟢 انعكاس صاعد ← السعر سيصعد"
+    final_confidence := math.min(95.0, final_confidence + 4)
+if signal_type_adv != "محايد" and close < ema200 and signal_type_adv == "🔴 انعكاس هابط ← السعر سينزل"
+    final_confidence := math.min(95.0, final_confidence + 4)
+if strongBullishSignal or strongBearishSignal
+    final_confidence := math.min(95.0, final_confidence + 5)
+
+bool trendAllowsBull = not useTrendFilter or strongBullishSignal or not isStrongDowntrend
+bool trendAllowsBear = not useTrendFilter or strongBearishSignal or not isStrongUptrend
+bool bullOk = signal_type_adv == "🟢 انعكاس صاعد ← السعر سيصعد" and final_confidence >= min_confidence and trendAllowsBull
+bool bearOk = signal_type_adv == "🔴 انعكاس هابط ← السعر سينزل" and final_confidence >= min_confidence and trendAllowsBear
+bool newBull = bullOk and not bullOk[1]
+bool newBear = bearOk and not bearOk[1]
+
+var int lastBullBar = na
+var int lastBearBar = na
+bool gapBull = na(lastBullBar) or bar_index - lastBullBar >= signal_gap
+bool gapBear = na(lastBearBar) or bar_index - lastBearBar >= signal_gap
+bool fireBull = newBull and gapBull and not bearOk and barstate.isconfirmed
+bool fireBear = newBear and gapBear and not bullOk and barstate.isconfirmed
+
+float tp1_adv = na
+float tp2_adv = na
+float tp3_adv = na
+float sl_adv = na
+if fireBull
+    tp1_adv := close * (1 + tp1_percent / 100)
+    tp2_adv := close * (1 + tp2_percent / 100)
+    tp3_adv := close * (1 + tp3_percent / 100)
+    sl_adv := close * (1 - stop_loss_percent / 100)
+    lastBullBar := bar_index
+else if fireBear
+    tp1_adv := close * (1 - tp1_percent / 100)
+    tp2_adv := close * (1 - tp2_percent / 100)
+    tp3_adv := close * (1 - tp3_percent / 100)
+    sl_adv := close * (1 + stop_loss_percent / 100)
+    lastBearBar := bar_index
+
+// ------------------------------------------------------------------------
+// Plots
+// ------------------------------------------------------------------------
+kColor = fireBear ? color.red : fireBull ? color.lime : k > d ? color.green : color.red
+p_k = plot(k, title="%K", color=kColor, linewidth=2)
+p_d = plot(d, title="%D", color=#FF6D00, linewidth=2)
+plot(Trend, title="Trend", color=color.new(color.purple, 20), linewidth=2)
+
+p80 = plot(80, display=display.none)
+fill(p_k, p80, color=k > 80 ? color.new(#FF0000, 70) : color.new(#089981, 100), title="K 80 Fill")
+fill(p_d, p80, color=d > 80 ? color.new(#FF0000, 70) : color.new(#089981, 100), title="D 80 Fill")
+hUpper = hline(80, "Upper Band", color=#787B86)
+hline(75, "75", color=color.new(#787B86, 80), linestyle=hline.style_dotted)
+hline(50, "Middle", color=color.new(#787B86, 50))
+hline(40, "40", color=color.new(#787B86, 80), linestyle=hline.style_dotted)
+hLower = hline(20, "Lower Band", color=#787B86)
+fill(hUpper, hLower, color=color.rgb(33, 150, 243, 95), title="Main BG")
+
+// ------------------------------------------------------------------------
+// Divergence lines, oldest removed so the pane stays readable
+// ------------------------------------------------------------------------
+var line[] divLines = array.new<line>()
+f_keep(line ln) =>
+    if not na(ln)
+        array.push(divLines, ln)
+        if array.size(divLines) > 24
+            line.delete(array.shift(divLines))
+
+if show_div_lines and bullishDivergence
+    f_keep(line.new(bullK1, bullKv1, bullK2, bullKv2, color=color.green, width=2))
+    f_keep(line.new(bullT1, bullTv1, bullT2, bullTv2, color=color.red, width=2))
+if show_div_lines and bearishDivergence
+    f_keep(line.new(bearK1, bearKv1, bearK2, bearKv2, color=color.red, width=2))
+    f_keep(line.new(bearT1, bearTv1, bearT2, bearTv2, color=color.green, width=2))
+
+if show_k_reversal and barstate.isconfirmed
+    if newHammer
+        label.new(bar_index, k, "🔨", yloc=yloc.price, color=color.new(color.green, 0), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    if newStar
+        label.new(bar_index, k, "⭐", yloc=yloc.price, color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+    if newDoji
+        label.new(bar_index, k, "✝", yloc=yloc.price, color=color.new(color.gray, 0), textcolor=color.white, style=label.style_label_center, size=size.tiny)
+
+if show_dir_div and directionDivergence and barstate.isconfirmed
+    label.new(bar_index, k, "انعكاس", yloc=yloc.price, color=color.new(color.orange, 20), textcolor=color.white, style=label.style_label_up, size=size.small)
+
+if show_div_labels and barstate.isconfirmed
+    if strongBullishSignal
+        label.new(bar_index, k, "انعكاس صاعد\nK " + str.tostring(k, "#.#"), yloc=yloc.price, color=color.new(color.green, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
+    if strongBearishSignal
+        label.new(bar_index, k, "انعكاس هابط\nK " + str.tostring(k, "#.#"), yloc=yloc.price, color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+if show_original_labels and barstate.isconfirmed
+    if kPivotHigh80 or midPivotHigh75 or midPivotHigh40
+        label.new(bar_index, k, "SELL", yloc=yloc.price, color=color.white, textcolor=color.red, style=label.style_label_down, size=size.tiny)
+    if kPivotLow80 or midPivotLow75 or midPivotLow40 or kPivotLow20
+        label.new(bar_index, k, "BUY", yloc=yloc.price, color=#14b105, textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    if crossUp
+        label.new(bar_index, 20, "BUY", yloc=yloc.price, color=color.new(#14b105, 70), textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    if crossDown
+        label.new(bar_index, 80, "SELL", yloc=yloc.price, color=color.new(#FF0000, 70), textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+if show_vote_labels and fireBull
+    label.new(bar_index, math.max(k - 8, 2), "شراء " + str.tostring(final_confidence, "#") + "%\nTP1 " + str.tostring(tp1_adv, format.mintick) + "\nTP2 " + str.tostring(tp2_adv, format.mintick) + "\nSL " + str.tostring(sl_adv, format.mintick), yloc=yloc.price, color=color.new(#00c853, 0), textcolor=color.white, style=label.style_label_up, size=size.small)
+if show_vote_labels and fireBear
+    label.new(bar_index, math.min(k + 8, 98), "بيع " + str.tostring(final_confidence, "#") + "%\nTP1 " + str.tostring(tp1_adv, format.mintick) + "\nTP2 " + str.tostring(tp2_adv, format.mintick) + "\nSL " + str.tostring(sl_adv, format.mintick), yloc=yloc.price, color=color.new(#d50000, 0), textcolor=color.white, style=label.style_label_down, size=size.small)
+
+// ------------------------------------------------------------------------
+// Alerts fire with the same confirmed series used for labels
+// ------------------------------------------------------------------------
+alertcondition(fireBull, title="انعكاس صاعد", message="انعكاس صاعد: {{ticker}} عند {{close}}")
+alertcondition(fireBear, title="انعكاس هابط", message="انعكاس هابط: {{ticker}} عند {{close}}")
+alertcondition(strongBullishSignal and barstate.isconfirmed, title="اختلاف صاعد مؤكد", message="اختلاف صاعد: {{ticker}}")
+alertcondition(strongBearishSignal and barstate.isconfirmed, title="اختلاف هابط مؤكد", message="اختلاف هابط: {{ticker}}")
+
+// ------------------------------------------------------------------------
+// Tables
+// ------------------------------------------------------------------------
+var table voteTable = table.new(position.top_right, 2, 10, bgcolor=color.new(#000000, 15), border_color=color.new(#30363d, 40), border_width=1)
+if show_voting_table and barstate.islast
+    color sideColor = fireBull or signal_type_adv == "🟢 انعكاس صاعد ← السعر سيصعد" ? color.lime : fireBear or signal_type_adv == "🔴 انعكاس هابط ← السعر سينزل" ? color.red : color.gray
+    table.cell(voteTable, 0, 0, "التصويت", text_color=color.yellow, text_size=size.small)
+    table.cell(voteTable, 1, 0, "القيمة", text_color=color.yellow, text_size=size.small)
+    table.cell(voteTable, 0, 1, "الإشارة", text_color=color.gray, text_size=size.tiny)
+    table.cell(voteTable, 1, 1, signal_type_adv, text_color=sideColor, text_size=size.tiny)
+    table.cell(voteTable, 0, 2, "النقاط", text_color=color.gray, text_size=size.tiny)
+    table.cell(voteTable, 1, 2, str.tostring(bullish_signals) + " / " + str.tostring(bearish_signals), text_color=color.white, text_size=size.tiny)
+    table.cell(voteTable, 0, 3, "الثقة", text_color=color.gray, text_size=size.tiny)
+    table.cell(voteTable, 1, 3, str.tostring(final_confidence, "#.#") + "%", text_color=final_confidence >= min_confidence ? color.yellow : color.gray, text_size=size.tiny)
+    table.cell(voteTable, 0, 4, "TP1", text_color=color.gray, text_size=size.tiny)
+    table.cell(voteTable, 1, 4, na(tp1_adv) ? "—" : str.tostring(tp1_adv, format.mintick), text_color=color.yellow, text_size=size.tiny)
+    table.cell(voteTable, 0, 5, "TP2", text_color=color.gray, text_size=size.tiny)
+    table.cell(voteTable, 1, 5, na(tp2_adv) ? "—" : str.tostring(tp2_adv, format.mintick), text_color=color.lime, text_size=size.tiny)
+    table.cell(voteTable, 0, 6, "TP3", text_color=color.gray, text_size=size.tiny)
+    table.cell(voteTable, 1, 6, na(tp3_adv) ? "—" : str.tostring(tp3_adv, format.mintick), text_color=color.lime, text_size=size.tiny)
+    table.cell(voteTable, 0, 7, "SL", text_color=color.gray, text_size=size.tiny)
+    table.cell(voteTable, 1, 7, na(sl_adv) ? "—" : str.tostring(sl_adv, format.mintick), text_color=color.red, text_size=size.tiny)
+    table.cell(voteTable, 0, 8, "الاختلاف", text_color=color.gray, text_size=size.tiny)
+    table.cell(voteTable, 1, 8, bullishDivergence ? "صاعد" : bearishDivergence ? "هابط" : "لا يوجد", text_color=bullishDivergence ? color.lime : bearishDivergence ? color.red : color.gray, text_size=size.tiny)
+    table.cell(voteTable, 0, 9, "الاتجاه", text_color=color.gray, text_size=size.tiny)
+    table.cell(voteTable, 1, 9, isStrongUptrend ? "صاعد قوي" : isStrongDowntrend ? "هابط قوي" : "جانبي", text_color=isStrongUptrend ? color.lime : isStrongDowntrend ? color.red : color.gray, text_size=size.tiny)
+
+var table infoTable = table.new(position.bottom_right, 2, 6, bgcolor=color.new(#0d1117, 10), border_color=color.gray, border_width=1)
+if barstate.islast
+    table.cell(infoTable, 0, 0, "%K", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 0, str.tostring(k, "#.#"), text_color=color.aqua, text_size=size.tiny)
+    table.cell(infoTable, 0, 1, "%D", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 1, str.tostring(d, "#.#"), text_color=color.orange, text_size=size.tiny)
+    table.cell(infoTable, 0, 2, "Trend", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 2, str.tostring(Trend, "#.#"), text_color=color.purple, text_size=size.tiny)
+    table.cell(infoTable, 0, 3, "اتجاه K", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 3, k > k[1] ? "صاعد" : k < k[1] ? "هابط" : "ثابت", text_color=k > k[1] ? color.lime : color.red, text_size=size.tiny)
+    table.cell(infoTable, 0, 4, "اتجاه Trend", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 4, Trend > Trend[1] ? "صاعد" : Trend < Trend[1] ? "هابط" : "ثابت", text_color=Trend > Trend[1] ? color.lime : color.red, text_size=size.tiny)
+    table.cell(infoTable, 0, 5, "قوة الاتجاه", text_color=color.gray, text_size=size.tiny)
+    table.cell(infoTable, 1, 5, str.tostring(math.round(trendStrengthValue * 100)) + "%", text_color=color.white, text_size=size.tiny)
