@@ -468,15 +468,30 @@ if show_div_labels
 // 📦 PART 17: ORIGINAL STOCHASTIC LABELS - مع التحكم بالربط بالانعكاس
 // ========================================================================
 show_original_labels = input.bool(true, "إظهار ملصقات BUY/SELL الأصلية", group="Display")
+show_debug_info = input.bool(false, "إظهار معلومات Debug", group="Display", tooltip="عرض معلومات التشخيص للتأكد من عمل الربط")
 
-// تحديد ما إذا كانت هناك إشارة انعكاس على الشمعة الحالية أو السابقة
-bool hasReversalSignalNow = finalBullishSignal or finalBearishSignal
+// شروط إشارات البيع والشراء - يتم التحقق أولاً قبل الربط
+isSellSignal = kPivotHigh80 or midPivotHigh75 or midPivotHigh40
+isBuySignal = kPivotLow80 or midPivotLow75 or midPivotLow40 or kPivotLow20
+
+// شروط العرض مع ربط الانعكاس
+bool canShowSell = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBearishSignal)
+bool canShowBuy = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBullishSignal)
+
+// Debug labels
+if show_debug_info
+    if isSellSignal
+        label.new(bar_index, k + 15, "SELL Signal: " + str.tostring(isSellSignal) + "\nBearish Rev: " + str.tostring(finalBearishSignal) + "\nCan Show: " + str.tostring(canShowSell), 
+                  yloc=yloc.price, color=color.new(color.yellow, 50), textcolor=color.black, 
+                  style=label.style_label_down, size=size.tiny)
+    if isBuySignal
+        label.new(bar_index, k - 15, "BUY Signal: " + str.tostring(isBuySignal) + "\nBullish Rev: " + str.tostring(finalBullishSignal) + "\nCan Show: " + str.tostring(canShowBuy), 
+                  yloc=yloc.price, color=color.new(color.yellow, 50), textcolor=color.black, 
+                  style=label.style_label_up, size=size.tiny)
 
 if show_original_labels
     // إشارات البيع (SELL)
-    bool canShowSell = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBearishSignal)
-    
-    if (kPivotHigh80 or midPivotHigh75 or midPivotHigh40) and canShowSell
+    if isSellSignal and canShowSell
         label.new(x=bar_index, y=k, text="SELL", 
                   yloc=yloc.price, color=#FFFFFF, textcolor=color.red, 
                   style=label.style_label_down, size=size.small)
@@ -487,9 +502,7 @@ if show_original_labels
                   style=label.style_label_down, size=size.small)
 
     // إشارات الشراء (BUY)
-    bool canShowBuy = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBullishSignal)
-    
-    if (kPivotLow80 or midPivotLow75 or midPivotLow40 or kPivotLow20) and canShowBuy
+    if isBuySignal and canShowBuy
         label.new(x=bar_index, y=k, text="BUY", 
                   yloc=yloc.price, color=#14b105, textcolor=color.white, 
                   style=label.style_label_up, size=size.small)
@@ -502,9 +515,6 @@ if show_original_labels
 // ========================================================================
 // 📦 PART 18: ALERTS
 // ========================================================================
-isSellSignal = kPivotHigh80 or midPivotHigh75 or midPivotHigh40
-isBuySignal = kPivotLow80 or midPivotLow75 or midPivotLow40 or kPivotLow20
-
 // تطبيق شرط الانعكاس على التنبيهات أيضاً
 bool canAlertBuy = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBullishSignal)
 bool canAlertSell = not require_reversal_for_buysell or (require_reversal_for_buysell and finalBearishSignal)
