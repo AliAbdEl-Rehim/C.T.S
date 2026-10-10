@@ -1,0 +1,233 @@
+//@version=6
+indicator("C1–C4 Candlestick Patterns", shorttitle="C1-C4", overlay=true, max_labels_count=500)
+
+//====================================================================================
+// C1–C4 Candlestick Patterns
+// يلوّن الشمعة + يضع علامة C1/C2/C3/C4 عند مكان الإشارة
+//
+// C1 شراء: استمرارية + بن بار صاعد
+// C2 شراء: هارامي / داخل صاعد (Harami / Inside)
+// C3 بيع:  استمرارية + شهاب / بن بار هابط
+// C4 بيع:  هارامي / داخل هابط
+//
+// ألوان الإشارة (افتراضي):
+//   شراء: #ddf90a
+//   بيع:  #05a3ff
+//
+// يلوّن بعد إغلاق الشمعة. عطّل فلاتر القرب/الاتجاه/الحجم إن أردت إشارات أكثر.
+//====================================================================================
+
+
+//====================================================================================
+// 01 • النماذج  |  Patterns
+//====================================================================================
+
+gPat = "01 • النماذج C1–C4  |  Patterns"
+
+enableC1 = input.bool(true, "C1", inline="pat12", group=gPat, tooltip="شراء: استمرارية + بن بار صاعد\nBuy: Continuation + bullish pin bar")
+enableC2 = input.bool(true, "C2", inline="pat12", group=gPat, tooltip="شراء: هارامي / شمعة داخلية صاعدة\nBuy: Bullish Harami / Inside bar")
+enableC3 = input.bool(true, "C3", inline="pat34", group=gPat, tooltip="بيع: استمرارية + شهاب / بن بار هابط\nSell: Continuation + shooting star / bearish pin")
+enableC4 = input.bool(true, "C4", inline="pat34", group=gPat, tooltip="بيع: هارامي / شمعة داخلية هابطة\nSell: Bearish Harami / Inside bar")
+
+
+//====================================================================================
+// 02 • الحساسية  |  Sensitivity
+//====================================================================================
+
+gSens = "02 • الحساسية  |  Sensitivity"
+
+bodyPctMin = input.float(8.0, "أدنى نسبة جسم الشمعة %  |  Min Body %", minval=0.0, maxval=40.0, step=1.0, group=gSens, tooltip="ارفعها ⇒ إشارات أقل وأقوى. المقترح 10–20%.\nHigher ⇒ fewer / stronger signals. Suggest 10–20%.")
+tailBiasPct = input.float(20.0, "تحيز الذيول %  |  Tail Bias %", minval=0.0, maxval=70.0, step=1.0, group=gSens, tooltip="يشترط تفوق ذيل على الآخر بنسبة من مدى الشمعة. المقترح 20–35%.\nDominant wick must exceed the other wick by this % of the bar range. Suggest 20–35%.")
+
+
+//====================================================================================
+// 03 • القرب من القمم/القيعان  |  High/Low Proximity
+//====================================================================================
+
+gProx = "03 • القرب من القمم/القيعان  |  Proximity"
+
+useProximity = input.bool(false, "تفعيل قياس القرب  |  Require Proximity", group=gProx, tooltip="مطفأ افتراضياً حتى تظهر الإشارات. فعّله لاحقاً لتصفية الإشارات عند القمم/القيعان.")
+proxMode = input.string("ATR", "قياس القرب  |  Proximity Mode", options=["ATR", "% of Range"], group=gProx, tooltip="ATR مُستحسن: ديناميكي مع التذبذب.\nATR recommended: scales with volatility.")
+nearK_ATR = input.float(0.35, "nearK ATR", minval=0.05, maxval=1.50, step=0.05, group=gProx, tooltip="المقترح ≈ 0.20–0.35. اخفضها لتقليل الإشارات.\nSuggest ≈ 0.20–0.35. Lower ⇒ fewer signals.")
+nearK_Pct = input.float(12.0, "nearK % of Range", minval=1.0, maxval=40.0, step=1.0, group=gProx, tooltip="المقترح ≈ 8–15% من مدى النافذة.\nSuggest ≈ 8–15% of the lookback range.")
+atrLen = input.int(14, "طول ATR  |  ATR Length", minval=5, maxval=50, group=gProx)
+swingLen = input.int(12, "نافذة القمم/القيعان  |  Swing Lookback", minval=5, maxval=100, group=gProx)
+
+
+//====================================================================================
+// 04 • فلتر الاتجاه  |  Trend Filter
+//====================================================================================
+
+gTrend = "04 • فلتر الاتجاه  |  Trend Filter"
+
+useTrend = input.bool(false, "تفعيل فلتر الاتجاه  |  Enable Trend Filter", group=gTrend, tooltip="شراء فقط فوق المتوسط، وبيع فقط تحته.\nBuy only above the MA, sell only below it.")
+maType = input.string("EMA", "نوع المتوسط  |  MA Type", options=["EMA", "SMA"], group=gTrend)
+maLen = input.int(14, "طول المتوسط  |  MA Length", minval=5, maxval=50, group=gTrend, tooltip="المقترح 9–20.")
+showMA = input.bool(false, "إظهار المتوسط  |  Show MA", group=gTrend)
+
+
+//====================================================================================
+// 05 • فلتر الحجم  |  Volume Filter
+//====================================================================================
+
+gVol = "05 • فلتر الحجم  |  Volume Filter"
+
+useVolume = input.bool(false, "تفعيل فلتر الحجم  |  Enable Volume Filter", group=gVol, tooltip="يقبل الإشارة فقط إذا كان حجم الشمعة ≥ متوسط الحجم.\nAccept a signal only when volume ≥ its moving average. Useful in quiet markets.")
+volLen = input.int(50, "طول متوسط الحجم  |  Volume MA Length", minval=5, maxval=200, group=gVol, tooltip="50 شمعة مناسبة كبداية.")
+
+
+//====================================================================================
+// 06 • الألوان والعلامات  |  Colors & Markers
+//====================================================================================
+
+gVis = "06 • الألوان والعلامات  |  Colors & Markers"
+
+showMarks = input.bool(true, "إظهار علامات C1–C4  |  Show C1–C4 Marks", group=gVis, tooltip="مثلثات مكتوب عليها C1/C2/C3/C4 عند مكان الإشارة.")
+showBarColor = input.bool(true, "تلوين الشموع  |  Color Bars", group=gVis)
+colorMode = input.string("Buy / Sell", "نمط التلوين  |  Color Mode", options=["Buy / Sell", "Continuation / Reversal"], group=gVis, tooltip="Buy / Sell: شراء أصفر، بيع أزرق.\nContinuation / Reversal: الاستمرارية (C1/C3) أصفر، الانعكاس (C2/C4) أزرق.")
+buyColor = input.color(#ddf90a, "لون الشراء / الاستمرارية  |  Buy / Continuation", group=gVis)
+sellColor = input.color(#05a3ff, "لون البيع / الانعكاس  |  Sell / Reversal", group=gVis)
+confirmOnClose = input.bool(true, "بعد إغلاق الشمعة  |  Confirm On Bar Close", group=gVis, tooltip="يقلل الضجيج عبر انتظار إغلاق الشمعة.\nWaits for the bar to close before coloring / alerting.")
+
+
+//====================================================================================
+// هندسة الشمعة  |  Candle geometry
+//====================================================================================
+
+float barRange = high - low
+float body = math.abs(close - open)
+float upperWick = high - math.max(open, close)
+float lowerWick = math.min(open, close) - low
+
+float bodyPct = barRange > 0 ? body / barRange * 100.0 : 0.0
+float upperPct = barRange > 0 ? upperWick / barRange * 100.0 : 0.0
+float lowerPct = barRange > 0 ? lowerWick / barRange * 100.0 : 0.0
+float closePos = barRange > 0 ? (close - low) / barRange : 0.5
+
+bool hasRange = barRange > 0
+bool bodyOk = bodyPct >= bodyPctMin
+bool bullClose = close >= open
+bool bearClose = close <= open
+
+
+//====================================================================================
+// الفلاتر  |  Filters
+//====================================================================================
+
+float trendMa = maType == "EMA" ? ta.ema(close, maLen) : ta.sma(close, maLen)
+bool trendOkBuy = not useTrend or (not na(trendMa) and close > trendMa)
+bool trendOkSell = not useTrend or (not na(trendMa) and close < trendMa)
+
+float volMa = ta.sma(volume, volLen)
+bool volOk = not useVolume or (not na(volMa) and volume >= volMa)
+
+float winHi = ta.highest(high, swingLen)
+float winLo = ta.lowest(low, swingLen)
+float winRng = winHi - winLo
+float atrVal = nz(ta.atr(atrLen), winRng)
+float proxThr = proxMode == "ATR" ? nearK_ATR * atrVal : winRng * nearK_Pct / 100.0
+
+bool nearLow = not useProximity or (winRng > 0 and (low - winLo) <= proxThr)
+bool nearHigh = not useProximity or (winRng > 0 and (winHi - high) <= proxThr)
+
+bool ready = (not confirmOnClose or barstate.isconfirmed) and hasRange and volOk
+
+
+//====================================================================================
+// سياق الاستمرارية  |  Continuation context (does not fight proximity)
+//====================================================================================
+// اتجاه متوسط: السعر فوق/تحت EMA 21 أو المتوسط يميل مع الاتجاه.
+// سحب محلي: الشمعة عند قاع/قمة آخر 6 شموع (بن بار استمرار = رفض السحبة).
+
+float contMa = ta.ema(close, 21)
+bool bullContinuation = not na(contMa) and (close > contMa or contMa >= contMa[3])
+bool bearContinuation = not na(contMa) and (close < contMa or contMa <= contMa[3])
+bool localDip = low <= ta.lowest(low, 6)
+bool localRally = high >= ta.highest(high, 6)
+
+
+//====================================================================================
+// C1 — بن بار صاعد (استمرارية)
+//====================================================================================
+
+bool bullPinShape = bodyOk and bodyPct <= 55.0 and lowerPct - upperPct >= tailBiasPct and lowerPct > upperPct and lowerPct >= bodyPct and closePos >= 0.50
+
+bool C1 = enableC1 and ready and trendOkBuy and nearLow and bullContinuation and localDip and bullPinShape
+
+
+//====================================================================================
+// C3 — شهاب / بن بار هابط (استمرارية)
+//====================================================================================
+
+bool bearPinShape = bodyOk and bodyPct <= 55.0 and upperPct - lowerPct >= tailBiasPct and upperPct > lowerPct and upperPct >= bodyPct and closePos <= 0.50
+
+bool C3 = enableC3 and ready and trendOkSell and nearHigh and bearContinuation and localRally and bearPinShape
+
+
+//====================================================================================
+// C2 / C4 — هارامي أو شمعة داخلية
+//====================================================================================
+
+float motherTop = math.max(open[1], close[1])
+float motherBot = math.min(open[1], close[1])
+float babyTop = math.max(open, close)
+float babyBot = math.min(open, close)
+float motherBody = math.abs(close[1] - open[1])
+float motherRange = high[1] - low[1]
+float motherBodyPct = motherRange > 0 ? motherBody / motherRange * 100.0 : 0.0
+
+bool bodyHarami = motherBody > 0 and body < motherBody and babyTop <= motherTop and babyBot >= motherBot
+bool rangeInside = motherRange > 0 and high <= high[1] and low >= low[1] and (high < high[1] or low > low[1])
+bool haramiOrInside = bodyHarami or rangeInside
+
+bool motherBear = close[1] < open[1]
+bool motherBull = close[1] > open[1]
+bool motherBodyOk = motherBodyPct >= bodyPctMin
+
+bool C2raw = enableC2 and ready and bodyOk and trendOkBuy and nearLow and haramiOrInside and bullClose and motherBear and motherBodyOk
+bool C4raw = enableC4 and ready and bodyOk and trendOkSell and nearHigh and haramiOrInside and bearClose and motherBull and motherBodyOk
+
+bool C2 = C2raw and not C1
+bool C4 = C4raw and not C3
+
+bool isBuy = C1 or C2
+bool isSell = C3 or C4
+bool isCont = C1 or C3
+bool isRev = C2 or C4
+
+
+//====================================================================================
+// التلوين + علامات الأماكن  |  Bar color + C1–C4 marks
+//====================================================================================
+
+color sigColor = colorMode == "Buy / Sell" ? (isBuy ? buyColor : isSell ? sellColor : na) : (isCont ? buyColor : isRev ? sellColor : na)
+
+barcolor(showBarColor ? sigColor : na, title="C1–C4 Signal Color", editable=false)
+
+plot(showMA ? trendMa : na, "Trend MA", color=color.new(#868993, 45), linewidth=1)
+
+plotshape(showMarks and C1, title="C1", style=shape.triangleup, location=location.belowbar, color=buyColor, size=size.small, text="C1", textcolor=buyColor, force_overlay=true)
+plotshape(showMarks and C2, title="C2", style=shape.triangleup, location=location.belowbar, color=buyColor, size=size.small, text="C2", textcolor=buyColor, force_overlay=true)
+plotshape(showMarks and C3, title="C3", style=shape.triangledown, location=location.abovebar, color=sellColor, size=size.small, text="C3", textcolor=sellColor, force_overlay=true)
+plotshape(showMarks and C4, title="C4", style=shape.triangledown, location=location.abovebar, color=sellColor, size=size.small, text="C4", textcolor=sellColor, force_overlay=true)
+
+
+//====================================================================================
+// التنبيهات  |  Alerts
+//====================================================================================
+
+string px = str.tostring(close, format.mintick)
+string loc = syminfo.ticker + " " + timeframe.period + " close=" + px
+
+if isBuy
+    alert("شراء جاهز — " + (C1 ? "C1 بن بار صاعد (استمرارية)" : "C2 هارامي / داخل صاعد") + "\nBUY — " + (C1 ? "C1 Bullish Pin Bar (Continuation)" : "C2 Bullish Harami / Inside") + "\n" + loc, alert.freq_once_per_bar_close)
+
+if isSell
+    alert("بيع جاهز — " + (C3 ? "C3 شهاب / بن بار هابط (استمرارية)" : "C4 هارامي / داخل هابط") + "\nSELL — " + (C3 ? "C3 Shooting Star / Bearish Pin (Continuation)" : "C4 Bearish Harami / Inside") + "\n" + loc, alert.freq_once_per_bar_close)
+
+alertcondition(isBuy, title="شراء (C1/C2) | BUY", message="BUY {{ticker}} {{interval}} close={{close}}")
+alertcondition(isSell, title="بيع (C3/C4) | SELL", message="SELL {{ticker}} {{interval}} close={{close}}")
+alertcondition(C1, title="C1 شراء بن بار | C1 BUY Pin", message="C1 BUY Pin Bar {{ticker}} {{interval}} close={{close}}")
+alertcondition(C2, title="C2 شراء هارامي | C2 BUY Harami", message="C2 BUY Harami/Inside {{ticker}} {{interval}} close={{close}}")
+alertcondition(C3, title="C3 بيع شهاب | C3 SELL Star", message="C3 SELL Shooting/Pin {{ticker}} {{interval}} close={{close}}")
+alertcondition(C4, title="C4 بيع هارامي | C4 SELL Harami", message="C4 SELL Harami/Inside {{ticker}} {{interval}} close={{close}}")
