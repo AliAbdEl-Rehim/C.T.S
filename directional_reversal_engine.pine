@@ -37,6 +37,7 @@ min_div_bars = input.int(3, "الحد الأدنى لمسافة القمم/ال�
 show_div_lines = input.bool(true, "رسم خطوط الاختلاف", group=grp_div)
 show_div_labels = input.bool(true, "إظهار إشارات الاختلاف", group=grp_div)
 show_k_reversal = input.bool(true, "إظهار الشمعات الانعكاسية على %K", group=grp_div)
+relaxed_reversal_mode = input.bool(true, "وضع الانعكاس المخفف (إشارات أكثر)", group=grp_div, tooltip="عند التفعيل: لا يشترط وجود Divergence + Candle معاً، يكفي أحدهما")
 
 grp_trend = "🔄 فلتر الاتجاه الرئيسي (Trend Filter)"
 useTrendFilter = input.bool(true, "تفعيل فلتر الاتجاه (يمنع الإشارات المعاكسة)", group=grp_trend)
@@ -273,15 +274,32 @@ bool trend_down = Trend < Trend[1]
 bool directionDivergence = (k_up and trend_down) or (k_down and trend_up)
 
 // ========================================================================
-// 📦 PART 9: COMBINED STRONG SIGNAL مع Trend Filter
+// 📦 PART 9: COMBINED STRONG SIGNAL مع Trend Filter + شروط مخففة
 // ========================================================================
-// 🟢 انعكاس صاعد = السعر سيصعد
-//    السعر: قيعان أدنى | المؤشر: قيعان أعلى | Hammer/Doji | K < 50
-strongBullishSignal = bullishDivergence and (isKHammer or isKDoji) and k < 50
+// شروط انعكاس قابلة للتعديل من الإعدادات
 
-// 🔴 انعكاس هابط = السعر سينزل  
-//    السعر: قمم أعلى | المؤشر: قمم أدنى | Shooting Star/Doji | K > 50
-strongBearishSignal = bearishDivergence and (isKShootingStar or isKDoji) and k > 50
+if relaxed_reversal_mode
+    // 🟢 وضع مخفف: Divergence OR Candle OR Stochastic extreme
+    strongBullishSignal = (
+        bullishDivergence or 
+        (isKHammer or isKDoji) or 
+        kPivotLow20 or 
+        (k < 25 and crossUp)
+    ) and k < 50
+    
+    // 🔴 وضع مخفف: Divergence OR Candle OR Stochastic extreme
+    strongBearishSignal = (
+        bearishDivergence or 
+        (isKShootingStar or isKDoji) or 
+        kPivotHigh80 or 
+        (k > 75 and crossDown)
+    ) and k > 50
+else
+    // 🟢 وضع صارم: يحتاج Divergence AND Candle
+    strongBullishSignal = bullishDivergence and (isKHammer or isKDoji) and k < 50
+    
+    // 🔴 وضع صارم: يحتاج Divergence AND Candle
+    strongBearishSignal = bearishDivergence and (isKShootingStar or isKDoji) and k > 50
 
 // تطبيق فلتر الاتجاه
 allowBullishSignal = not useTrendFilter or not isStrongDowntrend
